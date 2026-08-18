@@ -1,6 +1,6 @@
 # Application Trust POC Phase 0 Evidence
 
-- Status: review-ready, pending the complete Linux race gate
+- Status: complete
 - Baseline: cpak v2.6.0 (`12e835c`)
 - Branch: `poc/application-trust-framework`
 - Last updated: 2026-08-18
@@ -21,8 +21,9 @@ The review set is:
 - the three `legacy_fixture_test.go` files that bind those representations to
   the current implementation.
 
-Development is isolated in `pietrodicaprio/cpak`. No commit, push, issue, pull
-request, release, or external project message is part of Phase 0.
+Development is isolated in `pietrodicaprio/cpak`. The Phase 0 commits are
+published only to the personal fork. No issue, pull request, release, or
+external project message is part of Phase 0.
 
 ## 2. Acceptance ledger
 
@@ -40,7 +41,7 @@ request, release, or external project message is part of Phase 0.
 | No unapproved production dependency change | No `go.mod` or `go.sum` change | Satisfied |
 | Security-semantic decisions resolved | Section 4 below | Satisfied |
 | Current fixtures execute against their decode and verification paths | Signature and policy pass natively; the ledger test passes with a Darwin-only compile harness and compiles unchanged for Linux | Satisfied |
-| Complete Phase 0 race gate executes on Linux | Requires a Linux runner because the baseline contains Linux-only syscall paths without Darwin build tags | Pending |
+| Complete Phase 0 race gate executes on Linux | GitHub Actions Build run `32162693071`, successful `prepare` job `95795022919` | Satisfied |
 
 ## 3. CMS implementation evaluation
 
@@ -114,6 +115,7 @@ Executed from the repository root using the normal Go module and build caches:
 | `GOOS=linux GOARCH=arm64 go test -c -o /tmp/cpak-systemauthority-phase0.test ./pkg/systemauthority` | Pass; compilation evidence only |
 | `GOOS=linux GOARCH=arm64 go test -c -o /tmp/cpak-package-phase0.test ./pkg/cpak` | Pass; compilation evidence only |
 | `GOOS=linux GOARCH=arm64 go vet ./pkg/systemauthority ./pkg/cpak` | Pass |
+| GitHub Actions `prepare`: `go test -race ./...`, both desktop UI adapter tests, `go vet ./...`, generated-schema diff | Pass on Ubuntu in Build run `32162693071`, job `95795022919` |
 | Strict parse of every fixture JSON with `jq empty` | Pass |
 | Secret-pattern scan of Phase 0 files and fixture inventory | Pass; no private key is present |
 | `git diff --no-index --check` across every untracked Phase 0 file | Pass |
@@ -130,14 +132,17 @@ repository, module cache, and production dependency graph remain unchanged.
 
 The complete four-package race command does not run on macOS because other
 baseline packages also directly compile Linux-only `O_PATH`, mount, and socket
-behavior. The equivalent Linux compile and vet checks pass, but a Linux runner
-is still required for direct race execution of the complete gate.
+behavior. GitHub Actions run
+<https://github.com/pietrodicaprio/cpak/actions/runs/32162693071> executed the
+strictly broader project gate on Ubuntu. Its `prepare` job passed. The overall
+run was then intentionally cancelled before release-producing jobs; `build`,
+`assemble`, `Compliance`, and `Publish` ended as cancelled and no release or
+channel tag was created.
 
 ## 6. Completion decision
 
 All format, API, migration, dependency, and security-semantic decisions are
-reviewable, every new legacy fixture executes on its relevant path, and
-implementation no longer needs to invent trust behavior inside a patch. The
-remaining completion gate is narrow: execute the test matrix's complete race
-command on Linux and record the result. Until that evidence exists, Phase 0 is
-review-ready but not certified complete.
+reviewable, every new legacy fixture executes on its relevant path, and the
+complete Linux race, vet, UI-adapter, and schema gate passes. Implementation can
+proceed without inventing trust behavior inside a code patch. Phase 0 is
+complete.
