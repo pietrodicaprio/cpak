@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mirkobrombin/cpak/pkg/signature"
 )
@@ -31,12 +32,20 @@ func stubVerify(t *testing.T, identity signature.Identity, refusal error) *int {
 	t.Helper()
 	previous := verifyState
 	calls := 0
-	verifyState = func(bundle []byte, state signature.State) (signature.Verified, error) {
+	verifyState = func(evidence signature.SignatureEvidence, _ signature.TrustMaterial, _ time.Time) (signature.VerificationResult, error) {
 		calls++
 		if refusal != nil {
-			return signature.Verified{}, refusal
+			return signature.VerificationResult{Cryptographic: signature.CryptographicInvalid, ReasonCode: "test-refusal", Diagnostic: refusal.Error()}, nil
 		}
-		return signature.Verified{State: state, Identity: identity}, nil
+		publisher := &signature.PublisherIdentity{
+			Kind: "sigstore-oidc-v1", ID: "test", Issuer: identity.Issuer,
+			Repository: identity.Repo, Claims: map[string]string{"subject": identity.Subject},
+		}
+		authorization := signature.AuthorizeOIDCOrigin(publisher, evidence.State.Origin)
+		return signature.VerificationResult{
+			EvidenceKind: evidence.Kind, Cryptographic: signature.CryptographicVerified,
+			Publisher: publisher, OriginAuthorization: string(authorization.Status), ReasonCode: authorization.ReasonCode,
+		}, nil
 	}
 	t.Cleanup(func() { verifyState = previous })
 	return &calls
@@ -74,7 +83,7 @@ func signedState(imageDigest string) signature.State {
 // they drive the gate through a stub, and this is what says the gate they are
 // standing in for is the real one.
 func TestAttachVerifiesThroughTheSignaturePackage(t *testing.T) {
-	if reflect.ValueOf(verifyState).Pointer() != reflect.ValueOf(signature.Verify).Pointer() {
+	if reflect.ValueOf(verifyState).Pointer() != reflect.ValueOf(signature.VerifyEvidence).Pointer() {
 		t.Fatalf("attach does not verify through pkg/signature, so nothing proves a published bundle was ever checked")
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mirkobrombin/cpak/pkg/oci"
 	"github.com/mirkobrombin/cpak/pkg/signature"
@@ -22,9 +23,9 @@ import (
 const (
 	// signatureArtifactType is how cpak recognises its own referrers among
 	// everything else that can hang off an image.
-	signatureArtifactType = "application/vnd.cpak.signature.v1+json"
+	signatureArtifactType = signature.SigstoreArtifactType
 
-	bundleMediaType   = "application/vnd.dev.sigstore.bundle.v0.3+json"
+	bundleMediaType   = signature.SigstoreBundleMediaType
 	defaultBundlePath = "cpak-state.sigstore.json"
 	bundleLimit       = 1 << 20
 	stateLimit        = 64 << 10
@@ -41,7 +42,17 @@ const (
 // for the origin, is a bundle every user would reject, and it is better
 // rejected here than in front of them. It is a variable so that a test can hold
 // one that fails; nothing in cpak-sign replaces it.
-var verifyState = signature.Verify
+var verifyState = signature.VerifyEvidence
+
+func checkStateEvidence(bundle []byte, state signature.State) (signature.VerificationResult, signature.Verified, error) {
+	evidence := signature.NewSigstoreEvidence(state, bundle)
+	result, err := verifyState(evidence, nil, time.Now())
+	if err != nil {
+		return result, signature.Verified{}, err
+	}
+	verified, err := signature.LegacyVerified(result, state)
+	return result, verified, err
+}
 
 // referrer is the artifact manifest a signature is published as. The subject is
 // the image manifest the state was signed over, which is what makes the
@@ -79,11 +90,11 @@ func attachSignature(arguments []string) error {
 	if err != nil {
 		return fmt.Errorf("read the bundle: %w", err)
 	}
-	verified, err := verifyState(bundle, state)
+	result, verified, err := checkStateEvidence(bundle, state)
 	if err != nil {
 		return fmt.Errorf("the bundle in %s does not cover the state in %s: %w", *bundlePath, *statePath, err)
 	}
-	if !verified.Identity.MatchesOrigin(state.Origin) {
+	if result.OriginAuthorization != string(signature.OriginAuthorized) {
 		return fmt.Errorf("the state was signed by %s from %s, which cannot speak for %s", verified.Identity.Subject, verified.Identity.Issuer, state.Origin)
 	}
 	return attachBundle(context.Background(), reference, state, bundle)

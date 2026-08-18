@@ -79,6 +79,17 @@ func (c *Client) Referrers(ctx context.Context, ref Reference, subject, artifact
 // than guessed at: which of several blobs is the payload is not something the
 // registry states, and choosing one would be inventing it.
 func (c *Client) ReferrerPayload(ctx context.Context, ref Reference, referrer Descriptor, limit int64) ([]byte, error) {
+	return c.referrerPayload(ctx, ref, referrer, limit, "")
+}
+
+// ReferrerPayloadOfMediaType additionally proves the single layer has the
+// media type the evidence adapter expects. Registry-side artifact filtering
+// cannot prove the shape of the referred manifest.
+func (c *Client) ReferrerPayloadOfMediaType(ctx context.Context, ref Reference, referrer Descriptor, limit int64, mediaType string) ([]byte, error) {
+	return c.referrerPayload(ctx, ref, referrer, limit, mediaType)
+}
+
+func (c *Client) referrerPayload(ctx context.Context, ref Reference, referrer Descriptor, limit int64, expectedMediaType string) ([]byte, error) {
 	if !validDescriptor(referrer) {
 		return nil, fmt.Errorf("oci: invalid referrer descriptor")
 	}
@@ -99,6 +110,9 @@ func (c *Client) ReferrerPayload(ctx context.Context, ref Reference, referrer De
 	payload := manifest.Layers[0]
 	if !validDescriptor(payload) {
 		return nil, fmt.Errorf("oci: invalid referrer payload descriptor")
+	}
+	if expectedMediaType != "" && payload.MediaType != expectedMediaType {
+		return nil, fmt.Errorf("oci: referrer payload has media type %q, expected %q", payload.MediaType, expectedMediaType)
 	}
 	if limit > 0 && payload.Size > limit {
 		return nil, fmt.Errorf("oci: referrer payload is too large")

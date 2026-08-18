@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/introspect"
@@ -796,9 +797,26 @@ func testSignedState(generation uint64) *SignedState {
 func useBundleVerifier(t *testing.T, verify func([]byte, signature.State) (signature.Verified, error)) {
 	t.Helper()
 
-	saved := verifyBundle
-	t.Cleanup(func() { verifyBundle = saved })
-	verifyBundle = verify
+	saved := verifyEvidence
+	t.Cleanup(func() { verifyEvidence = saved })
+	verifyEvidence = func(evidence signature.SignatureEvidence, _ signature.TrustMaterial, _ time.Time) (signature.VerificationResult, error) {
+		verified, err := verify(evidence.Payload, evidence.State)
+		if err != nil {
+			return signature.VerificationResult{
+				EvidenceKind: evidence.Kind, Cryptographic: signature.CryptographicInvalid,
+				OriginAuthorization: string(signature.OriginUnsupported), ReasonCode: "test-refusal", Diagnostic: err.Error(),
+			}, nil
+		}
+		publisher := &signature.PublisherIdentity{
+			Kind: "sigstore-oidc-v1", ID: "test", Issuer: verified.Identity.Issuer,
+			Repository: verified.Identity.Repo, Claims: map[string]string{"subject": verified.Identity.Subject},
+		}
+		authorization := signature.AuthorizeOIDCOrigin(publisher, evidence.State.Origin)
+		return signature.VerificationResult{
+			EvidenceKind: evidence.Kind, Cryptographic: signature.CryptographicVerified,
+			Publisher: publisher, OriginAuthorization: string(authorization.Status), ReasonCode: authorization.ReasonCode,
+		}, nil
+	}
 }
 
 func acceptSignaturesOf(t *testing.T, repo string) {
@@ -813,8 +831,8 @@ func acceptSignaturesOf(t *testing.T, repo string) {
 // authority checks a bundle with pkg/signature and with nothing else, and the
 // real check refuses the bundles these tests are built out of.
 func TestTheAuthorityChecksBundlesWithTheRealVerifier(t *testing.T) {
-	if reflect.ValueOf(verifyBundle).Pointer() != reflect.ValueOf(signature.Verify).Pointer() {
-		t.Fatal("the authority does not verify bundles with pkg/signature")
+	if reflect.ValueOf(verifyEvidence).Pointer() != reflect.ValueOf(signature.VerifyEvidence).Pointer() {
+		t.Fatal("the authority does not verify evidence with the common pkg/signature dispatcher")
 	}
 	ledger := testAnchorLedger(t)
 	anchor := testAnchor()
@@ -827,6 +845,22 @@ func TestTheAuthorityChecksBundlesWithTheRealVerifier(t *testing.T) {
 	}
 	if _, found, err := ledger.Recorded(anchor.UID, anchor.Origin); err != nil || found {
 		t.Fatalf("the refused enrolment reached the ledger: %v, %v", found, err)
+	}
+}
+
+func TestTheAuthorityRefusesAnUnsupportedEvidenceABI(t *testing.T) {
+	ledger := testAnchorLedger(t)
+	signed := testSignedState(1)
+	signed.ABI = signature.EvidenceABIVersion + 1
+	signed.Kind = signature.EvidenceSigstoreBundle
+	signed.MediaType = signature.SigstoreBundleMediaType
+	err := ledger.Record(Enrolment{Anchor: testAnchor(), Signature: signed})
+	var invalid *signature.InvalidEvidenceError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("got %v, want a typed invalid-evidence refusal", err)
+	}
+	if _, found, readErr := ledger.Recorded(testAnchor().UID, testAnchor().Origin); readErr != nil || found {
+		t.Fatalf("unsupported evidence reached the ledger: found=%v err=%v", found, readErr)
 	}
 }
 
