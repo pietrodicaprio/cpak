@@ -1,0 +1,27 @@
+{
+  "abi": 1,
+  "require_publisher": true,
+  "require_approval": true,
+  "approved_signers": [
+    {
+      "issuer": "https://token.actions.githubusercontent.com",
+      "repo": "github.com/acme/cpak"
+    }
+  ],
+  "approved_origins": [
+    "github.com/acme/cpak"
+  ],
+  "approval_signers": [
+    {
+      "issuer": "https://token.actions.githubusercontent.com",
+      "repo": "github.com/acme/security"
+    }
+  ],
+  "revoked": [
+    {
+      "origin": "github.com/acme/withdrawn",
+      "generation": 4,
+      "reason": "withdrawn test release"
+    }
+  ]
+}
