@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/mirkobrombin/cpak/pkg/oci"
 	"github.com/mirkobrombin/cpak/pkg/registryauth"
@@ -100,7 +101,8 @@ type Approval struct {
 // report of what is attached that hid some of it would be a worse report;
 // ApprovedState will not act on it, and cpak-sign refuses to make one.
 func (a Approval) Publisher() bool {
-	return a.Identity.MatchesOrigin(a.State.Origin)
+	publisher, _ := signature.NormalizeOIDCIdentity(a.Identity)
+	return signature.AuthorizeOIDCOrigin(publisher, a.State.Origin).Status == signature.OriginAuthorized
 }
 
 // ApprovalAuthority answers whether an identity may counter-sign for this
@@ -173,13 +175,14 @@ func (c *Cpak) approvalsOf(ref oci.Reference, origin string, state signature.Sta
 	// approved by more than one party.
 	approvals := make([]Approval, 0, len(attached))
 	var refusal error
+	now := time.Now()
 	for _, candidate := range attached {
 		covered, nameErr := coveredState(state, candidate.generation)
 		if nameErr != nil {
 			refusal = firstReason(refusal, nameErr)
 			continue
 		}
-		verified, verifyErr := verifyApprovalSignature(candidate.bundle, covered)
+		_, verified, verifyErr := checkEvidenceAt(signature.NewSigstoreEvidence(covered, candidate.bundle), now)
 		if verifyErr != nil {
 			refusal = firstReason(refusal, verifyErr)
 			continue
@@ -228,7 +231,7 @@ func (c *Cpak) attachedApprovals(ref oci.Reference, origin, imageDigest string) 
 	attached := make([]attachedSignature, 0, len(referrers))
 	for _, referrer := range referrers {
 		generation, _ := signedGeneration(referrer)
-		bundle, payloadErr := client.ReferrerPayload(c.Ctx, ref, referrer, maxSignatureBundle)
+		bundle, payloadErr := client.ReferrerPayloadOfMediaType(c.Ctx, ref, referrer, maxSignatureBundle, signature.SigstoreBundleMediaType)
 		if payloadErr != nil {
 			return nil, fmt.Errorf("read the approval %s of %s: %w", referrer.Digest, ref.ContextName(), payloadErr)
 		}

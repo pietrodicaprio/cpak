@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/mirkobrombin/cpak/pkg/oci"
 	"github.com/mirkobrombin/cpak/pkg/registryauth"
@@ -44,7 +45,7 @@ import (
 // cpak-sign attaches one under. The payload inside is a sigstore bundle, which
 // carries the certificate and the inclusion proof and is what lets the check
 // happen with no network beyond this fetch.
-const packageSignatureArtifactType = "application/vnd.cpak.signature.v1+json"
+const packageSignatureArtifactType = signature.SigstoreArtifactType
 
 // maxSignatureBundle bounds one bundle. A certificate, a signature and an
 // inclusion proof are nowhere near this, and the limit is what stops a
@@ -68,11 +69,19 @@ var (
 	ErrSignatureForeign = errors.New("the publisher signature was made by another identity")
 )
 
-// verifySignature is the offline check a fetched bundle is put through. It is
+// verifyEvidence is the common offline check fetched evidence is put through. It is
 // a variable so that a test can drive the answers a caller has to tell apart;
 // nothing in cpak replaces it.
-var verifySignature = signature.VerifyPublisher
-var verifyApprovalSignature = signature.VerifyApproval
+var verifyEvidence = signature.VerifyEvidence
+
+func checkEvidenceAt(evidence signature.SignatureEvidence, now time.Time) (signature.VerificationResult, signature.Verified, error) {
+	result, err := verifyEvidence(evidence, nil, now)
+	if err != nil {
+		return result, signature.Verified{}, err
+	}
+	verified, err := signature.LegacyVerified(result, evidence.State)
+	return result, verified, err
+}
 
 // PackageState names the part of an installation a publisher could determine
 // before it ever reached this machine, which is exactly what a signature
@@ -95,7 +104,7 @@ var verifyApprovalSignature = signature.VerifyApproval
 // so the requirement is on the caller and this only catches the obvious half.
 //
 // Generation is left at zero, and a state with a zero generation is one
-// signature.VerifyPublisher refuses before it opens a bundle. That is deliberate and it
+// signature.Verify refuses before it opens a bundle. That is deliberate and it
 // is a gap, not a design: the generation is the publisher's counter, it lives
 // inside the signature, and nothing an installing machine holds can supply it.
 // Guessing one would put a number cpak invented into the payload cpak then
@@ -192,21 +201,16 @@ func (c *Cpak) verifyPackageState(ref oci.Reference, origin string, state signat
 	// the one that says somebody who is not the publisher signed this image.
 	var foreign string
 	var unverified error
+	now := time.Now()
 	for _, bundle := range bundles {
-		verified, verifyErr := verifySignature(bundle, state)
+		result, verified, verifyErr := checkEvidenceAt(signature.NewSigstoreEvidence(state, bundle), now)
 		if verifyErr != nil {
-			if identity, mismatched := publisherMismatch(verifyErr); mismatched {
-				if foreign == "" {
-					foreign = identity.Repo
-				}
-				continue
-			}
 			if unverified == nil {
 				unverified = verifyErr
 			}
 			continue
 		}
-		if verified.Identity.MatchesOrigin(origin) {
+		if result.OriginAuthorization == string(signature.OriginAuthorized) {
 			return verified, nil
 		}
 		if foreign == "" {
@@ -220,14 +224,6 @@ func (c *Cpak) verifyPackageState(ref oci.Reference, origin string, state signat
 		return signature.Verified{}, fmt.Errorf("verify the signature of %s: %w: %w", origin, ErrSignatureUnverified, unverified)
 	}
 	return signature.Verified{}, fmt.Errorf("verify the signature of %s: %w", origin, ErrSignatureUnverified)
-}
-
-func publisherMismatch(err error) (signature.Identity, bool) {
-	var mismatch *signature.IdentityMismatchError
-	if !errors.As(err, &mismatch) {
-		return signature.Identity{}, false
-	}
-	return mismatch.Identity, true
 }
 
 // packageSignatures reads every bundle attached to the resolved image.
@@ -254,7 +250,7 @@ func (c *Cpak) packageSignatures(ref oci.Reference, imageDigest, origin string) 
 	}
 	bundles := make([][]byte, 0, len(referrers))
 	for _, referrer := range referrers {
-		bundle, payloadErr := client.ReferrerPayload(c.Ctx, ref, referrer, maxSignatureBundle)
+		bundle, payloadErr := client.ReferrerPayloadOfMediaType(c.Ctx, ref, referrer, maxSignatureBundle, signature.SigstoreBundleMediaType)
 		if payloadErr != nil {
 			return nil, fmt.Errorf("read the signature %s of %s: %w", referrer.Digest, ref.ContextName(), payloadErr)
 		}

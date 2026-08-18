@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mirkobrombin/cpak/pkg/signature"
 )
 
 // These run the real spawning machinery and look at what it does to the
@@ -91,7 +93,7 @@ func report(reason string) {
 func TestTheChildDoesNotKeepRoot(t *testing.T) {
 	requireRoot(t)
 	useHelperChild(t, "credentials")
-	_, err := separatedVerify([]byte("bundle"), probeState())
+	_, err := separatedVerifyEvidence(probeEvidence(), nil, time.Now())
 	if err == nil {
 		t.Fatal("the helper reported nothing")
 	}
@@ -114,7 +116,7 @@ func TestTheChildDoesNotKeepRoot(t *testing.T) {
 func TestTheChildHasNoNetwork(t *testing.T) {
 	requireRoot(t)
 	useHelperChild(t, "interfaces")
-	_, err := separatedVerify([]byte("bundle"), probeState())
+	_, err := separatedVerifyEvidence(probeEvidence(), nil, time.Now())
 	if err == nil {
 		t.Fatal("the helper reported nothing")
 	}
@@ -139,7 +141,7 @@ func TestAChildThatNeverAnswersIsGivenUpOn(t *testing.T) {
 	verifierTimeout = 2 * time.Second
 
 	start := time.Now()
-	_, err := separatedVerify([]byte("bundle"), probeState())
+	_, err := separatedVerifyEvidence(probeEvidence(), nil, time.Now())
 	if err == nil {
 		t.Fatal("a child that answered nothing was read as a verdict")
 	}
@@ -160,7 +162,7 @@ func TestAnAnswerTheParentCannotNameIsRefused(t *testing.T) {
 		"an answer that is not one": "garbage",
 	} {
 		useHelperChild(t, mode)
-		if _, err := separatedVerify([]byte("bundle"), probeState()); err == nil {
+		if _, err := separatedVerifyEvidence(probeEvidence(), nil, time.Now()); err == nil {
 			t.Fatalf("%s was accepted", name)
 		} else if !errors.Is(err, ErrVerifierUnavailable) {
 			t.Fatalf("%s ended as something other than an unavailable verifier: %v", name, err)
@@ -181,7 +183,8 @@ func TestTheShippedVerifierRefusesABundleNobodySigned(t *testing.T) {
 	if err != nil || strings.HasSuffix(self, ".test") {
 		t.Skip("the child role needs the cpak binary, not a test binary")
 	}
-	if _, err := separatedVerify([]byte(`{"not":"a bundle"}`), probeState()); err == nil {
+	invalid := signature.NewSigstoreEvidence(probeState(), []byte(`{"not":"a bundle"}`))
+	if _, err := separatedVerifyEvidence(invalid, nil, time.Now()); err == nil {
 		t.Fatal("a bundle nobody signed was accepted")
 	} else if errors.Is(err, ErrVerifierUnavailable) {
 		t.Fatalf("the child never ran, so this proves nothing about the check: %v", err)

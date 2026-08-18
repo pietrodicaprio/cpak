@@ -9,11 +9,111 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"time"
 
 	sigstorebundle "github.com/sigstore/sigstore-go/pkg/bundle"
 	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore-go/pkg/verify"
 )
+
+// SigstoreVerifier adapts the existing offline keyless verifier to the common
+// evidence/result contract. It contains every Sigstore-specific decision.
+type SigstoreVerifier struct{}
+
+func (SigstoreVerifier) Kind() EvidenceKind { return EvidenceSigstoreBundle }
+
+func (SigstoreVerifier) Verify(evidence SignatureEvidence, trust TrustMaterial, now time.Time) (VerificationResult, error) {
+	_ = now // Sigstore observer timestamps are evaluated by sigstore-go.
+	if invalid := validateSigstoreEvidence(evidence); invalid != nil {
+		return *invalid, nil
+	}
+	var material root.TrustedMaterial
+	if trust == nil {
+		var err error
+		material, err = bundledTrustRoot()
+		if err != nil {
+			return VerificationResult{}, err
+		}
+	} else {
+		var ok bool
+		material, ok = trust.(root.TrustedMaterial)
+		if !ok {
+			return VerificationResult{}, errors.New("signature: sigstore verifier received incompatible trust material")
+		}
+	}
+	return verifySigstoreWith(material, verificationOptions(), evidence), nil
+}
+
+func validateSigstoreEvidence(evidence SignatureEvidence) *VerificationResult {
+	digest, _ := evidence.State.Digest()
+	result := VerificationResult{
+		EvidenceKind: evidence.Kind, StateDigest: digest, Cryptographic: CryptographicInvalid,
+		Chain: ChainUntrusted, SigningTime: SigningTimeInvalid, Revocation: RevocationUnknown,
+		OriginAuthorization: string(OriginUnsupported),
+	}
+	if evidence.Kind != EvidenceSigstoreBundle {
+		result.Cryptographic = CryptographicUnsupported
+		result.ReasonCode = "unsupported-evidence-kind"
+		return &result
+	}
+	if err := evidence.ValidateEnvelope(); err != nil {
+		result.ReasonCode = evidenceReason(err)
+		result.Diagnostic = safeDiagnostic(err.Error())
+		return &result
+	}
+	return nil
+}
+
+func verifySigstoreWith(material root.TrustedMaterial, options []verify.VerifierOption, evidence SignatureEvidence) VerificationResult {
+	if invalid := validateSigstoreEvidence(evidence); invalid != nil {
+		return *invalid
+	}
+	digest, _ := evidence.State.Digest()
+	result := VerificationResult{
+		EvidenceKind: evidence.Kind, StateDigest: digest, Cryptographic: CryptographicInvalid,
+		Chain: ChainUntrusted, SigningTime: SigningTimeInvalid, Revocation: RevocationUnknown,
+		OriginAuthorization: string(OriginUnsupported),
+	}
+	verified, err := verifyWith(material, options, evidence.Payload, evidence.State)
+	if err != nil {
+		result.ReasonCode = sigstoreReason(err)
+		result.Diagnostic = safeDiagnostic(err.Error())
+		result.failure = err
+		if !errors.Is(err, ErrUntrusted) {
+			result.Chain = ChainNotApplicable
+		}
+		return result
+	}
+	publisher, preliminary := NormalizeOIDCIdentity(verified.Identity)
+	result.legacyIdentity = &verified.Identity
+	result.Cryptographic = CryptographicVerified
+	result.Chain = ChainTrustedPublic
+	result.SigningTime = SigningTimeTimestamped
+	result.RootSource = "bundled-sigstore"
+	result.Publisher = publisher
+	authorization := preliminary
+	if publisher != nil {
+		authorization = AuthorizeOIDCOrigin(publisher, evidence.State.Origin)
+	}
+	result.OriginAuthorization = string(authorization.Status)
+	result.ReasonCode = authorization.ReasonCode
+	return result
+}
+
+func sigstoreReason(err error) string {
+	switch {
+	case errors.Is(err, ErrStateMismatch):
+		return "signed-state-mismatch"
+	case errors.Is(err, ErrNotKeyless):
+		return "sigstore-certificate-required"
+	case errors.Is(err, ErrUntrusted):
+		return "sigstore-bundle-untrusted"
+	case errors.Is(err, ErrInvalidState):
+		return "invalid-signed-state"
+	default:
+		return "sigstore-verification-failed"
+	}
+}
 
 // digestAlgorithm is the one hash a bundle may commit to a state with. It is
 // the name sigstore gives SHA-256 in a bundle, and it is fixed because the
