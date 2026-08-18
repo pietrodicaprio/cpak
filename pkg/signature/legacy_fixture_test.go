@@ -72,4 +72,13 @@ func TestLegacySigstoreFixtureReverifiesOffline(t *testing.T) {
 	if verified.Identity.Issuer != githubActionsIssuer {
 		t.Fatalf("verified issuer %q, want %q", verified.Identity.Issuer, githubActionsIssuer)
 	}
+	result := verifySigstoreWith(trusted, testVerificationOptions(), NewSigstoreEvidence(state, bundle))
+	if result.Cryptographic != CryptographicVerified {
+		t.Fatalf("legacy Sigstore evidence did not enter the common verified model: %+v", result)
+	}
+	// This frozen test certificate predates the source-repository extension.
+	// It still verifies cryptographically, but must authorize no origin.
+	if result.Publisher != nil || result.OriginAuthorization != string(OriginUnsupported) || result.ReasonCode != "missing-or-invalid-source-repository" {
+		t.Fatalf("legacy evidence without a repository was granted an identity: %+v", result)
+	}
 }

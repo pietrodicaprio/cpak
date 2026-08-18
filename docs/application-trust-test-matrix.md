@@ -25,19 +25,19 @@ behaviour require the real integration path described in the Evidence column.
 | AT-BAS-002 | Current Sigstore v0.3 evidence remains decodable and cryptographically bound to state | `TestLegacySigstoreFixtureReverifiesOffline` | 0 | Existing |
 | AT-BAS-003 | Trust-policy ABI 1 remains strictly decodable | `TestLegacyTrustPolicyFixtureStillDecodesStrictly` | 0 | Existing |
 | AT-BAS-004 | Flat ledger record with legacy `state` and `bundle` remains valid | `TestLegacyAnchorLedgerFixtureStillDecodesStrictly` | 0 | Existing |
-| AT-BAS-005 | Legacy and tagged ledger forms decode to equivalent common evidence | Table test over both fixtures through the Phase 1 decoder | 1 | Planned |
-| AT-BAS-006 | Mixed legacy and tagged fields are rejected as ambiguous | Decoder negative fixture | 1 | Planned |
-| AT-BAS-007 | Unsupported evidence ABI fails closed | Decoder unit test and authority enrolment test | 1 | Planned |
-| AT-BAS-008 | Unknown fields and trailing JSON values fail closed | Decoder table test for evidence, ledger, policy, root bundle, and reputation snapshot | 1-4 | Planned |
-| AT-BAS-009 | Reading a legacy record does not rewrite it | Ledger read with before/after byte and mtime comparison | 1 | Planned |
-| AT-BAS-010 | A valid update rewrites legacy evidence only to the tagged form | Privileged ledger update integration test | 1 | Planned |
+| AT-BAS-005 | Legacy and tagged ledger forms decode to equivalent common evidence | `TestLegacyAndTaggedEvidenceDecodeEquivalently` and `TestLegacyAnchorLedgerFixtureStillDecodesStrictly` | 1 | Implemented |
+| AT-BAS-006 | Mixed legacy and tagged fields are rejected as ambiguous | `TestStoredEvidenceDecoderFailsClosed/mixed_legacy_and_tagged_fields` | 1 | Implemented |
+| AT-BAS-007 | Unsupported evidence ABI fails closed | `TestStoredEvidenceDecoderFailsClosed/unsupported_abi` and `TestTheAuthorityRefusesAnUnsupportedEvidenceABI` | 1 | Implemented |
+| AT-BAS-008 | Unknown fields and trailing JSON values fail closed | Phase 1 evidence and ledger cases in `TestStoredEvidenceDecoderFailsClosed` and `TestLedgerRejectsDuplicateKeysBeforeJSONCanMergeThem`; later formats remain assigned to Phases 2-4 | 1-4 | Implemented (Phase 1 scope) |
+| AT-BAS-009 | Reading a legacy record does not rewrite it | `TestReadingALegacyLedgerRecordDoesNotRewriteIt` compares bytes and mtime | 1 | Implemented |
+| AT-BAS-010 | A valid update rewrites legacy evidence only to the tagged form | `TestValidUpdateRewritesLegacySignatureAsTaggedEvidence` | 1 | Implemented |
 
 ## 3. Signature and exact state binding
 
 | ID | Requirement | Evidence | Phase | State |
 | --- | --- | --- | --- | --- |
 | AT-SIG-001 | Existing Sigstore/OIDC positive verification remains green | Existing `pkg/signature` and `pkg/cpak` signature tests | 1 | Existing |
-| AT-SIG-002 | OIDC issuer and repository comparison stays exact | Existing `TestMatchesOriginRefusesEveryLookalike` and identity tests | 1 | Existing |
+| AT-SIG-002 | OIDC issuer and repository comparison stays exact | Existing `TestMatchesOriginRefusesEveryLookalike` plus `TestTypedOIDCAuthorizationRefusesEveryLookalike` on the common path | 1 | Implemented |
 | AT-SIG-003 | Valid detached CMS over canonical state verifies | X.509 verifier unit test with POC chain | 2 | Planned |
 | AT-SIG-004 | Changed origin invalidates evidence | One-field mutation table | 2 | Planned |
 | AT-SIG-005 | Changed manifest digest invalidates evidence | One-field mutation table | 2 | Planned |
@@ -48,7 +48,7 @@ behaviour require the real integration path described in the Evidence column.
 | AT-SIG-010 | Altered CMS signature is invalid | Bit-flip corpus case | 2 | Planned |
 | AT-SIG-011 | Altered signer certificate is invalid | Certificate substitution corpus case | 2 | Planned |
 | AT-SIG-012 | Malformed, truncated, trailing, BER-only, and oversized CMS fail closed | Parser table plus fuzz corpus | 2 | Planned |
-| AT-SIG-013 | Unsupported evidence kind or media type is invalid, not unsigned | Discovery and decoder integration tests | 1-2 | Planned |
+| AT-SIG-013 | Unsupported evidence kind or media type is invalid, not unsigned | `TestStoredEvidenceDecoderFailsClosed`, `TestUnsupportedVerifierIsInvalidEvidenceNotUnsigned`, and `TestFetchPackageSignatureRefusesASignatureArtifactWithTheWrongLayerType` | 1-2 | Implemented (Phase 1 scope) |
 | AT-SIG-014 | Zero CMS signers is rejected | CMS signer-count test | 2 | Planned |
 | AT-SIG-015 | Multiple CMS signers are rejected as ambiguous | CMS signer-count test | 2 | Planned |
 | AT-SIG-016 | Duplicate or ambiguous signed attributes are rejected | Handcrafted DER corpus | 2 | Planned |
@@ -61,7 +61,7 @@ behaviour require the real integration path described in the Evidence column.
 
 | ID | Requirement | Evidence | Phase | State |
 | --- | --- | --- | --- | --- |
-| AT-ID-001 | OIDC ID is the SHA-256 of the frozen canonical issuer/repository preimage | Golden vector test | 1 | Planned |
+| AT-ID-001 | OIDC ID is the SHA-256 of the frozen canonical issuer/repository preimage | `TestOIDCPublisherIDUsesTheFrozenPreimage` | 1 | Implemented |
 | AT-ID-002 | X.509 ID is lowercase-hex SHA-256 over DER SPKI | Golden vector test against Go and OpenSSL-generated certs | 2 | Planned |
 | AT-ID-003 | Same-key certificate renewal preserves X.509 publisher ID | Two-leaf fixture test | 2 | Planned |
 | AT-ID-004 | New publisher key creates a different ID | Two-key fixture test | 2 | Planned |

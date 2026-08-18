@@ -82,11 +82,11 @@ func approveState(arguments []string) error {
 	if err != nil {
 		return fmt.Errorf("read the approval bundle: %w", err)
 	}
-	verified, err := verifyState(bundle, state)
+	result, verified, err := checkStateEvidence(bundle, state)
 	if err != nil {
 		return fmt.Errorf("the bundle in %s does not approve the state in %s: %w", *bundlePath, *statePath, err)
 	}
-	if verified.Identity.MatchesOrigin(state.Origin) {
+	if result.OriginAuthorization == string(signature.OriginAuthorized) {
 		return fmt.Errorf("refusing to attach an approval made by %s, which is the publisher of %s: an approval is a second party's word about a release, and one made by the publisher says nothing its own signature does not already say", identityOf(verified.Identity), state.Origin)
 	}
 	return attachApproval(context.Background(), reference, state, bundle, verified.Identity)

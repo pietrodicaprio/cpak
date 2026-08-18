@@ -16,7 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"unicode/utf8"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/mirkobrombin/cpak/pkg/integrity"
@@ -114,14 +114,11 @@ var ErrSignatureDowngrade = errors.New("publisher signature generation would go 
 // unsigned one with nothing left to notice it by.
 var ErrSignatureLost = errors.New("the enrolment drops the publisher signature already on record")
 
-// verifyBundle is the offline check a signature is put through. It is a
+// verifyEvidence is the offline check evidence is put through. It is a
 // variable so that a test can drive the answer the authority acts on; nothing
-// in cpak replaces it, and the default is pinned by a test that compares the
-// check it ends at with signature.Verify itself.
-//
-// It goes through separatedVerify because the walk over a published bundle
-// does not belong in the process that owns the ledger.
-var verifyBundle = separatedVerify
+// in cpak replaces it. The dispatcher runs through the separated verifier so
+// the process that owns the ledger never parses publisher-chosen evidence.
+var verifyEvidence = separatedVerifyEvidence
 
 // Enrolment is what the ledger records: the anchor, and the policy its policy
 // root was taken over. The policy is kept because two hashes cannot be ordered
@@ -140,10 +137,43 @@ type Enrolment struct {
 	Signature *SignedState `json:"signature,omitempty"`
 }
 
-// SignedState is what a publisher signed and the bundle that proves it.
+// SignedState is the compatibility-facing shape used by the existing cpak API.
+// Its JSON representation is always the tagged common evidence envelope.
 type SignedState struct {
-	State  signature.State `json:"state"`
-	Bundle []byte          `json:"bundle"`
+	State     signature.State
+	Bundle    []byte
+	ABI       int
+	Kind      signature.EvidenceKind
+	MediaType string
+}
+
+func SignedStateFromEvidence(evidence signature.SignatureEvidence) *SignedState {
+	return &SignedState{
+		State: evidence.State, Bundle: evidence.Payload, ABI: evidence.ABI,
+		Kind: evidence.Kind, MediaType: evidence.MediaType,
+	}
+}
+
+func (s SignedState) Evidence() signature.SignatureEvidence {
+	if s.ABI == 0 && s.Kind == "" && s.MediaType == "" {
+		return signature.NewSigstoreEvidence(s.State, s.Bundle)
+	}
+	return signature.SignatureEvidence{
+		ABI: s.ABI, Kind: s.Kind, State: s.State, MediaType: s.MediaType, Payload: s.Bundle,
+	}
+}
+
+func (s SignedState) MarshalJSON() ([]byte, error) {
+	return json.Marshal(s.Evidence())
+}
+
+func (s *SignedState) UnmarshalJSON(document []byte) error {
+	evidence, _, err := signature.DecodeStoredEvidence(document)
+	if err != nil {
+		return err
+	}
+	*s = *SignedStateFromEvidence(evidence)
+	return nil
 }
 
 // Tombstone is what a forgotten application leaves behind: how far it had come
@@ -211,11 +241,18 @@ func (e Enrolment) Signer() (signature.Verified, error) {
 // The origin is the caller's, never the payload's: a payload can name any
 // origin it likes and only the certificate says who signed.
 func (s SignedState) Signer(origin string) (signature.Verified, error) {
-	verified, err := verifyBundle(s.Bundle, s.State)
+	if s.State.Origin != origin {
+		return signature.Verified{}, fmt.Errorf("the signature of %s names %q", origin, s.State.Origin)
+	}
+	result, err := verifyEvidence(s.Evidence(), nil, time.Now())
 	if err != nil {
 		return signature.Verified{}, fmt.Errorf("the signature of %s does not stand: %w", origin, err)
 	}
-	if !verified.Identity.MatchesOrigin(origin) {
+	verified, err := signature.LegacyVerified(result, s.State)
+	if err != nil {
+		return signature.Verified{}, fmt.Errorf("the signature of %s does not stand: %w", origin, err)
+	}
+	if result.OriginAuthorization != string(signature.OriginAuthorized) {
 		return signature.Verified{}, fmt.Errorf("the signature of %s was made by %q", origin, verified.Identity.Repo)
 	}
 	return verified, nil
@@ -258,6 +295,9 @@ func (l AnchorLedger) Recorded(uid uint32, origin string) (Enrolment, bool, erro
 	data, found, err := readTrusted(path, l.OwnerUID, anchorSizeLimit, "enrolled anchor")
 	if err != nil || !found {
 		return Enrolment{}, false, err
+	}
+	if err := signature.RejectDuplicateJSONKeys(data); err != nil {
+		return Enrolment{}, false, fmt.Errorf("decode enrolled anchor: %w", err)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -807,14 +847,12 @@ func validateSignedState(enrolment Enrolment) error {
 	if err := bindsTheAnchor(enrolment); err != nil {
 		return err
 	}
-	bundle := enrolment.Signature.Bundle
-	if len(bundle) == 0 || len(bundle) > signatureBundleLimit {
-		return errors.New("enrolment signature bundle is not a bundle")
+	evidence := enrolment.Signature.Evidence()
+	if err := evidence.ValidateEnvelope(); err != nil {
+		return fmt.Errorf("enrolment signature evidence: %w", err)
 	}
-	// A bundle is a JSON document and travels the bus as text, so anything
-	// that is not text would fail there instead of here, where it can be named.
-	if !utf8.Valid(bundle) {
-		return errors.New("enrolment signature bundle is not text")
+	if len(evidence.Payload) > signatureBundleLimit {
+		return errors.New("enrolment signature bundle is not a bundle")
 	}
 	return nil
 }

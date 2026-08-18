@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mirkobrombin/cpak/pkg/oci"
 	"github.com/mirkobrombin/cpak/pkg/signature"
@@ -61,6 +62,10 @@ func newSignatureRegistry() *signatureRegistry {
 // attach files one artifact against a subject digest, the way cosign attaches
 // a signature: a manifest with a single layer, and the payload in that layer.
 func (r *signatureRegistry) attach(t *testing.T, subject, artifactType string, payload []byte) {
+	r.attachWithMediaType(t, subject, artifactType, sigstoreBundleMediaType, payload)
+}
+
+func (r *signatureRegistry) attachWithMediaType(t *testing.T, subject, artifactType, mediaType string, payload []byte) {
 	t.Helper()
 
 	payloadDigest := contentDigest(payload)
@@ -75,7 +80,7 @@ func (r *signatureRegistry) attach(t *testing.T, subject, artifactType string, p
 			"size":      2,
 		},
 		"layers": []any{map[string]any{
-			"mediaType": sigstoreBundleMediaType,
+			"mediaType": mediaType,
 			"digest":    payloadDigest,
 			"size":      len(payload),
 		}},
@@ -171,9 +176,26 @@ func newSignatureCpak(t *testing.T) *Cpak {
 func useSignatureVerifier(t *testing.T, verify func([]byte, signature.State) (signature.Verified, error)) {
 	t.Helper()
 
-	previous := verifySignature
-	verifySignature = verify
-	t.Cleanup(func() { verifySignature = previous })
+	previous := verifyEvidence
+	verifyEvidence = func(evidence signature.SignatureEvidence, _ signature.TrustMaterial, _ time.Time) (signature.VerificationResult, error) {
+		verified, err := verify(evidence.Payload, evidence.State)
+		if err != nil {
+			return signature.VerificationResult{
+				EvidenceKind: evidence.Kind, Cryptographic: signature.CryptographicInvalid,
+				OriginAuthorization: string(signature.OriginUnsupported), ReasonCode: "test-refusal", Diagnostic: err.Error(),
+			}, nil
+		}
+		publisher := &signature.PublisherIdentity{
+			Kind: "sigstore-oidc-v1", ID: "test", Issuer: verified.Identity.Issuer,
+			Repository: verified.Identity.Repo, Claims: map[string]string{"subject": verified.Identity.Subject},
+		}
+		authorization := signature.AuthorizeOIDCOrigin(publisher, evidence.State.Origin)
+		return signature.VerificationResult{
+			EvidenceKind: evidence.Kind, Cryptographic: signature.CryptographicVerified,
+			Publisher: publisher, OriginAuthorization: string(authorization.Status), ReasonCode: authorization.ReasonCode,
+		}, nil
+	}
+	t.Cleanup(func() { verifyEvidence = previous })
 }
 
 // validatedTestManifest is the manifest as an installation sees it, which is
@@ -264,6 +286,22 @@ func TestFetchPackageSignatureIgnoresAttachedArtifactsThatAreNotBundles(t *testi
 	}
 	if found || fetched != nil {
 		t.Fatalf("got bundle %q found=%v, want an artifact that is not a bundle to be ignored", fetched, found)
+	}
+}
+
+func TestFetchPackageSignatureRefusesASignatureArtifactWithTheWrongLayerType(t *testing.T) {
+	cp := newSignatureCpak(t)
+	registry := newSignatureRegistry()
+	resolved := contentDigest([]byte("resolved image"))
+	registry.attachWithMediaType(t, resolved, packageSignatureArtifactType, "application/octet-stream", []byte("bundle"))
+	ref := registry.start(t)
+
+	fetched, found, err := cp.FetchPackageSignature(ref, resolved)
+	if err == nil {
+		t.Fatal("a cpak signature artifact with a non-Sigstore layer was accepted")
+	}
+	if found || fetched != nil {
+		t.Fatalf("got bundle %q found=%v from invalid evidence", fetched, found)
 	}
 }
 

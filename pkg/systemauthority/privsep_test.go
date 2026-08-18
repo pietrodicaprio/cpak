@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mirkobrombin/cpak/pkg/signature"
 )
@@ -25,29 +26,34 @@ func probeState() signature.State {
 	}
 }
 
-func useDirectVerifier(t *testing.T, verify func([]byte, signature.State) (signature.Verified, error)) {
+func probeEvidence() signature.SignatureEvidence {
+	return signature.NewSigstoreEvidence(probeState(), []byte("the bundle"))
+}
+
+func useDirectVerifier(t *testing.T, verify func(signature.SignatureEvidence, signature.TrustMaterial, time.Time) (signature.VerificationResult, error)) {
 	t.Helper()
-	saved := verifyDirect
-	t.Cleanup(func() { verifyDirect = saved })
-	verifyDirect = verify
+	saved := verifyEvidenceDirect
+	t.Cleanup(func() { verifyEvidenceDirect = saved })
+	verifyEvidenceDirect = verify
 }
 
 func TestTheChildAnswersWhoSignedWhenTheBundleStands(t *testing.T) {
-	state := probeState()
-	useDirectVerifier(t, func(bundle []byte, given signature.State) (signature.Verified, error) {
-		if string(bundle) != "the bundle" {
-			t.Fatalf("the child was given %q", bundle)
+	evidence := probeEvidence()
+	now := time.Unix(42, 0).UTC()
+	useDirectVerifier(t, func(given signature.SignatureEvidence, trust signature.TrustMaterial, at time.Time) (signature.VerificationResult, error) {
+		if string(given.Payload) != "the bundle" {
+			t.Fatalf("the child was given %q", given.Payload)
 		}
-		if given != state {
-			t.Fatalf("the child was given another state: %+v", given)
+		if given.State != evidence.State || trust != nil || !at.Equal(now) {
+			t.Fatalf("the child was given another request: %+v %v %s", given, trust, at)
 		}
-		return signature.Verified{State: given, Identity: signature.Identity{
-			Issuer: "https://token.actions.githubusercontent.com",
-			Repo:   "github.com/containerpak/demo",
-		}}, nil
+		return signature.VerificationResult{
+			EvidenceKind: given.Kind, Cryptographic: signature.CryptographicVerified,
+			Publisher: &signature.PublisherIdentity{Repository: "github.com/containerpak/demo"},
+		}, nil
 	})
 
-	request, err := json.Marshal(verifierRequest{Bundle: []byte("the bundle"), State: state})
+	request, err := json.Marshal(verifierRequest{Evidence: evidence, Now: now})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,21 +65,21 @@ func TestTheChildAnswersWhoSignedWhenTheBundleStands(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &answer); err != nil {
 		t.Fatal(err)
 	}
-	if answer.Error != "" || answer.Verified == nil {
-		t.Fatalf("a bundle that stands came back as %+v", answer)
+	if answer.Error != "" || answer.Result == nil {
+		t.Fatalf("evidence that stands came back as %+v", answer)
 	}
-	if answer.Verified.Identity.Repo != "github.com/containerpak/demo" {
-		t.Fatalf("the child named another signer: %+v", answer.Verified.Identity)
+	if answer.Result.Publisher == nil || answer.Result.Publisher.Repository != "github.com/containerpak/demo" {
+		t.Fatalf("the child named another signer: %+v", answer.Result)
 	}
 }
 
 // A bundle that does not stand is the ordinary case, not a broken child, so it
 // has to travel back as a reason the parent can report.
 func TestTheChildReportsARefusalInsteadOfDying(t *testing.T) {
-	useDirectVerifier(t, func([]byte, signature.State) (signature.Verified, error) {
-		return signature.Verified{}, errors.New("no transparency log holds this")
+	useDirectVerifier(t, func(signature.SignatureEvidence, signature.TrustMaterial, time.Time) (signature.VerificationResult, error) {
+		return signature.VerificationResult{}, errors.New("no transparency log holds this")
 	})
-	request, err := json.Marshal(verifierRequest{Bundle: []byte("x"), State: probeState()})
+	request, err := json.Marshal(verifierRequest{Evidence: probeEvidence(), Now: time.Unix(42, 0).UTC()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +91,7 @@ func TestTheChildReportsARefusalInsteadOfDying(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &answer); err != nil {
 		t.Fatal(err)
 	}
-	if answer.Verified != nil || !strings.Contains(answer.Error, "transparency log") {
+	if answer.Result != nil || !strings.Contains(answer.Error, "transparency log") {
 		t.Fatalf("the refusal did not come back as a reason: %+v", answer)
 	}
 }
@@ -94,8 +100,9 @@ func TestTheChildReportsARefusalInsteadOfDying(t *testing.T) {
 // request it cannot name exactly is refused rather than guessed at.
 func TestTheChildRefusesARequestItCannotName(t *testing.T) {
 	for name, request := range map[string]string{
-		"a field no request has": `{"bundle":"","state":{},"extra":true}`,
+		"a field no request has": `{"evidence":{},"now":"2026-01-01T00:00:00Z","extra":true}`,
 		"not an object at all":   `["bundle"]`,
+		"multiple values":        `{} {}`,
 		"nothing":                ``,
 	} {
 		var out bytes.Buffer
@@ -120,15 +127,21 @@ func TestAnUnprivilegedAuthorityChecksInPlace(t *testing.T) {
 		t.Skip("this case is about a process that is not root")
 	}
 	called := false
-	useDirectVerifier(t, func([]byte, signature.State) (signature.Verified, error) {
+	useDirectVerifier(t, func(signature.SignatureEvidence, signature.TrustMaterial, time.Time) (signature.VerificationResult, error) {
 		called = true
-		return signature.Verified{State: probeState()}, nil
+		return signature.VerificationResult{Cryptographic: signature.CryptographicInvalid, ReasonCode: "test-refusal"}, nil
 	})
-	if _, err := separatedVerify([]byte("bundle"), probeState()); err != nil {
+	if _, err := separatedVerifyEvidence(probeEvidence(), nil, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if !called {
 		t.Fatal("the check never reached pkg/signature")
+	}
+}
+
+func TestSeparatedVerifierRefusesOpaqueCallerTrustMaterial(t *testing.T) {
+	if _, err := separatedVerifyEvidence(probeEvidence(), struct{}{}, time.Now()); err == nil {
+		t.Fatal("opaque trust material crossed the verifier process boundary")
 	}
 }
 

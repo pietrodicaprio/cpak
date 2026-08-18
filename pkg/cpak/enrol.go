@@ -10,6 +10,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/mirkobrombin/cpak/pkg/integrity"
 	"github.com/mirkobrombin/cpak/pkg/logger"
@@ -165,9 +166,11 @@ type EnrolmentSignature struct {
 	// Verified is set only when a bundle checked out against the trust root
 	// cpak ships with and the identity in its certificate may speak for the
 	// origin the package is installed from.
-	Verified bool
-	Identity signature.Identity
-	State    signature.State
+	Verified     bool
+	Identity     signature.Identity
+	State        signature.State
+	Publisher    *signature.PublisherIdentity
+	Verification signature.VerificationResult
 
 	// Reason is why there is no verified signature, and is set for every case
 	// other than a verified one. It wraps ErrPackageUnsigned when the registry
@@ -475,17 +478,19 @@ func (c *Cpak) verifiedPackageSignature(app types.Application, published Publish
 	var foreign string
 	var madeByAnother bool
 	var refusal error
+	now := time.Now()
 	for _, candidate := range attached {
 		state.Generation = candidate.generation
-		verified, verifyErr := verifySignature(candidate.bundle, state)
+		evidence := signature.NewSigstoreEvidence(state, candidate.bundle)
+		result, verified, verifyErr := checkEvidenceAt(evidence, now)
 		if verifyErr != nil {
 			if refusal == nil {
 				refusal = verifyErr
 			}
 			continue
 		}
-		if verified.Identity.MatchesOrigin(app.Origin) {
-			return &systemauthority.SignedState{State: state, Bundle: candidate.bundle}, nil
+		if result.OriginAuthorization == string(signature.OriginAuthorized) {
+			return systemauthority.SignedStateFromEvidence(evidence), nil
 		}
 		if !madeByAnother {
 			madeByAnother = true
@@ -544,7 +549,7 @@ func (c *Cpak) attachedSignatures(ref oci.Reference, origin, imageDigest string)
 			skipped++
 			continue
 		}
-		bundle, payloadErr := client.ReferrerPayload(c.Ctx, ref, referrer, maxSignatureBundle)
+		bundle, payloadErr := client.ReferrerPayloadOfMediaType(c.Ctx, ref, referrer, maxSignatureBundle, signature.SigstoreBundleMediaType)
 		if payloadErr != nil {
 			return nil, fmt.Errorf("read the signature %s of %s: %w", referrer.Digest, ref.ContextName(), payloadErr)
 		}
@@ -602,14 +607,17 @@ func describeSignature(origin string, signed *systemauthority.SignedState) Enrol
 	if signed == nil {
 		return EnrolmentSignature{Reason: ErrPackageUnsigned}
 	}
-	verified, err := verifySignature(signed.Bundle, signed.State)
+	result, verified, err := checkEvidenceAt(signed.Evidence(), time.Now())
 	if err != nil {
 		return EnrolmentSignature{Reason: fmt.Errorf("%w: %w", ErrSignatureUnverified, err)}
 	}
-	if !verified.Identity.MatchesOrigin(origin) {
+	if result.OriginAuthorization != string(signature.OriginAuthorized) {
 		return EnrolmentSignature{Reason: fmt.Errorf("%w: %s", ErrSignatureForeign, whoseSignature(verified.Identity.Repo))}
 	}
-	return EnrolmentSignature{Verified: true, Identity: verified.Identity, State: verified.State}
+	return EnrolmentSignature{
+		Verified: true, Identity: verified.Identity, State: verified.State,
+		Publisher: result.Publisher, Verification: result,
+	}
 }
 
 // reportSignature says what was found out about the publisher of an

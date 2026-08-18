@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/mirkobrombin/cpak/pkg/signature"
 	"github.com/mirkobrombin/go-cli-builder/v3/pkg/cli"
@@ -55,7 +56,11 @@ func (c *VerifySignatureCmd) Run() error {
 	if err != nil {
 		return err
 	}
-	verified, err := signature.Verify(bundleJSON, state)
+	result, err := signature.VerifyEvidence(signature.NewSigstoreEvidence(state, bundleJSON), nil, time.Now())
+	var verified signature.Verified
+	if err == nil {
+		verified, err = signature.LegacyVerified(result, state)
+	}
 	if err != nil {
 		return err
 	}
@@ -114,7 +119,8 @@ func (c *VerifySignatureCmd) reportSigner(verified signature.Verified) {
 // signed this state; only the repository in the certificate says whether that
 // somebody was the publisher of this origin.
 func (c *VerifySignatureCmd) reportOrigin(verified signature.Verified, origin string) error {
-	if verified.Identity.MatchesOrigin(origin) {
+	publisher, _ := signature.NormalizeOIDCIdentity(verified.Identity)
+	if signature.AuthorizeOIDCOrigin(publisher, origin).Status == signature.OriginAuthorized {
 		c.Logger.Success("The certificate names %s, which is the origin of this package.", origin)
 		c.Logger.Info("What that proves: the package came from the CI of that repository and was not altered on the way. What it does not prove: that the software is safe, or that the repository itself was not taken over.")
 		return nil

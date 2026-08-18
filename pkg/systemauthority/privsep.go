@@ -19,10 +19,10 @@ import (
 	"github.com/mirkobrombin/cpak/pkg/signature"
 )
 
-// A sigstore bundle is the only thing the authority reads whose bytes were
-// chosen by whoever published the package. Checking one walks DER, protobuf
-// and a transparency log entry, and until now the process doing that walk was
-// the process holding the socket and the ledger descriptors.
+// Signature evidence is the only thing the authority reads whose bytes were
+// chosen by whoever published the package. Checking it walks formats such as
+// DER, CMS, protobuf and transparency-log entries, and the process doing that
+// walk must not be the process holding the socket and ledger descriptors.
 //
 // So it is split. The parent keeps root, the socket and the files, and never
 // decodes a bundle. A child with no privileges and no network decodes it and
@@ -63,39 +63,42 @@ var verifierArgv = func() []string { return []string{"system-authority", verifie
 // failed, and a caller must not read it as one.
 var ErrVerifierUnavailable = errors.New("the signature verifier could not be started")
 
-// verifyDirect is the real check. The child calls it, and so does an authority
-// that has no privileges to separate in the first place.
-var verifyDirect = signature.Verify
+// verifyEvidenceDirect is the common dispatcher. The child calls it, and so
+// does an authority that has no privileges to separate in the first place.
+var verifyEvidenceDirect = signature.VerifyEvidence
 
 type verifierRequest struct {
-	Bundle []byte          `json:"bundle"`
-	State  signature.State `json:"state"`
+	Evidence signature.SignatureEvidence `json:"evidence"`
+	Now      time.Time                   `json:"now"`
 }
 
 type verifierResponse struct {
-	Verified *signature.Verified `json:"verified,omitempty"`
-	Error    string              `json:"error,omitempty"`
+	Result *signature.VerificationResult `json:"result,omitempty"`
+	Error  string                        `json:"error,omitempty"`
 }
 
-// separatedVerify checks a bundle in a child process when there is privilege
-// worth separating, and in this one when there is not. An authority running as
-// an ordinary user gains nothing from a fork: the child would hold everything
-// the parent holds.
-func separatedVerify(bundle []byte, state signature.State) (signature.Verified, error) {
-	if os.Geteuid() != 0 {
-		return verifyDirect(bundle, state)
+// separatedVerifyEvidence checks evidence in a child process when there is
+// privilege worth separating, and in this one when there is not. Trust material
+// is loaded by the adapter in the child; an opaque caller-supplied object cannot
+// cross the process boundary and is refused instead of silently ignored.
+func separatedVerifyEvidence(evidence signature.SignatureEvidence, trust signature.TrustMaterial, now time.Time) (signature.VerificationResult, error) {
+	if trust != nil {
+		return signature.VerificationResult{}, errors.New("the separated signature verifier requires adapter-owned trust material")
 	}
-	answer, err := askVerifier(verifierRequest{Bundle: bundle, State: state})
+	if os.Geteuid() != 0 {
+		return verifyEvidenceDirect(evidence, nil, now)
+	}
+	answer, err := askVerifier(verifierRequest{Evidence: evidence, Now: now})
 	if err != nil {
-		return signature.Verified{}, err
+		return signature.VerificationResult{}, err
 	}
 	if answer.Error != "" {
-		return signature.Verified{}, errors.New(answer.Error)
+		return signature.VerificationResult{}, errors.New(answer.Error)
 	}
-	if answer.Verified == nil {
-		return signature.Verified{}, fmt.Errorf("%w: it answered neither a verdict nor a reason", ErrVerifierUnavailable)
+	if answer.Result == nil {
+		return signature.VerificationResult{}, fmt.Errorf("%w: it answered neither a verdict nor a reason", ErrVerifierUnavailable)
 	}
-	return *answer.Verified, nil
+	return *answer.Result, nil
 }
 
 func askVerifier(request verifierRequest) (verifierResponse, error) {
@@ -149,6 +152,9 @@ func runVerifierProcess(ctx context.Context, self string, request []byte, isolat
 	if err := decoder.Decode(&answer); err != nil {
 		return verifierResponse{}, fmt.Errorf("%w: %v", ErrVerifierUnavailable, err)
 	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return verifierResponse{}, fmt.Errorf("%w: verifier returned multiple JSON values", ErrVerifierUnavailable)
+	}
 	return answer, nil
 }
 
@@ -192,15 +198,18 @@ func RunVerifier(in io.Reader, out io.Writer) error {
 	if err := decoder.Decode(&request); err != nil {
 		return fmt.Errorf("read the verification request: %w", err)
 	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return errors.New("read the verification request: multiple JSON values")
+	}
 	// A bundle that does not stand is an answer and not a failure of this
 	// process, so it travels back as a reason rather than as an exit status
 	// the parent would have to guess at.
 	answer := verifierResponse{}
-	verified, err := verifyDirect(request.Bundle, request.State)
+	result, err := verifyEvidenceDirect(request.Evidence, nil, request.Now)
 	if err != nil {
 		answer.Error = err.Error()
 	} else {
-		answer.Verified = &verified
+		answer.Result = &result
 	}
 	return json.NewEncoder(out).Encode(answer)
 }
