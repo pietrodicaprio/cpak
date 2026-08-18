@@ -42,6 +42,16 @@ type SignatureEvidence struct {
 	Payload   []byte       `json:"payload"`
 }
 
+type evidenceProfile struct {
+	mediaType string
+	text      bool
+}
+
+var evidenceProfiles = map[EvidenceKind]evidenceProfile{
+	EvidenceSigstoreBundle: {mediaType: SigstoreBundleMediaType, text: true},
+	EvidenceX509CMS:        {mediaType: X509CMSMediaType},
+}
+
 type PublisherIdentity struct {
 	Kind        string            `json:"kind"`
 	ID          string            `json:"id"`
@@ -136,20 +146,15 @@ func (e SignatureEvidence) ValidateEnvelope() error {
 	if err := e.State.Validate(); err != nil {
 		return invalidEvidence(err.Error())
 	}
-	switch e.Kind {
-	case EvidenceSigstoreBundle:
-		if e.MediaType != SigstoreBundleMediaType {
-			return invalidEvidence("unsupported media type for sigstore evidence")
-		}
-		if !utf8.Valid(e.Payload) {
-			return invalidEvidence("sigstore payload is not text")
-		}
-	case EvidenceX509CMS:
-		if e.MediaType != X509CMSMediaType {
-			return invalidEvidence("unsupported media type for x509 evidence")
-		}
-	default:
-		return invalidEvidence(fmt.Sprintf("unsupported kind %q", e.Kind))
+	profile, supported := evidenceProfiles[e.Kind]
+	if !supported {
+		return invalidEvidence("unsupported evidence kind")
+	}
+	if e.MediaType != profile.mediaType {
+		return invalidEvidence("unsupported media type for evidence kind")
+	}
+	if profile.text && !utf8.Valid(e.Payload) {
+		return invalidEvidence("evidence payload is not text")
 	}
 	if len(e.Payload) == 0 {
 		return invalidEvidence("payload is empty")
