@@ -40,12 +40,21 @@ import (
 // able to allow the first while refusing the other two, and collapsing them
 // would make an unsigned package indistinguishable from a forged one.
 
-// packageSignatureArtifactType is how cpak recognises its own referrers among
-// everything else that can hang off an image, and is the same string
-// cpak-sign attaches one under. The payload inside is a sigstore bundle, which
-// carries the certificate and the inclusion proof and is what lets the check
-// happen with no network beyond this fetch.
+// packageSignatureArtifactType is the frozen Sigstore artifact type retained
+// for compatibility-facing APIs. Discovery of all evidence kinds uses the
+// explicit profiles below.
 const packageSignatureArtifactType = signature.SigstoreArtifactType
+
+type registryEvidenceProfile struct {
+	kind         signature.EvidenceKind
+	artifactType string
+	mediaType    string
+}
+
+var registryEvidenceProfiles = []registryEvidenceProfile{
+	{kind: signature.EvidenceSigstoreBundle, artifactType: signature.SigstoreArtifactType, mediaType: signature.SigstoreBundleMediaType},
+	{kind: signature.EvidenceX509CMS, artifactType: signature.X509ArtifactType, mediaType: signature.X509CMSMediaType},
+}
 
 // maxSignatureBundle bounds one bundle. A certificate, a signature and an
 // inclusion proof are nowhere near this, and the limit is what stops a
@@ -186,11 +195,11 @@ func (c *Cpak) verifyPackageState(ref oci.Reference, origin string, state signat
 	if err := state.Validate(); err != nil {
 		return signature.Verified{}, fmt.Errorf("verify the signature of %s: %w", origin, err)
 	}
-	bundles, err := c.packageSignatures(ref, state.ImageDigest, origin)
+	candidates, err := c.packageEvidence(ref, state.ImageDigest, origin)
 	if err != nil {
 		return signature.Verified{}, err
 	}
-	if len(bundles) == 0 {
+	if len(candidates) == 0 {
 		return signature.Verified{}, fmt.Errorf("verify the signature of %s: %w", origin, ErrPackageUnsigned)
 	}
 
@@ -202,8 +211,12 @@ func (c *Cpak) verifyPackageState(ref oci.Reference, origin string, state signat
 	var foreign string
 	var unverified error
 	now := time.Now()
-	for _, bundle := range bundles {
-		result, verified, verifyErr := checkEvidenceAt(signature.NewSigstoreEvidence(state, bundle), now)
+	for _, candidate := range candidates {
+		evidence := signature.SignatureEvidence{
+			ABI: signature.EvidenceABIVersion, Kind: candidate.kind, State: state,
+			MediaType: candidate.mediaType, Payload: candidate.payload,
+		}
+		result, verified, verifyErr := checkEvidenceAt(evidence, now)
 		if verifyErr != nil {
 			if unverified == nil {
 				unverified = verifyErr
@@ -214,7 +227,7 @@ func (c *Cpak) verifyPackageState(ref oci.Reference, origin string, state signat
 			return verified, nil
 		}
 		if foreign == "" {
-			foreign = verified.Identity.Repo
+			foreign = verifiedPublisherName(verified)
 		}
 	}
 	if foreign != "" {
@@ -224,6 +237,37 @@ func (c *Cpak) verifyPackageState(ref oci.Reference, origin string, state signat
 		return signature.Verified{}, fmt.Errorf("verify the signature of %s: %w: %w", origin, ErrSignatureUnverified, unverified)
 	}
 	return signature.Verified{}, fmt.Errorf("verify the signature of %s: %w", origin, ErrSignatureUnverified)
+}
+
+type fetchedEvidence struct {
+	kind      signature.EvidenceKind
+	mediaType string
+	payload   []byte
+}
+
+func (c *Cpak) packageEvidence(ref oci.Reference, imageDigest, origin string) ([]fetchedEvidence, error) {
+	if !isResolvedImageDigest(imageDigest) {
+		return nil, fmt.Errorf("read the signatures of %s: %q is not a resolved image digest", ref.ContextName(), imageDigest)
+	}
+	client := &oci.Client{}
+	if origin != "" {
+		client.Credentials = registryauth.Provider{Origin: origin, Path: c.Options.RegistryAuthPath}
+	}
+	var found []fetchedEvidence
+	for _, profile := range registryEvidenceProfiles {
+		referrers, err := client.Referrers(c.Ctx, ref, imageDigest, profile.artifactType)
+		if err != nil {
+			return nil, fmt.Errorf("list the signatures of %s@%s: %w", ref.ContextName(), imageDigest, err)
+		}
+		for _, referrer := range referrers {
+			payload, payloadErr := client.ReferrerPayloadOfMediaType(c.Ctx, ref, referrer, maxSignatureBundle, profile.mediaType)
+			if payloadErr != nil {
+				return nil, fmt.Errorf("read the signature %s of %s: %w", referrer.Digest, ref.ContextName(), payloadErr)
+			}
+			found = append(found, fetchedEvidence{kind: profile.kind, mediaType: profile.mediaType, payload: payload})
+		}
+	}
+	return found, nil
 }
 
 // packageSignatures reads every bundle attached to the resolved image.
@@ -257,6 +301,16 @@ func (c *Cpak) packageSignatures(ref oci.Reference, imageDigest, origin string) 
 		bundles = append(bundles, bundle)
 	}
 	return bundles, nil
+}
+
+func verifiedPublisherName(verified signature.Verified) string {
+	if verified.Publisher != nil {
+		if verified.Publisher.DisplayName != "" {
+			return verified.Publisher.DisplayName
+		}
+		return verified.Publisher.ID
+	}
+	return verified.Identity.Repo
 }
 
 // installedImageReference finds the repository a resolved digest was installed

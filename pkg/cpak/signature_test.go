@@ -501,6 +501,101 @@ func TestVerifyPackageStateAcceptsTheBundleThatHoldsAmongSeveral(t *testing.T) {
 	}
 }
 
+func TestVerifyPackageStateDiscoversX509EvidenceThroughItsOwnOCIProfile(t *testing.T) {
+	cp := newSignatureCpak(t)
+	registry := newSignatureRegistry()
+	resolved := contentDigest([]byte("resolved X.509 image"))
+	cms := []byte("detached CMS evidence")
+	registry.attachWithMediaType(t, resolved, signature.X509ArtifactType, signature.X509CMSMediaType, cms)
+	ref := registry.start(t)
+
+	previous := verifyEvidence
+	var checked signature.SignatureEvidence
+	verifyEvidence = func(evidence signature.SignatureEvidence, _ signature.TrustMaterial, _ time.Time) (signature.VerificationResult, error) {
+		checked = evidence
+		return signature.VerificationResult{
+			EvidenceKind: evidence.Kind, Cryptographic: signature.CryptographicVerified,
+			Chain: signature.ChainTrustedLocal, SigningTime: signature.SigningTimeCurrent,
+			Revocation: signature.RevocationUnknown, OriginAuthorization: string(signature.OriginAuthorized),
+			ReasonCode: "x509-signer-covers-origin",
+			Publisher:  &signature.PublisherIdentity{Kind: "x509-spki-v1", ID: "x509-spki-sha256:" + strings.Repeat("a", 64), DisplayName: "Example Publisher"},
+		}, nil
+	}
+	t.Cleanup(func() { verifyEvidence = previous })
+
+	verified, err := cp.verifyPackageState(ref, testOrigin, signedState(t, resolved))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checked.Kind != signature.EvidenceX509CMS || checked.MediaType != signature.X509CMSMediaType || string(checked.Payload) != string(cms) {
+		t.Fatalf("checked evidence = %+v", checked)
+	}
+	if verified.Publisher == nil || verified.Publisher.DisplayName != "Example Publisher" || verified.Identity.Repo != "" {
+		t.Fatalf("verified X.509 publisher = %+v", verified)
+	}
+}
+
+func TestMixedEvidenceCandidatesPreserveValidForeignAndInvalidOutcomes(t *testing.T) {
+	tests := []struct {
+		name      string
+		x509      string
+		wantError error
+	}{
+		{name: "valid X.509 outranks invalid Sigstore", x509: "valid"},
+		{name: "foreign X.509 outranks invalid Sigstore", x509: "foreign", wantError: ErrSignatureForeign},
+		{name: "all invalid stays invalid", x509: "invalid", wantError: ErrSignatureUnverified},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cp := newSignatureCpak(t)
+			registry := newSignatureRegistry()
+			resolved := contentDigest([]byte(test.name))
+			registry.attach(t, resolved, packageSignatureArtifactType, []byte("invalid"))
+			registry.attachWithMediaType(t, resolved, signature.X509ArtifactType, signature.X509CMSMediaType, []byte(test.x509))
+			ref := registry.start(t)
+
+			previous := verifyEvidence
+			verifyEvidence = func(evidence signature.SignatureEvidence, _ signature.TrustMaterial, _ time.Time) (signature.VerificationResult, error) {
+				if string(evidence.Payload) == "invalid" {
+					return signature.VerificationResult{EvidenceKind: evidence.Kind, Cryptographic: signature.CryptographicInvalid, Chain: signature.ChainUntrusted, SigningTime: signature.SigningTimeInvalid, Revocation: signature.RevocationUnknown, OriginAuthorization: string(signature.OriginUnsupported), ReasonCode: "test-invalid"}, nil
+				}
+				publisher := &signature.PublisherIdentity{Kind: "x509-spki-v1", ID: "x509-spki-sha256:" + strings.Repeat("b", 64), DisplayName: "Mixed Publisher"}
+				authorization := signature.OriginAuthorized
+				if test.x509 == "foreign" {
+					authorization = signature.OriginForeign
+				}
+				if test.x509 == "invalid" {
+					return signature.VerificationResult{EvidenceKind: evidence.Kind, Cryptographic: signature.CryptographicInvalid, Chain: signature.ChainUntrusted, SigningTime: signature.SigningTimeInvalid, Revocation: signature.RevocationUnknown, OriginAuthorization: string(signature.OriginUnsupported), ReasonCode: "test-invalid"}, nil
+				}
+				return signature.VerificationResult{EvidenceKind: evidence.Kind, Cryptographic: signature.CryptographicVerified, Chain: signature.ChainTrustedLocal, SigningTime: signature.SigningTimeCurrent, Revocation: signature.RevocationUnknown, Publisher: publisher, OriginAuthorization: string(authorization), ReasonCode: "test-x509"}, nil
+			}
+			t.Cleanup(func() { verifyEvidence = previous })
+
+			verified, err := cp.verifyPackageState(ref, testOrigin, signedState(t, resolved))
+			if test.wantError == nil {
+				if err != nil || verified.Publisher == nil || verified.Publisher.DisplayName != "Mixed Publisher" {
+					t.Fatalf("valid mixed evidence = verified=%+v err=%v", verified, err)
+				}
+				return
+			}
+			if !errors.Is(err, test.wantError) || errors.Is(err, ErrPackageUnsigned) {
+				t.Fatalf("mixed evidence error = %v, want %v and never unsigned", err, test.wantError)
+			}
+		})
+	}
+}
+
+func TestVerifyPackageStateRejectsX509ArtifactWithWrongLayerMediaType(t *testing.T) {
+	cp := newSignatureCpak(t)
+	registry := newSignatureRegistry()
+	resolved := contentDigest([]byte("wrong X.509 media type"))
+	registry.attachWithMediaType(t, resolved, signature.X509ArtifactType, "application/octet-stream", []byte("CMS"))
+	ref := registry.start(t)
+	if _, err := cp.verifyPackageState(ref, testOrigin, signedState(t, resolved)); err == nil || !strings.Contains(err.Error(), "expected "+signature.X509CMSMediaType) {
+		t.Fatalf("wrong X.509 layer media type = %v", err)
+	}
+}
+
 // The exported entry point has no reference, so it takes the one the digest
 // was installed from. An origin installed more than once must not answer with
 // another of its installations: that would fetch the signature of a package
