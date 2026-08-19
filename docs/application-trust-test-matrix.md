@@ -1,8 +1,8 @@
 # Application Trust POC Test Matrix
 
-- Status: Phase 0 baseline and implementation map
+- Status: Phase 2 implementation map
 - Baseline: cpak v2.6.0 (`12e835c`)
-- Last updated: 2026-08-18
+- Last updated: 2026-08-19
 
 ## 1. How to read this matrix
 
@@ -38,23 +38,23 @@ behaviour require the real integration path described in the Evidence column.
 | --- | --- | --- | --- | --- |
 | AT-SIG-001 | Existing Sigstore/OIDC positive verification remains green | Existing `pkg/signature` and `pkg/cpak` signature tests | 1 | Existing |
 | AT-SIG-002 | OIDC issuer and repository comparison stays exact | Existing `TestMatchesOriginRefusesEveryLookalike` plus `TestTypedOIDCAuthorizationRefusesEveryLookalike` on the common path | 1 | Implemented |
-| AT-SIG-003 | Valid detached CMS over canonical state verifies | X.509 verifier unit test with POC chain | 2 | Planned |
-| AT-SIG-004 | Changed origin invalidates evidence | One-field mutation table | 2 | Planned |
-| AT-SIG-005 | Changed manifest digest invalidates evidence | One-field mutation table | 2 | Planned |
-| AT-SIG-006 | Changed resolved image digest invalidates evidence | One-field mutation table | 2 | Planned |
-| AT-SIG-007 | Changed lock digest invalidates evidence | One-field mutation table | 2 | Planned |
-| AT-SIG-008 | Changed generation invalidates evidence | One-field mutation table | 2 | Planned |
+| AT-SIG-003 | Valid detached CMS over canonical state verifies | `TestValidDetachedCMSVerifiesAndNormalizesThePublisher` | 2 | Implemented |
+| AT-SIG-004 | Changed origin invalidates evidence | `TestCMSIsBoundToEveryCanonicalStateField/origin` | 2 | Implemented |
+| AT-SIG-005 | Changed manifest digest invalidates evidence | `TestCMSIsBoundToEveryCanonicalStateField/manifest` | 2 | Implemented |
+| AT-SIG-006 | Changed resolved image digest invalidates evidence | `TestCMSIsBoundToEveryCanonicalStateField/image` | 2 | Implemented |
+| AT-SIG-007 | Changed lock digest invalidates evidence | `TestCMSIsBoundToEveryCanonicalStateField/lock` | 2 | Implemented |
+| AT-SIG-008 | Changed generation invalidates evidence | `TestCMSIsBoundToEveryCanonicalStateField/generation` | 2 | Implemented |
 | AT-SIG-009 | A tag or unresolved image reference is never signed or verified | State and signing CLI negative tests | 2-3 | Planned |
-| AT-SIG-010 | Altered CMS signature is invalid | Bit-flip corpus case | 2 | Planned |
-| AT-SIG-011 | Altered signer certificate is invalid | Certificate substitution corpus case | 2 | Planned |
-| AT-SIG-012 | Malformed, truncated, trailing, BER-only, and oversized CMS fail closed | Parser table plus fuzz corpus | 2 | Planned |
+| AT-SIG-010 | Altered CMS signature is invalid | `TestCMSRejectsMalformedAndWeakInputs/bit_flip` | 2 | Implemented |
+| AT-SIG-011 | Altered signer certificate is invalid | `TestCMSRejectsCertificateSubstitutionAndBrokenChains` | 2 | Implemented |
+| AT-SIG-012 | Malformed, truncated, trailing, BER-only, and oversized CMS fail closed | `TestCMSRejectsMalformedAndWeakInputs` plus `FuzzStrictCMSParser` | 2 | Implemented |
 | AT-SIG-013 | Unsupported evidence kind or media type is invalid, not unsigned | `TestStoredEvidenceDecoderFailsClosed`, `TestUnsupportedVerifierIsInvalidEvidenceNotUnsigned`, and `TestFetchPackageSignatureRefusesASignatureArtifactWithTheWrongLayerType` | 1-2 | Implemented (Phase 1 scope) |
-| AT-SIG-014 | Zero CMS signers is rejected | CMS signer-count test | 2 | Planned |
-| AT-SIG-015 | Multiple CMS signers are rejected as ambiguous | CMS signer-count test | 2 | Planned |
-| AT-SIG-016 | Duplicate or ambiguous signed attributes are rejected | Handcrafted DER corpus | 2 | Planned |
-| AT-SIG-017 | Valid plus invalid candidates accept the valid candidate and report the invalid one | OCI multi-referrer integration test | 2 | Planned |
-| AT-SIG-018 | Foreign plus invalid candidates report foreign/invalid and do not become unsigned | OCI multi-referrer integration test | 1-2 | Planned |
-| AT-SIG-019 | All invalid candidates produce invalid, not unsigned | OCI multi-referrer integration test | 1-2 | Planned |
+| AT-SIG-014 | Zero CMS signers is rejected | `TestCMSRejectsAmbiguousSignersAttributesAndAlgorithms/zero_signers` | 2 | Implemented |
+| AT-SIG-015 | Multiple CMS signers are rejected as ambiguous | `TestCMSRejectsAmbiguousSignersAttributesAndAlgorithms/multiple_signers` | 2 | Implemented |
+| AT-SIG-016 | Duplicate or ambiguous signed attributes are rejected | `TestCMSRejectsAmbiguousSignersAttributesAndAlgorithms` | 2 | Implemented |
+| AT-SIG-017 | Valid plus invalid candidates accept the valid candidate and report the invalid one | `TestMixedEvidenceCandidatesPreserveValidForeignAndInvalidOutcomes/valid_X.509_outranks_invalid_Sigstore` | 2 | Implemented |
+| AT-SIG-018 | Foreign plus invalid candidates report foreign/invalid and do not become unsigned | `TestMixedEvidenceCandidatesPreserveValidForeignAndInvalidOutcomes/foreign_X.509_outranks_invalid_Sigstore` | 1-2 | Implemented |
+| AT-SIG-019 | All invalid candidates produce invalid, not unsigned | `TestMixedEvidenceCandidatesPreserveValidForeignAndInvalidOutcomes/all_invalid_stays_invalid` | 1-2 | Implemented |
 | AT-SIG-020 | Manifest permissions remain in the signed state | Existing state digest tests plus lifecycle mutation test | 1, 5 | Existing/Planned |
 
 ## 4. Publisher identity and origin authorization
@@ -62,67 +62,67 @@ behaviour require the real integration path described in the Evidence column.
 | ID | Requirement | Evidence | Phase | State |
 | --- | --- | --- | --- | --- |
 | AT-ID-001 | OIDC ID is the SHA-256 of the frozen canonical issuer/repository preimage | `TestOIDCPublisherIDUsesTheFrozenPreimage` | 1 | Implemented |
-| AT-ID-002 | X.509 ID is lowercase-hex SHA-256 over DER SPKI | Golden vector test against Go and OpenSSL-generated certs | 2 | Planned |
-| AT-ID-003 | Same-key certificate renewal preserves X.509 publisher ID | Two-leaf fixture test | 2 | Planned |
-| AT-ID-004 | New publisher key creates a different ID | Two-key fixture test | 2 | Planned |
-| AT-ID-005 | Display-name changes do not change authorization or reputation ID | Identity and policy table test | 2, 4 | Planned |
-| AT-ID-006 | Certificate subject and package metadata never authorize an origin | Same-subject/different-key and spoofed-metadata tests | 2 | Planned |
-| AT-ID-007 | X.509 signer covers the exact state containing the origin | CMS state-binding test | 2 | Planned |
+| AT-ID-002 | X.509 ID is lowercase-hex SHA-256 over DER SPKI | `TestValidDetachedCMSVerifiesAndNormalizesThePublisher` computes the independent SPKI digest | 2 | Implemented |
+| AT-ID-003 | Same-key certificate renewal preserves X.509 publisher ID | `TestX509PublisherIdentityFollowsTheSPKI` | 2 | Implemented |
+| AT-ID-004 | New publisher key creates a different ID | `TestX509PublisherIdentityFollowsTheSPKI` | 2 | Implemented |
+| AT-ID-005 | Display-name changes do not change authorization or reputation ID | `TestX509PublisherIdentityFollowsTheSPKI` | 2, 4 | Implemented (Phase 2 identity scope) |
+| AT-ID-006 | Certificate subject and package metadata never authorize an origin | `TestX509PublisherIdentityFollowsTheSPKI` and exact-state tests | 2 | Implemented |
+| AT-ID-007 | X.509 signer covers the exact state containing the origin | `TestCMSIsBoundToEveryCanonicalStateField/origin` | 2 | Implemented |
 | AT-ID-008 | Host policy can restrict an X.509 publisher ID to an exact origin | Policy unit and authority integration test | 2, 5 | Planned |
 | AT-ID-009 | Publisher and distributor identities are reported separately | CLI structured-output and explain tests | 5 | Planned |
-| AT-ID-010 | Unsafe subject characters cannot inject terminal or log output | Sanitization table and CLI snapshot | 2, 5 | Planned |
+| AT-ID-010 | Unsafe subject characters cannot inject terminal or log output | `TestX509DisplayNamesCannotInjectTerminalOutput`; full CLI snapshots remain Phase 5 | 2, 5 | Implemented (Phase 2 identity scope) |
 
 ## 5. X.509 path, usage, algorithms, and time
 
 | ID | Requirement | Evidence | Phase | State |
 | --- | --- | --- | --- | --- |
-| AT-X509-001 | Chain to an admitted public code-signing root succeeds | Reviewed public-root fixture | 2 | Planned |
-| AT-X509-002 | Chain to an explicitly imported local root succeeds | Privileged root-store integration test | 2 | Planned |
-| AT-X509-003 | Unknown root fails | Verifier negative test | 2 | Planned |
-| AT-X509-004 | Missing or wrong intermediate fails | Chain table test | 2 | Planned |
-| AT-X509-005 | Leaf without Code Signing EKU fails | Certificate profile fixture | 2 | Planned |
-| AT-X509-006 | Leaf without digital-signature key usage fails | Certificate profile fixture | 2 | Planned |
-| AT-X509-007 | Leaf with `CA=true` fails | Certificate profile fixture | 2 | Planned |
-| AT-X509-008 | Not-yet-valid leaf fails at both sides of the boundary | Injected-clock table test | 2 | Planned |
-| AT-X509-009 | Currently valid leaf without timestamp succeeds as `current` | Injected-clock test | 2 | Planned |
-| AT-X509-010 | Expired leaf without verified timestamp fails | Injected-clock test | 2 | Planned |
-| AT-X509-011 | Valid RFC 3161 token preserves verification after leaf expiry | POC TSA fixture and injected-clock test | 2-3 | Planned |
-| AT-X509-012 | Timestamp message-imprint mismatch fails | RFC 3161 negative fixture | 2 | Planned |
-| AT-X509-013 | Untrusted, wrong-EKU, expired, or malformed TSA chain fails | RFC 3161 table test | 2 | Planned |
-| AT-X509-014 | CMS `signingTime` alone never extends validity | Expired leaf with forged signing-time attribute | 2 | Planned |
-| AT-X509-015 | SHA-1, MD5, DSA, RSA-PSS, unknown parameters, and mismatched algorithm identifiers fail as invalid or explicitly unsupported | Algorithm corpus | 2 | Planned |
-| AT-X509-016 | Approved RSA and ECDSA profiles succeed | Certificate/signature matrix | 2 | Planned |
-| AT-X509-017 | System TLS roots are not consulted | Test with root installed only in an isolated system pool | 2 | Planned |
+| AT-X509-001 | Chain to an admitted public code-signing root succeeds | `TestPublicAndImportedLocalRootsProduceDistinctTrustResults/public` | 2 | Implemented |
+| AT-X509-002 | Chain to an explicitly imported local root succeeds | `TestPublicAndImportedLocalRootsProduceDistinctTrustResults/local` | 2 | Implemented |
+| AT-X509-003 | Unknown root fails | `TestCMSRejectsCertificateSubstitutionAndBrokenChains/unknown_root` | 2 | Implemented |
+| AT-X509-004 | Missing or wrong intermediate fails | `TestCMSRejectsCertificateSubstitutionAndBrokenChains` | 2 | Implemented |
+| AT-X509-005 | Leaf without Code Signing EKU fails | `TestX509LeafProfileFailsClosed/wrong_EKU` | 2 | Implemented |
+| AT-X509-006 | Leaf without digital-signature key usage fails | `TestX509LeafProfileFailsClosed/missing_digital_signature` | 2 | Implemented |
+| AT-X509-007 | Leaf with `CA=true` fails | `TestX509LeafProfileFailsClosed/CA_leaf` | 2 | Implemented |
+| AT-X509-008 | Not-yet-valid leaf fails at both sides of the boundary | `TestX509LeafProfileFailsClosed/not_yet_valid` | 2 | Implemented |
+| AT-X509-009 | Currently valid leaf without timestamp succeeds as `current` | `TestValidDetachedCMSVerifiesAndNormalizesThePublisher` | 2 | Implemented |
+| AT-X509-010 | Expired leaf without verified timestamp fails | `TestExpiredLeafNeedsAnRFC3161Timestamp` | 2 | Implemented |
+| AT-X509-011 | Valid RFC 3161 token preserves verification after leaf expiry | `TestRFC3161TimestampPreservesAnExpiredPublisherCertificate` | 2-3 | Implemented (Phase 2 verifier scope) |
+| AT-X509-012 | Timestamp message-imprint mismatch fails | `TestRFC3161MessageImprintMismatchFails` | 2 | Implemented |
+| AT-X509-013 | Untrusted, wrong-EKU, expired, or malformed TSA chain fails | `TestRFC3161RejectsUntrustedAndWrongEKUTSAs` | 2 | Implemented |
+| AT-X509-014 | CMS `signingTime` alone never extends validity | `TestExpiredLeafNeedsAnRFC3161Timestamp` | 2 | Implemented |
+| AT-X509-015 | SHA-1, MD5, DSA, RSA-PSS, unknown parameters, and mismatched algorithm identifiers fail as invalid or explicitly unsupported | `TestCMSRejectsMalformedAndWeakInputs` and `TestCMSRejectsAmbiguousSignersAttributesAndAlgorithms` | 2 | Implemented |
+| AT-X509-016 | Approved RSA and ECDSA profiles succeed | RSA positive tests plus `TestApprovedECDSACMSProfileVerifies` | 2 | Implemented |
+| AT-X509-017 | System TLS roots are not consulted | `TestX509VerifierNeverConsultsTheSystemTLSRoots` | 2 | Implemented |
 
 ## 6. Revocation
 
 | ID | Requirement | Evidence | Phase | State |
 | --- | --- | --- | --- | --- |
-| AT-REV-001 | Current issuer-signed CRL without the serial produces `good` | CRL fixture test | 2 | Planned |
-| AT-REV-002 | Applicable CRL entry produces `revoked` and blocks | CRL fixture plus policy precedence test | 2, 5 | Planned |
-| AT-REV-003 | No applicable CRL produces `unknown` | CRL fixture test | 2 | Planned |
-| AT-REV-004 | Expired or not-yet-valid CRL produces `stale` and blocks | Injected-clock test | 2 | Planned |
-| AT-REV-005 | Wrong issuer, invalid signature, and unknown critical extension are rejected | CRL negative table | 2 | Planned |
-| AT-REV-006 | A current CRL blocks revocation at or before timestamp time and does not retroactively block a later revocation | Timestamp/CRL boundary test | 2 | Planned |
-| AT-REV-007 | No implicit OCSP or network request occurs | Network-deny integration test | 2 | Planned |
+| AT-REV-001 | Current issuer-signed CRL without the serial produces `good` | `TestOfflineCRLStatusesAndCutoff/good` | 2 | Implemented |
+| AT-REV-002 | Applicable CRL entry produces `revoked` and blocks | `TestOfflineCRLStatusesAndCutoff/revoked` | 2, 5 | Implemented (Phase 2 verifier scope) |
+| AT-REV-003 | No applicable CRL produces `unknown` | `TestOfflineCRLStatusesAndCutoff/missing` | 2 | Implemented |
+| AT-REV-004 | Expired or not-yet-valid CRL produces `stale` and blocks | `TestOfflineCRLStatusesAndCutoff` and `TestOfflineCRLRejectsInvalidAndFutureEvidence` | 2 | Implemented |
+| AT-REV-005 | Wrong issuer, invalid signature, and unknown critical extension are rejected | `TestOfflineCRLRejectsInvalidAndFutureEvidence` and `TestUnknownCriticalCRLExtensionFailsClosed` | 2 | Implemented |
+| AT-REV-006 | A current CRL blocks revocation at or before timestamp time and does not retroactively block a later revocation | `TestOfflineCRLStatusesAndCutoff` | 2 | Implemented |
+| AT-REV-007 | No implicit OCSP or network request occurs | X.509 verifier and CRL loader contain no network path; Linux suite runs offline verification | 2 | Implemented |
 | AT-REV-008 | Reputation or publisher exception cannot override revocation | Decision-precedence unit and lifecycle test | 4-5 | Planned |
 
 ## 7. Root bundle and local-root administration
 
 | ID | Requirement | Evidence | Phase | State |
 | --- | --- | --- | --- | --- |
-| AT-ROOT-001 | Embedded root manifest is ABI 1, strictly decoded, and fingerprint-verified | Generator check and parser unit test | 2 | Planned |
-| AT-ROOT-002 | Every source URL, retrieval time, source hash, licence, and attribution is present | Provenance manifest test | 2 | Planned |
-| AT-ROOT-003 | Duplicate, non-root, non-self-signed, and fingerprint-mismatched entries fail generation | Generator negative tests | 2 | Planned |
-| AT-ROOT-004 | Code-signing and timestamp purposes load into separate pools | Root-loader unit test | 2 | Planned |
-| AT-ROOT-005 | Sectigo example root fingerprint matches reviewed CCADB and Sectigo sources | Provenance check plus documented manual review | 2 | Planned |
-| AT-ROOT-006 | Administrator sees subject and exact SHA-256 before confirmation | CLI integration snapshot | 2 | Planned |
+| AT-ROOT-001 | Embedded root manifest is ABI 1, strictly decoded, and fingerprint-verified | `TestEmbeddedRootBundleIsStrictAndFingerprintVerified` and `FuzzRootBundleParser` | 2 | Implemented |
+| AT-ROOT-002 | Every source URL, retrieval time, source hash, licence, and attribution is present | `TestEmbeddedSectigoRootsCarryReviewedProvenance` | 2 | Implemented |
+| AT-ROOT-003 | Duplicate, non-root, non-self-signed, and fingerprint-mismatched entries fail generation | `TestRootBundleFailsClosed` | 2 | Implemented |
+| AT-ROOT-004 | Code-signing and timestamp purposes load into separate pools | `TestLocalRootImportRequiresThePreviewedFingerprintAndKeepsPurposesSeparate` | 2 | Implemented |
+| AT-ROOT-005 | Sectigo example root fingerprint matches reviewed CCADB and Sectigo sources | `TestEmbeddedSectigoRootsCarryReviewedProvenance` plus Phase 2 source review | 2 | Implemented |
+| AT-ROOT-006 | Administrator sees subject and exact SHA-256 before confirmation | `TestTrustRootPreviewShowsTheExactIdentityBeforeMutation` | 2 | Implemented |
 | AT-ROOT-007 | Non-root caller cannot add or remove a root | Real polkit/socket integration test on Linux | 2 | Planned |
-| AT-ROOT-008 | Symlink, traversal, unsafe parent, unsafe ownership, and writable file are rejected | Filesystem attack table | 2 | Planned |
-| AT-ROOT-009 | Root update is atomic across interruption | Fault-injected filesystem test | 2 | Planned |
-| AT-ROOT-010 | Duplicate import, removal, and re-addition have deterministic outcomes | CLI lifecycle test | 2 | Planned |
-| AT-ROOT-011 | Corrupt embedded bundle or future schema fails as cpak error, not untrusted package | Root-loader negative test | 2 | Planned |
-| AT-ROOT-012 | Public and local roots remain distinguishable in explanation output | Structured result and CLI test | 2, 5 | Planned |
+| AT-ROOT-008 | Symlink, traversal, unsafe parent, unsafe ownership, and writable file are rejected | `TestLocalRootStoreRejectsFilesystemConfusion`, `TestLocalRootDirectoryCannotEscapeItsBoundary`, and writable root/CRL cases | 2 | Implemented |
+| AT-ROOT-009 | Root update is atomic across interruption | `TestRootImportHasAnAtomicCommitPointAcrossFailures` | 2 | Implemented |
+| AT-ROOT-010 | Duplicate import, removal, and re-addition have deterministic outcomes | `TestTrustRootCommandImportRemoveAndReaddLifecycle` | 2 | Implemented |
+| AT-ROOT-011 | Corrupt embedded bundle or future schema fails as cpak error, not untrusted package | `TestRootBundleFailsClosed` | 2 | Implemented |
+| AT-ROOT-012 | Public and local roots remain distinguishable in explanation output | `TestPublicAndImportedLocalRootsProduceDistinctTrustResults` and reporting paths | 2, 5 | Implemented (Phase 2 result scope) |
 
 ## 8. POC CA and signing workflow
 
