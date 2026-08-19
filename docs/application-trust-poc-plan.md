@@ -1,10 +1,10 @@
 # Application Trust POC Implementation Plan
 
-- Status: approved for implementation planning
+- Status: active; Phases 0 through 3 complete, Phases 4 through 6 pending
 - Working branch: `poc/application-trust-framework`
 - Pull request policy: no pull request is opened until the complete POC
   satisfies the Definition of Done in this document
-- Last updated: 2026-08-18
+- Last updated: 2026-08-19
 
 ## 1. Purpose
 

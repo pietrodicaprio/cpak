@@ -128,17 +128,17 @@ behaviour require the real integration path described in the Evidence column.
 
 | ID | Requirement | Evidence | Phase | State |
 | --- | --- | --- | --- | --- |
-| AT-CA-001 | Offline root signs only dedicated intermediates | Certificate chain inspection script and test | 3 | Planned |
-| AT-CA-002 | Code-signing intermediate is `CA=true`, `pathLen=0`, and policy constrained | Certificate profile test | 3 | Planned |
-| AT-CA-003 | Leaf is `CA=false`, digital signature, Code Signing EKU, bounded subject | Certificate profile test | 3 | Planned |
-| AT-CA-004 | TSA certificate and chain have only the timestamping purpose | Certificate profile test | 3 | Planned |
-| AT-CA-005 | No reusable private key or passphrase is tracked | Diff secret scan and file inventory | 3, 6 | Planned |
-| AT-CA-006 | Signing accepts an encrypted software key through a safe runtime path | `cpak-sign` integration test with ephemeral key | 3 | Planned |
-| AT-CA-007 | Signing boundary accepts `crypto.Signer` without evidence-format changes | Interface and fake-signer unit test | 3 | Planned |
-| AT-CA-008 | Clean Linux environment can generate, sign, attach, import, verify, and enrol | End-to-end container/VM script | 3, 5 | Planned |
-| AT-CA-009 | Same artifact is untrusted before explicit POC-root import | End-to-end negative step | 3 | Planned |
-| AT-CA-010 | Root removal causes full re-verification failure without ledger corruption | End-to-end recovery test | 3 | Planned |
-| AT-CA-011 | CLI labels POC assurance experimental | CLI snapshot and wording assertion | 3, 5 | Planned |
+| AT-CA-001 | Offline root signs only dedicated intermediates | `TestGeneratedProfilesSeparateRootIntermediatePublisherAndTSA`, public sample inspection, and CP/CPS | 3 | Implemented |
+| AT-CA-002 | Code-signing intermediate is `CA=true`, `pathLen=0`, and policy constrained | `TestGeneratedProfilesSeparateRootIntermediatePublisherAndTSA` | 3 | Implemented |
+| AT-CA-003 | Leaf is `CA=false`, digital signature, Code Signing EKU, bounded subject | `TestGeneratedProfilesSeparateRootIntermediatePublisherAndTSA` and publisher-name rejection paths | 3 | Implemented |
+| AT-CA-004 | TSA certificate and chain have only the timestamping purpose | `TestGeneratedProfilesSeparateRootIntermediatePublisherAndTSA` | 3 | Implemented |
+| AT-CA-005 | No reusable private key or passphrase is tracked | Phase 3 tracked-file inventory and secret-pattern scan; generator emits keys only into a new caller-selected directory | 3, 6 | Implemented for Phase 3; repeat at publication |
+| AT-CA-006 | Signing accepts an encrypted software key through a safe runtime path | `TestX509SignAcceptsEncryptedSoftwareKeyAndProducesDetachedEvidence` and unsafe-mode/wrong-passphrase negatives | 3 | Implemented |
+| AT-CA-007 | Signing boundary accepts `crypto.Signer` without evidence-format changes | `TestSignX509CMSUsesCryptoSignerAndProducesVerifierEvidence` | 3 | Implemented |
+| AT-CA-008 | Clean Linux environment can generate, sign, attach, import, verify, and enrol | Linux portability suite exercises generator, signer, fake OCI attach, local-root lifecycle, verification, and authority enrolment; `application-trust-poc-demo.md` composes the same commands | 3, 5 | Implemented for Phase 3 POC; real install/update matrix remains Phase 5 |
+| AT-CA-009 | Same artifact is untrusted before explicit POC-root import | `TestAttachPublishesX509CMSOnlyAfterPublicationTimeTrust`, unknown-root verifier cases, and explicit root-store lifecycle tests | 3 | Implemented |
+| AT-CA-010 | Root removal causes full re-verification failure without ledger corruption | `TestRemovingX509TrustBreaksFullReverificationWithoutChangingTheLedger` | 3 | Implemented |
+| AT-CA-011 | CLI labels POC assurance experimental | `TestX509SigningReportDoesNotImplyPublicTrustOrReputation` and runbook wording | 3, 5 | Implemented for Phase 3 CLI |
 
 ## 9. Reputation snapshot and provider
 
