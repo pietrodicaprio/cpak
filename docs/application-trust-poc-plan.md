@@ -12,6 +12,13 @@ This plan defines an incremental proof of concept for publisher identity,
 X.509 code signing, publisher reputation, policy evaluation, and explainable
 trust decisions in cpak.
 
+The trust model and decision contract are independent of cpak and of any
+desktop environment. cpak is the primary reference actor; a minimal AppImage
+conformance example is the second actor used to prove that the published
+contract is portable. Graphical interfaces, interactive terminals, unattended
+automation, services, and desktopless hosts are presentation or invocation
+contexts around the same decision engine, not separate trust models.
+
 The POC is the cpak-contained reference implementation of the concepts in the
 Linux Application Trust Framework discussion paper. It is intended to produce
 three publishable outcomes:
@@ -64,6 +71,10 @@ must not replace or bypass those mechanisms.
   network work into the launch hot path.
 - Expose verification, identity, reputation, policy, and final-decision reasons
   through cpak CLI and audit surfaces.
+- Support graphical, interactive-terminal, and non-interactive/headless
+  invocation without changing verification or policy semantics.
+- Define an implementation-independent decision result and demonstrate it with
+  cpak plus a minimal AppImage conformance actor.
 - Provide negative tests and a reproducible end-to-end Linux demonstration.
 - Publish the limitations and security non-goals of the POC.
 
@@ -75,6 +86,7 @@ must not replace or bypass those mechanisms.
 - A new package format.
 - Replacement of Sigstore, distribution-native signatures, or OCI integrity.
 - Browser, Nautilus, Dolphin, GNOME, or KDE integration.
+- A mandatory graphical frontend or desktop-session dependency.
 - Kernel enforcement through fs-verity, IMA, or IPE.
 - Becoming a publicly audited CA or entering third-party root programs.
 - Transparent publisher identity continuity across a private-key rotation.
@@ -150,6 +162,28 @@ No successful answer may be used as a substitute for another.
 - Private keys, PINs, tokens, and credentials are never committed, logged,
   included in fixtures, or passed in command-line arguments when a safer input
   channel exists.
+
+### 5.3 Environment and presentation independence
+
+- Verification, identity, reputation, policy, and final action are computed by
+  a presentation-neutral core.
+- The absence of a display server, session D-Bus, desktop portal, Secret
+  Service, graphical privilege agent, or TTY must not weaken or bypass policy.
+- A graphical dialog and an interactive terminal prompt may present a decision
+  or collect an allowed confirmation; they do not create trust facts.
+- A non-interactive invocation never blocks waiting for confirmation and never
+  silently converts `warn` into `allow`.
+- A generic automation flag such as `--yes` acknowledges an operation only. It
+  does not override invalid evidence, revocation, administrator denial, or an
+  unknown/caution reputation result.
+- Any permitted reputation exception is explicit, scoped, privileged,
+  auditable, and produces the same decision record in every invocation context.
+- Full trust evaluation occurs at install/update or explicit verification.
+  Starting a previously enrolled binary validates its anchored state without a
+  desktop or a network dependency.
+- A changed reputation or policy does not retroactively terminate an already
+  running process; its effect on future install, update, enrolment, or launch
+  decisions must be explicit.
 
 ## 6. Required data contracts
 
@@ -342,6 +376,32 @@ expose an unexplained numeric trust score as policy.
 - Never describe signed or established software as safe.
 - Bound and sanitize all externally supplied diagnostic text.
 
+### FR-9: Headless and unattended operation
+
+- Define invocation context as `graphical`, `interactive-terminal`, or
+  `non-interactive`; context affects presentation only, except where a policy
+  explicitly requires human confirmation.
+- Expose a versioned machine-readable result containing verification status,
+  publisher ID, reputation status, policy result, final action, and stable
+  reason code.
+- Define stable exit-code classes for allowed, denied, invalid, unavailable,
+  and confirmation-required results without relying on localized text.
+- In non-interactive mode, a decision requiring human confirmation returns
+  `confirmation-required` and a non-zero exit code. It must not hang, invoke a
+  desktop helper, or assume consent.
+- Permit root and reputation administration through direct root execution or
+  terminal escalation using exact fingerprints and explicit arguments, so
+  configuration-management systems do not require a graphical privilege agent.
+- cpak packages containing exported binaries but no desktop entries must use
+  the same install, update, enrolment, reputation, and runtime-integrity path as
+  graphical applications.
+- Headless operation must not attempt to read desktop-only credential stores.
+  Required registry or signing credentials use explicit safe non-interactive
+  sources and remain subject to the existing secret-handling rules.
+- The portable result schema and reason semantics must be consumable by a
+  second actor without importing cpak storage, manifests, policy files, or CLI
+  presentation code.
+
 ## 8. Decision precedence
 
 The final policy engine must follow this order:
@@ -509,6 +569,8 @@ the common tagged format.
   corrupting existing ledger data.
 - The CLI labels the CA assurance as experimental and does not imply public
   trust or reputation.
+- Generation, signing, attachment, root administration, verification, and
+  enrolment are reproducible with no display server or session bus.
 
 #### Phase completion gate
 
@@ -543,6 +605,8 @@ documented commands with no secret material from a developer workstation.
 - `blocked` produces the configured refusal and a stable reason code.
 - `audit` records a result without changing the existing allow decision.
 - Provider-unavailable behavior matches each configured policy mode.
+- The same signed snapshot produces the same reputation and policy result on a
+  graphical workstation, an interactive terminal, and a non-interactive host.
 - Publisher display-name changes do not change or hijack reputation identity.
 - Snapshot reason text is bounded and safe for terminal/log output.
 - No network request or telemetry is emitted by the POC provider.
@@ -561,6 +625,8 @@ tests.
 - Exercise the complete install, update, enrolment, audit, explain, and launch
   lifecycle.
 - Make every decision understandable without reading source code.
+- Treat binaries without desktop entries, unattended automation, and services
+  as first-class lifecycle paths.
 
 #### Deliverables
 
@@ -569,6 +635,9 @@ tests.
 - Install and update integration for both evidence types.
 - Re-verification and reputation refresh behavior.
 - End-to-end Linux test harness.
+- Versioned machine-readable decision output and stable exit-code mapping.
+- Separate graphical, interactive-terminal, and non-interactive integration
+  fixtures.
 
 #### Acceptance criteria
 
@@ -586,12 +655,29 @@ tests.
 - Long publisher names, malformed external reason text, empty data, stale data,
   and provider failures remain readable and safe.
 - Existing unmanaged-host defaults remain backward compatible.
+- A binary-only package with no `.desktop` file can be installed, updated,
+  enrolled, audited, explained, and run with no display or session bus.
+- Non-interactive `warn` returns confirmation-required without waiting or
+  launching a graphical helper; explicit administrator policy is required to
+  obtain a different result.
+- `--yes` alone cannot accept unknown/caution reputation or bypass invalid,
+  revoked, or administratively denied evidence.
+- Root import/removal and reputation snapshot administration work when run
+  directly as root and through `sudo` or `doas`, without `pkexec` or `run0`.
+- Human-readable output, machine-readable output, exit codes, and audit records
+  agree on the final action and stable reason code.
+- Provider outage and offline cached evidence follow configured policy without
+  consulting a desktop service or performing network work during launch.
+- Service restart and command execution enforce the enrolled state; policy or
+  reputation changes affect future decisions but do not claim to terminate an
+  already running process.
 
 #### Phase completion gate
 
-Phase 5 is complete when the real CLI workflow passes on Linux for positive,
-negative, update, offline, and recovery scenarios and the output accurately
-explains every result.
+Phase 5 is complete when the real CLI workflow passes on Linux for graphical,
+interactive-terminal, and non-interactive positive, negative, update, offline,
+service, and recovery scenarios, and every output surface accurately explains
+the same result.
 
 ### Phase 6: Publication package and final certification
 
@@ -608,6 +694,10 @@ explains every result.
 - Reproducible demo script or runbook.
 - Architecture diagram mapping cpak components to the Linux Application Trust
   Framework abstractions.
+- Implementation-independent decision schema, reason-code registry, invocation
+  context semantics, and conformance requirements.
+- Minimal AppImage conformance example that verifies a signed artifact and
+  emits the same portable decision result without depending on cpak internals.
 - Evidence report listing commands, results, unsupported environments, and any
   remaining gaps.
 - Final branch diff ready for review.
@@ -620,6 +710,9 @@ explains every result.
 - Public-CA, POC-CA, publisher-policy, reputation, and runtime-integrity claims
   are described separately.
 - The paper and implementation use consistent vocabulary and reason semantics.
+- The cpak and AppImage actors produce conforming decision records for shared
+  fixtures, including at least valid, unknown-reputation, invalid, and blocked
+  cases in a headless environment.
 - Every requirement and acceptance criterion has a proven result or an explicit
   documented exception accepted by the maintainers.
 - No pull request has been opened before this phase passes.
@@ -696,6 +789,21 @@ explicit authorization.
 - launch after provider outage;
 - clean recovery after trust-root or snapshot correction.
 
+### 10.6 Invocation context and desktopless operation
+
+- graphical, interactive-terminal, and non-interactive presentation of the
+  same underlying decision;
+- binary-only cpak package with no desktop entry;
+- no `DISPLAY`, `WAYLAND_DISPLAY`, session D-Bus, portal, or Secret Service;
+- no TTY on stdin, stdout, or stderr;
+- non-interactive `warn` returns confirmation-required without blocking;
+- `--yes` cannot override trust or reputation policy;
+- direct-root, `sudo`, and `doas` administration without a graphical agent;
+- stable machine-readable schema, reason code, final action, and exit code;
+- systemd or equivalent service start/restart using an enrolled binary;
+- policy and reputation change while a process is already running;
+- cpak and AppImage conformance records over shared headless fixtures.
+
 ## 11. Verification gates
 
 The following commands are the minimum final verification set, adjusted only
@@ -716,6 +824,10 @@ Additional required evidence:
 - targeted fuzzing or a bounded fuzz corpus for CMS/ASN.1, root-bundle,
   reputation-snapshot, and legacy-record parsers;
 - end-to-end execution on Linux using the real OCI referrer path;
+- end-to-end execution on a Linux host with no graphical session, both with an
+  interactive TTY and with all standard streams detached from a TTY;
+- a binary-only cpak fixture and a service start/restart fixture;
+- cpak/AppImage conformance comparison over the portable decision schema;
 - offline verification after evidence has been retrieved;
 - inspection proving that no private key or credential entered the Git diff;
 - compatibility tests using records and evidence produced before the POC;
@@ -776,6 +888,23 @@ validation.
 **Mitigation:** explicit opt-in trust, experimental assurance label, separate
 CP/CPS, and no inclusion in the production default root bundle.
 
+### Interactive-policy bypass on headless hosts
+
+**Risk:** an unattended installer treats a warning as consent, hangs waiting
+for an unavailable prompt, or uses `--yes` to cross a trust boundary.
+**Mitigation:** explicit invocation context, confirmation-required result,
+stable non-zero exit code, separate privileged exceptions, and negative tests
+with no display, session bus, or TTY.
+
+### Desktop assumptions in non-graphical packages
+
+**Risk:** a binary-only package or service skips enrolment/enforcement, or a
+trust operation fails because it assumes portals, Secret Service, or a
+graphical privilege agent.
+**Mitigation:** entrypoint-neutral enrolment, direct-root and terminal
+administration paths, binary-only/service fixtures, and shared decision-core
+tests across every frontend.
+
 ## 13. Overall Definition of Done
 
 The Application Trust POC is done only when all of the following are true:
@@ -793,6 +922,9 @@ The Application Trust POC is done only when all of the following are true:
   secrets or a hardware token.
 - Reputation snapshot verification, anti-rollback, policy, and diagnostics are
   implemented through the privileged real path.
+- Graphical, terminal, and non-interactive callers consume the same portable
+  decision result, and binary-only packages use the same enforcement path as
+  packages exporting desktop entries.
 
 ### Security
 
@@ -802,6 +934,8 @@ The Application Trust POC is done only when all of the following are true:
   cannot be misreported as unsigned, verified, trusted, or established.
 - Reputation cannot override cryptographic failure, certificate revocation, or
   administrator denial.
+- Missing desktop facilities or a generic `--yes` cannot weaken policy, imply
+  consent, or bypass a confirmation-required result.
 - Root and reputation administration reject unprivileged or unsafe filesystem
   state.
 - No private key, credential, token, PIN, or reusable test secret exists in the
@@ -811,8 +945,9 @@ The Application Trust POC is done only when all of the following are true:
 
 ### Verification
 
-- All project-defined tests, race tests, tagged UI tests, vet, generation checks,
-  Linux builds, parser robustness checks, and end-to-end scenarios pass.
+- All project-defined tests, race tests, tagged UI tests, headless and
+  no-TTY tests, vet, generation checks, Linux builds, parser robustness checks,
+  and end-to-end scenarios pass.
 - Verification evidence identifies what is proven, inferred, or not verified.
 - Any environment-dependent public Sectigo signing demonstration is explicitly
   separated from the POC CA evidence and is not required until a usable
@@ -823,6 +958,8 @@ The Application Trust POC is done only when all of the following are true:
 - Operator, publisher, trust-root, reputation, threat-model, and demo
   documentation is complete and internally consistent.
 - The example can be reproduced from a clean documented Linux environment.
+- The portable specification is demonstrated by cpak and the minimal AppImage
+  actor over shared fixtures without a desktop environment.
 - Claims distinguish identity, integrity, policy, reputation, and safety.
 - External sources and redistributed trust data have been reviewed for current
   accuracy, provenance, and usage terms.
