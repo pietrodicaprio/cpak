@@ -282,6 +282,18 @@ func TestX509PublisherIdentityFollowsTheSPKI(t *testing.T) {
 	}
 }
 
+func TestX509DisplayNamesCannotInjectTerminalOutput(t *testing.T) {
+	name := "Publisher\n\x1b[31m" + strings.Repeat("界", 100)
+	cert := &x509.Certificate{RawSubjectPublicKeyInfo: []byte("test SPKI"), Subject: pkix.Name{Organization: []string{name}}, SerialNumber: big.NewInt(1)}
+	publisher, err := NormalizeX509Identity(cert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.ContainsAny(publisher.DisplayName, "\n\r\x1b") || len([]byte(publisher.DisplayName)) > 200 || !strings.HasPrefix(publisher.DisplayName, "Publisher[31m") {
+		t.Fatalf("unsafe or unbounded display name %q", publisher.DisplayName)
+	}
+}
+
 func TestX509LeafProfileFailsClosed(t *testing.T) {
 	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
 	tests := map[string]func(*x509.Certificate){
@@ -357,6 +369,14 @@ func TestCMSRejectsAmbiguousSignersAttributesAndAlgorithms(t *testing.T) {
 		},
 		"mismatched digest identifiers": func(signed *cmsSignedData) {
 			signed.SignerInfos[0].DigestAlgorithm.Algorithm = oidSHA384
+		},
+		"MD5 digest": func(signed *cmsSignedData) {
+			md5 := asn1.ObjectIdentifier{1, 2, 840, 113549, 2, 5}
+			signed.SignerInfos[0].DigestAlgorithm.Algorithm = md5
+			signed.DigestAlgorithmIdentifiers[0].Algorithm = md5
+		},
+		"DSA signature": func(signed *cmsSignedData) {
+			signed.SignerInfos[0].DigestEncryptionAlgorithm.Algorithm = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 3, 2}
 		},
 		"RSA-PSS": func(signed *cmsSignedData) {
 			signed.SignerInfos[0].DigestEncryptionAlgorithm.Algorithm = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 10}
@@ -573,6 +593,12 @@ func TestOfflineCRLRejectsInvalidAndFutureEvidence(t *testing.T) {
 	if _, err := evaluateRevocation(chain, []*x509.RevocationList{badSignature}, now, now); err == nil {
 		t.Fatal("issuer-named CRL with an invalid signature was accepted")
 	}
+	issuerWithoutCRLSign := *pki.intermediate
+	issuerWithoutCRLSign.KeyUsage &^= x509.KeyUsageCRLSign
+	valid := createTestCRL(t, pki.intermediate, pki.intermediateKey, now, nil, nil)
+	if err := validateCRL(valid, &issuerWithoutCRLSign); err == nil {
+		t.Fatal("CRL issuer without cRLSign key usage was accepted")
+	}
 	future := createTestCRL(t, pki.intermediate, pki.intermediateKey, now, nil, func(list *x509.RevocationList) {
 		list.ThisUpdate = now.Add(time.Minute)
 		list.NextUpdate = now.Add(time.Hour)
@@ -749,6 +775,31 @@ func TestRFC3161RejectsUntrustedAndWrongEKUTSAs(t *testing.T) {
 		}, true)
 		if result := verifyTestCMS(t, testX509State(), der, pki.trust, now); result.Cryptographic != CryptographicInvalid || result.ReasonCode != "invalid-rfc3161-timestamp" {
 			t.Fatalf("wrong-EKU TSA = %+v", result)
+		}
+	})
+	t.Run("expired TSA", func(t *testing.T) {
+		pki := newExpiredPublisher(t)
+		tokenTime := now.Add(-2 * time.Hour)
+		der := timestampedCMSWithTSAOptions(t, testX509State(), pki, tokenTime, now, func(cert *x509.Certificate) {
+			cert.NotAfter = tokenTime.Add(-time.Minute)
+		}, true)
+		if result := verifyTestCMS(t, testX509State(), der, pki.trust, now); result.Cryptographic != CryptographicInvalid || result.ReasonCode != "invalid-rfc3161-timestamp" {
+			t.Fatalf("expired TSA = %+v", result)
+		}
+	})
+	t.Run("malformed timestamp token", func(t *testing.T) {
+		pki := newExpiredPublisher(t)
+		valid := timestampedCMSWithTSAOptions(t, testX509State(), pki, now.Add(-2*time.Hour), now, nil, true)
+		der := mutateTestCMS(t, valid, func(signed *cmsSignedData) {
+			for index := range signed.SignerInfos[0].UnauthenticatedAttributes {
+				attribute := &signed.SignerInfos[0].UnauthenticatedAttributes[index]
+				if attribute.Type.Equal(oidSignatureTimestampToken) {
+					attribute.Value = asn1.RawValue{Class: 0, Tag: 17, IsCompound: true, Bytes: []byte{0x05, 0x00}}
+				}
+			}
+		})
+		if result := verifyTestCMS(t, testX509State(), der, pki.trust, now); result.Cryptographic != CryptographicInvalid || result.ReasonCode != "invalid-rfc3161-timestamp" {
+			t.Fatalf("malformed timestamp = %+v", result)
 		}
 	})
 }
