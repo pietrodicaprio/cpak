@@ -2,7 +2,7 @@
 
 Status: complete  
 Branch: `poc/application-trust-framework`  
-Functional head: `a01fd39814c3191f3d94e1c33482f8676b7c3e04`  
+Functional head: `9770e8cde2a08511afb9c83e6d62abe90da4a57a`
 Date: 2026-08-19
 
 ## 1. Scope delivered
@@ -14,10 +14,10 @@ not claim publisher reputation.
 
 | Commit | Milestone |
 | --- | --- |
-| `e11be81` | `crypto.Signer` CMS production, encrypted PKCS#8 input, generic Sigstore/X.509 attach profiles, canonical-state interoperability, negative tests, and root-removal ledger evidence |
-| `952d362` | Disposable CA generator, checked-in public sample, empty CRL, CP/CPS, and reproducible Linux runbook |
-| `2924bee` | Clock-safe RFC 3161 fixtures discovered by the first Linux certification run |
-| `a01fd39` | Experimental-assurance assertion and scrypt/AES-256-GCM hardening for generated software keys |
+| `c99f9dc` | `crypto.Signer` CMS production, encrypted PKCS#8 input, generic Sigstore/X.509 attach profiles, canonical-state interoperability, negative tests, and root-removal ledger evidence |
+| `90d99dd` | Disposable CA generator, checked-in public sample, empty CRL, CP/CPS, and reproducible Linux runbook |
+| `7c98d64` | Clock-safe RFC 3161 fixtures discovered by the first Linux certification run |
+| `9770e8c` | Experimental-assurance assertion and scrypt/AES-256-GCM hardening for generated software keys |
 
 ## 2. Public and private material boundary
 
@@ -121,9 +121,9 @@ on Ubuntu 22.04, Ubuntu 24.04, and `ubuntu-latest`; the CGO-free Linux amd64
 binary also ran on Debian 13, Fedora 42, Arch Linux, openSUSE Tumbleweed, and
 Ubuntu 26.04.
 
-Final hardening run [`32246954003`](https://github.com/pietrodicaprio/cpak/actions/runs/32246954003)
-covers functional head `a01fd39` and passed every kernel, binary, and userspace
-job. It is the final remote certification record for this phase.
+Final pre-rebase hardening run [`32246954003`](https://github.com/pietrodicaprio/cpak/actions/runs/32246954003)
+covers the equivalent original functional head `a01fd39`; the rebased series is
+certified as a whole by the Phase 4 post-rebase record.
 
 ## 7. Completion decision
 

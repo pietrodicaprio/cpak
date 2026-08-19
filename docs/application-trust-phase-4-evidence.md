@@ -2,7 +2,7 @@
 
 Status: complete  
 Branch: `poc/application-trust-framework`  
-Functional head: `c77a020728f3531c47de845e87235c6a4d7a1470`  
+Functional head: `cc7f95732efaf2b8615bf31f2395cee8b6005149`
 Date: 2026-08-19
 
 ## 1. Scope delivered
@@ -14,11 +14,12 @@ that reputation proves software safety.
 
 | Commit | Milestone |
 | --- | --- |
-| `35d18a5` | Strict signed-snapshot contract, RFC 8785 canonicalization, Ed25519 verification, exact normalized publisher lookup, freshness, and negative tests |
-| `ea2cb97` | Root-owned provider/snapshot store, exact key admission, durable atomic replacement, unsafe-state rejection, and sequence rollback protection |
-| `0392293` | ABI 2 policy modes, exact exceptions, headless confirmation semantics, authority precedence, and historical enrolment evidence |
-| `f7a4a13` | Provider key generation, snapshot signing, fingerprint-bound administration, status/check commands, and no-display workflow |
-| `c77a020` | Audit/explain diagnostics, fuzz seeds, Linux test-adapter fix, contract update, test matrix, and operator runbook |
+| `eb99f1c` | Strict signed-snapshot contract, RFC 8785 canonicalization, Ed25519 verification, exact normalized publisher lookup, freshness, and negative tests |
+| `3836b0d` | Root-owned provider/snapshot store, exact key admission, durable atomic replacement, unsafe-state rejection, and sequence rollback protection |
+| `4f1a0d0` | ABI 2 policy modes, exact exceptions, headless confirmation semantics, authority precedence, and historical enrolment evidence |
+| `4cee78a` | Provider key generation, snapshot signing, fingerprint-bound administration, status/check commands, and no-display workflow |
+| `7874ed0` | Audit/explain diagnostics, fuzz seeds, Linux test-adapter fix, contract update, test matrix, and operator runbook |
+| `cc7f957` | Rebase integration with upstream privilege separation, D-Bus/systemd healing, common-evidence transport, and verifier-readable root-owned trust material |
 
 ## 2. Authenticated provider boundary
 
@@ -85,6 +86,16 @@ when exercising a deliberately empty OIDC identity. Production normalization
 already rejected that identity. The adapter now preserves the negative result
 without dereferencing it, and the full Linux suite proves the regression.
 
+The post-Phase-4 rebase onto cpak v2.6.5 retained upstream's unprivileged,
+network-isolated signature verifier for both Sigstore and X.509 evidence. The
+existing D-Bus method ABI now carries evidence ABI, kind, and media type while
+binary CMS travels as strict base64 text. Signed enrolment retries exactly once
+when an upgraded authority steps aside. Local roots and CRLs remain root-owned
+and non-writable but are readable by UID 65534; `cpak system setup` safely
+migrates trust files admitted by the earlier POC mode. Unsafe owners, writable
+paths, symlinks, duplicate JSON fields, ambiguous child answers, and oversized
+wire values fail closed.
+
 ## 5. Acceptance evidence
 
 | Requirement | Evidence | Result |
@@ -119,15 +130,23 @@ Portability run `32249945862` failed consistently on the newly exercised empty
 identity in the system-authority test adapter. This was treated as a real gate,
 fixed in `c77a020`, and not retried unchanged.
 
-Final Portability run
+Final pre-rebase Portability run
 [`32250642559`](https://github.com/pietrodicaprio/cpak/actions/runs/32250642559)
-covers functional head `c77a020728f3531c47de845e87235c6a4d7a1470` and passed:
+covers original functional head `c77a020728f3531c47de845e87235c6a4d7a1470` and passed:
 
 - the full project test, vet, build, and doctor command on Ubuntu 22.04,
   Ubuntu 24.04, and `ubuntu-latest`;
 - the CGO-free Linux amd64 build;
 - userspace execution on Debian 13, Fedora 42, Arch Linux, openSUSE Tumbleweed,
   and Ubuntu 26.04.
+
+Post-rebase Portability run
+[`32252860049`](https://github.com/pietrodicaprio/cpak/actions/runs/32252860049)
+covers functional head `cc7f95732efaf2b8615bf31f2395cee8b6005149`
+after rebasing the complete series onto upstream v2.6.5 (`e4b5605`). It passed
+the same kernel, binary, and userspace matrix. Local verification also passed
+portable package tests, a complete Linux cross-build, Linux `go vet ./...`,
+`git diff --check`, and a `git range-diff` mapping all 23 original milestones.
 
 ## 7. Completion decision
 
