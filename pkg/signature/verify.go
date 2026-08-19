@@ -160,8 +160,9 @@ func (e *IdentityMismatchError) Unwrap() error {
 // Verified is a bundle that checked out: the state it covers, and the identity
 // the certificate names.
 type Verified struct {
-	State    State    `json:"state"`
-	Identity Identity `json:"identity"`
+	State     State              `json:"state"`
+	Identity  Identity           `json:"identity,omitempty"`
+	Publisher *PublisherIdentity `json:"publisher,omitempty"`
 }
 
 // VerifyPublisher checks a bundle offline against the bundled trust root,
