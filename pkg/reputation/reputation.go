@@ -158,6 +158,8 @@ type Snapshot struct {
 	entries    []Entry
 }
 
+func (s Snapshot) EntryCount() int { return len(s.entries) }
+
 type Result struct {
 	ProviderID  string    `json:"provider_id"`
 	PublisherID string    `json:"publisher_id"`

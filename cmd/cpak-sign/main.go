@@ -38,6 +38,10 @@ func main() {
 		err = attachSignature(arguments)
 	case "x509-sign":
 		err = signX509(arguments)
+	case "reputation-keygen":
+		err = generateReputationKey(arguments)
+	case "reputation-sign":
+		err = signReputation(arguments)
 	case "approve":
 		err = approveState(arguments)
 	case "help", "-h", "--help":
@@ -60,6 +64,10 @@ func usage(writer io.Writer) {
   attach   attach a signed state to its image as an OCI referrer
   x509-sign
            sign a state as detached X.509/CMS evidence using a software key
+  reputation-keygen
+           generate a disposable encrypted Ed25519 provider key and public authority
+  reputation-sign
+           sign a canonical publisher-reputation snapshot for offline import
   approve  attach an organisation's counter-signature over a state its
            publisher already signed
 
