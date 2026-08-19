@@ -234,3 +234,20 @@ If you would rather not download a binary:
 git clone --depth 1 --branch v2 https://github.com/Containerpak/cpak /tmp/cpak
 go -C /tmp/cpak build -o /usr/local/bin/cpak-sign ./cmd/cpak-sign
 ```
+
+## Experimental X.509/private-PKI workflow
+
+The Sigstore/OIDC workflow above remains the default and requires no publisher
+key. Phase 3 also provides a self-contained, explicitly experimental X.509/CMS
+workflow for demonstrating private or commercial Code Signing PKI without
+changing the signed-state format.
+
+`cpak-sign x509-sign` accepts an encrypted PKCS#8 software key through an
+owner-only passphrase file or inherited descriptor. `cpak-sign attach
+--evidence-kind x509-cms` publishes the resulting detached CMS under its own
+OCI artifact profile. The implementation signs through `crypto.Signer`, so a
+future hardware or PKCS#11 backend will not change the evidence format.
+
+The POC CA is never trusted by default and never implies publisher reputation.
+See [application-trust-poc-demo.md](application-trust-poc-demo.md) for the
+reproducible Linux runbook, explicit root-import lifecycle, and limitations.

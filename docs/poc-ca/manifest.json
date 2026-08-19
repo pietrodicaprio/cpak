@@ -1,0 +1,12 @@
+{
+  "assurance": "experimental-private-pki",
+  "generated_at": "2026-08-19T11:04:05Z",
+  "policy_oid": "1.3.6.1.4.1.55555.1.1",
+  "sha256_fingerprints": {
+    "code-signing-intermediate.pem": "f76ca8eb0d01ea8c894784077fd005cb7873eb168f8e9c31f18fdfdb0d7809aa",
+    "publisher.pem": "dbc66b1efe879d90dfc21cbc62b465b7eafefcde254f77e41067f721d7ee26cc",
+    "root.pem": "246b93d1440b4425dfd10a2011e841213daa4a513140fde49bf2ab953ce60e8c",
+    "timestamping-intermediate.pem": "9a4c635b284759eaf312ec58f7c3d2d8c6eb0bc4828ebb052e9710ffc95e8d71",
+    "tsa.pem": "3f8614994614bae779c9023e14a83f60ff693429f5add89a3aaeacff7094c248"
+  }
+}
