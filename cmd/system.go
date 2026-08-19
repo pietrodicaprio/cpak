@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/mirkobrombin/cpak/pkg/cpak"
+	"github.com/mirkobrombin/cpak/pkg/signature"
 	"github.com/mirkobrombin/cpak/pkg/systemauthority"
 	"github.com/mirkobrombin/cpak/pkg/tools"
 	"github.com/mirkobrombin/cpak/pkg/trustpolicy"
@@ -22,7 +23,7 @@ import (
 )
 
 type SystemCmd struct {
-	Action string `arg:"action" help:"Action: setup, remove, status, enforcement, set-enforcement, signatures, set-signatures, trust, set-trust, ceiling, set-ceiling, explain, clear-removal, register-session or remove-session"`
+	Action string `arg:"action" help:"Action: setup, remove, status, enforcement, set-enforcement, signatures, set-signatures, trust, set-trust, ceiling, set-ceiling, explain, clear-removal, trust-root-preview, trust-root-add, trust-root-remove, trust-root-status, register-session or remove-session"`
 	Target string `arg:"target" help:"Enforcement level for set-enforcement, signature policy for set-signatures, policy file for set-trust and set-ceiling, package origin for explain and clear-removal"`
 
 	ID          string `cli:"id" help:"Session identifier for the session actions"`
@@ -30,6 +31,9 @@ type SystemCmd struct {
 	Name        string `cli:"name" help:"Session name for register-session"`
 	Description string `cli:"description" help:"Session description for register-session"`
 	Kind        string `cli:"kind" help:"Session kind for register-session"`
+	Purpose     string `cli:"purpose" help:"Trust-root purpose: code-signing or timestamping"`
+	Fingerprint string `cli:"fingerprint" help:"Confirmed lowercase SHA-256 fingerprint for trust-root operations"`
+	Yes         bool   `cli:"yes,y" help:"Skip the trust-root confirmation prompt"`
 
 	cli.Base
 }
@@ -83,6 +87,8 @@ func (c *SystemCmd) Run() error {
 		return c.explain()
 	case "clear-removal":
 		return c.clearRemoval()
+	case "trust-root-preview", "trust-root-add", "trust-root-remove", "trust-root-status":
+		return c.manageTrustRoots(action)
 	case "register-session", "remove-session":
 		// These carry a step already validated against the store of the user
 		// who asked for it, so they only ever run through the escalation.
@@ -435,7 +441,19 @@ func (c *SystemCmd) reportPublisher(origin string) {
 	case !found.Enrolled:
 		return
 	case found.Verified:
-		c.Logger.Info("  Signed by %s, at the publisher generation %d", found.Identity.Repo, found.State.Generation)
+		publisher := found.Identity.Repo
+		if found.Publisher != nil {
+			publisher = found.Publisher.DisplayName
+			if publisher == "" {
+				publisher = found.Publisher.ID
+			}
+		}
+		c.Logger.Info("  Signed by %s, at the publisher generation %d", publisher, found.State.Generation)
+		if found.Verification.EvidenceKind == signature.EvidenceX509CMS {
+			c.Logger.Info("    X.509 identity: %s", found.Publisher.ID)
+			c.Logger.Info("    Trust root: %s", found.Verification.RootSource)
+			c.Logger.Info("    Signing time: %s; revocation: %s", found.Verification.SigningTime, found.Verification.Revocation)
+		}
 	case found.Unsigned():
 		c.Logger.Warning("  Unsigned: no publisher signature was recorded when it was enrolled")
 	default:

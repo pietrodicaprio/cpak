@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/mirkobrombin/cpak/pkg/cpak"
+	"github.com/mirkobrombin/cpak/pkg/signature"
 	"github.com/mirkobrombin/cpak/pkg/systemauthority"
 	"github.com/mirkobrombin/go-cli-builder/v3/pkg/cli"
 )
@@ -136,7 +137,18 @@ func (c *AuditCmd) reportSignature(signed cpak.RecordedSignature) {
 	case !signed.Enrolled:
 		return
 	case signed.Verified:
-		c.Logger.Info("    signed by %s at generation %d, and the signature verifies against the trust root cpak ships with", signed.Identity.Repo, signed.State.Generation)
+		publisher := signed.Identity.Repo
+		if signed.Publisher != nil {
+			publisher = signed.Publisher.DisplayName
+			if publisher == "" {
+				publisher = signed.Publisher.ID
+			}
+		}
+		if signed.Verification.EvidenceKind == signature.EvidenceX509CMS {
+			c.Logger.Info("    signed by %s at generation %d; X.509 identity %s; root %s; signing time %s; revocation %s", publisher, signed.State.Generation, signed.Publisher.ID, signed.Verification.RootSource, signed.Verification.SigningTime, signed.Verification.Revocation)
+			return
+		}
+		c.Logger.Info("    signed by %s at generation %d, and the signature verifies against the trust root cpak ships with", publisher, signed.State.Generation)
 	case signed.Unsigned():
 		c.Logger.Warning("    unsigned: no publisher signature was recorded when it was enrolled")
 	default:
