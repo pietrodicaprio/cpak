@@ -101,6 +101,9 @@ func (c *VerifySignatureCmd) signedState() (signature.State, error) {
 	if err != nil {
 		return signature.State{}, err
 	}
+	if bytes.HasPrefix(encoded, []byte("cpak.signature.state.v1\n")) {
+		return signature.ParseCanonicalState(encoded)
+	}
 	decoder := json.NewDecoder(bytes.NewReader(encoded))
 	decoder.DisallowUnknownFields()
 	state := signature.State{}

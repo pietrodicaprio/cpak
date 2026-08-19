@@ -36,6 +36,8 @@ func main() {
 		err = buildState(arguments)
 	case "attach":
 		err = attachSignature(arguments)
+	case "x509-sign":
+		err = signX509(arguments)
 	case "approve":
 		err = approveState(arguments)
 	case "help", "-h", "--help":
@@ -56,6 +58,8 @@ func usage(writer io.Writer) {
   state    build the package state a publisher signs, with the image tag
            resolved to the digest the payload carries
   attach   attach a signed state to its image as an OCI referrer
+  x509-sign
+           sign a state as detached X.509/CMS evidence using a software key
   approve  attach an organisation's counter-signature over a state its
            publisher already signed
 
