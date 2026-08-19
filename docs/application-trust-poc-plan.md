@@ -605,8 +605,10 @@ documented commands with no secret material from a developer workstation.
 - `blocked` produces the configured refusal and a stable reason code.
 - `audit` records a result without changing the existing allow decision.
 - Provider-unavailable behavior matches each configured policy mode.
-- The same signed snapshot produces the same reputation and policy result on a
-  graphical workstation, an interactive terminal, and a non-interactive host.
+- The same signed snapshot produces the same authenticated reputation result in
+  graphical, interactive-terminal, and non-interactive contexts. Policy facts
+  remain the same; only `warn` presentation differs: a non-interactive caller
+  receives `confirmation-required` instead of inferred consent.
 - Publisher display-name changes do not change or hijack reputation identity.
 - Snapshot reason text is bounded and safe for terminal/log output.
 - No network request or telemetry is emitted by the POC provider.

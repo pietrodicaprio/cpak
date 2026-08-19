@@ -16,8 +16,10 @@ import (
 	"testing"
 
 	"github.com/mirkobrombin/cpak/pkg/integrity"
+	"github.com/mirkobrombin/cpak/pkg/reputation"
 	"github.com/mirkobrombin/cpak/pkg/signature"
 	"github.com/mirkobrombin/cpak/pkg/systemauthority"
+	"github.com/mirkobrombin/cpak/pkg/trustpolicy"
 	"github.com/mirkobrombin/cpak/pkg/types"
 )
 
@@ -873,6 +875,33 @@ func TestRecordedSignaturesReportWhatTheLedgerHolds(t *testing.T) {
 	}
 	if !errors.Is(failing.Reason, ErrSignatureUnverified) {
 		t.Fatalf("got reason %v, want it to say the signature does not verify", failing.Reason)
+	}
+}
+
+func TestRecordedSignaturesIncludeTheHistoricalReputationDecision(t *testing.T) {
+	cp := newSignatureCpak(t)
+	authority := useEnrolmentAuthority(t)
+	registry := newSignatureRegistry()
+	digest := contentDigest([]byte("the image whose publisher was rated"))
+	attachSigned(t, registry, digest, 2, []byte(`{"bundle":"signed"}`))
+	app := installedFromRegistry(t, cp, registry, digest)
+	useSignatureVerifier(t, func(_ []byte, state signature.State) (signature.Verified, error) {
+		return signature.Verified{State: state, Identity: publisherIdentity(testOrigin)}, nil
+	})
+	if enrolment := cp.EnrolPublishedApplication(app, publishedTestPackage(t)); enrolment.Outcome != EnrolmentRecorded {
+		t.Fatalf("got outcome %s (%v), want the signed installation enrolled", enrolment.Outcome, enrolment.Reason)
+	}
+	record := authority.records[testOrigin]
+	record.Reputation = &reputation.Result{ProviderID: "cpak-poc", PublisherID: "oidc-v1-sha256:" + strings.Repeat("a", 64), Status: reputation.Caution, ReasonCode: "recent-key-change"}
+	record.ReputationDecision = &trustpolicy.ReputationDecision{Allowed: true, Action: trustpolicy.ActionWarn, ReasonCode: "recent-key-change", Reason: "publisher reputation requires a warning before continuing"}
+	authority.records[testOrigin] = record
+
+	reported := cp.RecordedSignatureOf(testOrigin)
+	if reported.Reputation == nil || reported.ReputationDecision == nil {
+		t.Fatalf("historical reputation was dropped: %+v", reported)
+	}
+	if reported.Reputation.Status != reputation.Caution || reported.Reputation.ReasonCode != "recent-key-change" || reported.ReputationDecision.Action != trustpolicy.ActionWarn {
+		t.Fatalf("historical reputation changed: %+v %+v", reported.Reputation, reported.ReputationDecision)
 	}
 }
 

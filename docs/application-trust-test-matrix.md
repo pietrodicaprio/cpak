@@ -144,34 +144,34 @@ behaviour require the real integration path described in the Evidence column.
 
 | ID | Requirement | Evidence | Phase | State |
 | --- | --- | --- | --- | --- |
-| AT-REP-001 | Valid fresh configured snapshot is accepted | Snapshot verifier unit test | 4 | Planned |
-| AT-REP-002 | Tampered or wrongly signed snapshot is rejected | Bit-flip and wrong-key tests | 4 | Planned |
-| AT-REP-003 | Unsupported ABI, unknown fields, duplicate keys, duplicate publisher IDs, and oversize fail closed | Parser table and fuzz corpus | 4 | Planned |
-| AT-REP-004 | Expired and future-issued snapshot are unavailable | Injected-clock boundary tests | 4 | Planned |
-| AT-REP-005 | Equal or lower sequence is rejected as rollback | Privileged store test | 4 | Planned |
-| AT-REP-006 | Wrong provider or key ID is rejected | Provider configuration test | 4 | Planned |
-| AT-REP-007 | The single active snapshot record, including its sequence, is durably replaced atomically | Fault-injected store test | 4 | Planned |
-| AT-REP-008 | Absent publisher is `unknown`; absent provider is `unavailable` | Provider result table | 4 | Planned |
-| AT-REP-009 | All five reputation statuses are deterministic | Signed fixture table | 4 | Planned |
-| AT-REP-010 | Reason codes and display text are bounded and terminal-safe | Parser and CLI sanitization tests | 4-5 | Planned |
-| AT-REP-011 | Display-name changes cannot hijack reputation identity | Publisher-ID lookup test | 4 | Planned |
-| AT-REP-012 | Provider performs no network or telemetry operation | Network-deny integration test | 4 | Planned |
+| AT-REP-001 | Valid fresh configured snapshot is accepted | `TestValidFreshSnapshotVerifiesAndLooksUpEveryStatus` and `TestReputationStoreImportsAndServesOnlyAuthenticatedSnapshots` | 4 | Implemented |
+| AT-REP-002 | Tampered or wrongly signed snapshot is rejected | `TestSnapshotSignatureBindsCanonicalSignedObject`, `TestSnapshotRejectsWrongAuthorityAndKey`, and `TestInvalidSnapshotNeverReplacesTheActiveRecord` | 4 | Implemented |
+| AT-REP-003 | Unsupported ABI, unknown fields, duplicate keys, duplicate publisher IDs, and oversize fail closed | `TestSnapshotRejectsUnsupportedAmbiguousAndUnsafeContent`, `FuzzSnapshotParsers`, and `FuzzAuthorityParser` | 4 | Implemented |
+| AT-REP-004 | Expired and future-issued snapshot are unavailable | `TestSnapshotFreshnessBoundariesAreUnavailableNotUnknown` | 4 | Implemented |
+| AT-REP-005 | Equal or lower sequence is rejected as rollback | `TestReputationStoreRejectsRollbackEvenAfterActiveSnapshotExpires` | 4 | Implemented |
+| AT-REP-006 | Wrong provider or key ID is rejected | `TestSnapshotRejectsWrongAuthorityAndKey` and `TestReputationStoreRequiresThePreviewedProviderKey` | 4 | Implemented |
+| AT-REP-007 | The single active snapshot record, including its sequence, is durably replaced atomically | `TestInterruptedSnapshotReplacementLeavesThePriorRecord` plus file and directory `fsync` in `ReputationStore.Import` | 4 | Implemented |
+| AT-REP-008 | Absent publisher is `unknown`; absent provider is `unavailable` | `TestValidFreshSnapshotVerifiesAndLooksUpEveryStatus` and `TestAbsentProviderAndSnapshotAreDifferentUnavailableResults` | 4 | Implemented |
+| AT-REP-009 | All five reputation statuses are deterministic | Verifier/provider and frozen policy tables in `TestValidFreshSnapshotVerifiesAndLooksUpEveryStatus` and `TestReputationPolicyModesHaveFrozenConsequences` | 4 | Implemented |
+| AT-REP-010 | Reason codes and display text are bounded and terminal-safe | Strict reason-code grammar in `TestSnapshotRejectsUnsupportedAmbiguousAndUnsafeContent`; snapshots carry no provider-controlled display prose | 4-5 | Implemented for Phase 4; complete output golden coverage remains Phase 5 |
+| AT-REP-011 | Display-name changes cannot hijack reputation identity | `TestNormalizedPublisherSelectorDoesNotUseDisplayNamesOrPrefixes` and exact normalized-ID provider lookup | 4 | Implemented |
+| AT-REP-012 | Provider performs no network or telemetry operation | `pkg/reputation` is a pure caller-supplied snapshot parser/provider with no filesystem or network dependency; Linux lifecycle runs without provider network configuration | 4 | Implemented by construction and integration audit |
 
 ## 10. Policy modes and precedence
 
 | ID | Requirement | Evidence | Phase | State |
 | --- | --- | --- | --- | --- |
-| AT-POL-001 | `off` does not consult reputation | Provider spy test | 4 | Planned |
-| AT-POL-002 | `audit` records every result without changing prior allow/deny | Decision table | 4 | Planned |
-| AT-POL-003 | `warn` warns on unknown, caution, and unavailable but denies blocked | Decision table | 4 | Planned |
-| AT-POL-004 | `require-established` allows only established | Decision table | 4 | Planned |
-| AT-POL-005 | Exception applies only to its exact publisher, origin, status, and unexpired time and overrides only unknown or caution | Exception boundary table | 4 | Planned |
-| AT-POL-006 | Blocked reputation cannot be overridden | Exception boundary table | 4 | Planned |
-| AT-POL-007 | Invalid cryptography, untrusted chain, stale evidence, and revocation precede reputation | Full precedence table | 4-5 | Planned |
-| AT-POL-008 | Origin, publisher, approval, and release revocation precede reputation | Full precedence table | 4-5 | Planned |
-| AT-POL-009 | Administrator remains the final authority | Real authority enrolment tests | 4-5 | Planned |
-| AT-POL-010 | ABI 1 policies retain exact existing semantics | Legacy fixture plus existing trust-policy suite | 1, 5 | Existing/Planned |
-| AT-POL-011 | ABI 2 is rejected by an ABI 1 decoder instead of partially applied | Compatibility binary/fixture test | 4 | Planned |
+| AT-POL-001 | `off` does not consult reputation | `TestReputationOffDoesNotConsultAProvider` | 4 | Implemented |
+| AT-POL-002 | `audit` records every result without changing prior allow/deny | `TestReputationPolicyModesHaveFrozenConsequences` and `TestAuthorityReputationModesControlEnrolmentAndRecordedEvidence` | 4 | Implemented |
+| AT-POL-003 | `warn` warns on unknown, caution, and unavailable but denies blocked | `TestReputationPolicyModesHaveFrozenConsequences` and `TestWarnRequiresConfirmationWithoutAnInteractiveCaller` | 4 | Implemented |
+| AT-POL-004 | `require-established` allows only established | `TestReputationPolicyModesHaveFrozenConsequences` and authority decision table | 4 | Implemented |
+| AT-POL-005 | Exception applies only to its exact publisher, origin, status, and unexpired time and overrides only unknown or caution | `TestReputationExceptionIsExactScopedAndNeverOverridesBlocked` | 4 | Implemented |
+| AT-POL-006 | Blocked reputation cannot be overridden | `TestReputationExceptionIsExactScopedAndNeverOverridesBlocked` | 4 | Implemented |
+| AT-POL-007 | Invalid cryptography, untrusted chain, stale evidence, and revocation precede reputation | `TestAuthorityAppliesReputationOnlyAfterSignatureAndAdministratorPolicy` plus Phase 2 verifier precedence suites | 4-5 | Implemented for authority sequencing; full lifecycle table remains Phase 5 |
+| AT-POL-008 | Origin, publisher, approval, and release revocation precede reputation | `TestAuthorityAppliesReputationOnlyAfterSignatureAndAdministratorPolicy` plus existing trust-policy decision suites | 4-5 | Implemented for authority sequencing; full lifecycle table remains Phase 5 |
+| AT-POL-009 | Administrator remains the final authority | `TestAuthorityReputationModesControlEnrolmentAndRecordedEvidence` and privileged provider-store tests | 4-5 | Implemented for Phase 4 enrolment path |
+| AT-POL-010 | ABI 1 policies retain exact existing semantics | Legacy fixture and existing trust-policy suite remain green; ABI 2 fields are rejected under ABI 1 | 1, 5 | Existing; regression-covered in Phase 4 |
+| AT-POL-011 | ABI 2 is rejected by an ABI 1 decoder instead of partially applied | strict ABI dispatch and `TestPolicyV2ValidationRejectsAmbiguousOrUnsafeReputationRules` | 4 | Implemented in current decoder; cross-version binary fixture remains Phase 5 |
 
 ## 11. Lifecycle, explainability, and runtime
 

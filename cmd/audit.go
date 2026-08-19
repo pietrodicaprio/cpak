@@ -102,12 +102,22 @@ func (c *AuditCmd) reportApplication(app cpak.ApplicationIntegrity, anchor cpak.
 		name, app.BoundLayers, app.Layers, app.DescribedCheckouts, app.PreparedCheckouts)
 	c.reportEnrolment(anchor)
 	c.reportSignature(signed)
+	c.reportReputation(signed)
 	for _, disagreement := range app.Disagreements {
 		c.Logger.Error("    the store contradicts itself: %s", disagreement)
 	}
 	for _, unmeasured := range app.Unmeasured {
 		c.Logger.Warning("    nothing in the store speaks for it: %s", unmeasured)
 	}
+}
+
+func (c *AuditCmd) reportReputation(signed cpak.RecordedSignature) {
+	if signed.Reputation == nil || signed.ReputationDecision == nil {
+		return
+	}
+	c.Logger.Info("    reputation at enrolment: provider %s, status %s, reason %s, policy action %s (%s)",
+		signed.Reputation.ProviderID, signed.Reputation.Status, signed.Reputation.ReasonCode,
+		signed.ReputationDecision.Action, signed.ReputationDecision.ReasonCode)
 }
 
 // reportEnrolment says what the anchor ledger holds for one application. It is
