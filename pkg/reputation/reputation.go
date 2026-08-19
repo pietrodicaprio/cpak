@@ -9,11 +9,14 @@
 package reputation
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"sort"
 	"time"
@@ -26,6 +29,7 @@ const (
 	MaxEntries         = 100_000
 	MaxSequence        = 1<<53 - 1
 	MaxReasonCode      = 64
+	MaxAuthoritySize   = 64 << 10
 )
 
 type Status string
@@ -51,6 +55,13 @@ type Authority struct {
 	ProviderID string
 	KeyID      string
 	PublicKey  ed25519.PublicKey
+}
+
+type authorityDocument struct {
+	ABI        int    `json:"abi"`
+	ProviderID string `json:"provider_id"`
+	KeyID      string `json:"key_id"`
+	PublicKey  []byte `json:"public_key"`
 }
 
 func NewAuthority(providerID string, publicKey ed25519.PublicKey) (Authority, error) {
@@ -81,6 +92,46 @@ func (a Authority) Validate() error {
 func KeyID(publicKey ed25519.PublicKey) string {
 	digest := sha256.Sum256(publicKey)
 	return "ed25519-sha256:" + hex.EncodeToString(digest[:])
+}
+
+func MarshalAuthority(authority Authority) ([]byte, error) {
+	if err := authority.Validate(); err != nil {
+		return nil, err
+	}
+	document, err := json.MarshalIndent(authorityDocument{
+		ABI: SnapshotABIVersion, ProviderID: authority.ProviderID,
+		KeyID: authority.KeyID, PublicKey: authority.PublicKey,
+	}, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode reputation authority: %w", err)
+	}
+	return append(document, '\n'), nil
+}
+
+func ParseAuthority(document []byte) (Authority, error) {
+	if len(document) == 0 || len(document) > MaxAuthoritySize {
+		return Authority{}, invalid("authority document size is outside the supported range")
+	}
+	if err := rejectDuplicateKeys(document); err != nil {
+		return Authority{}, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(document))
+	decoder.DisallowUnknownFields()
+	wire := authorityDocument{}
+	if err := decoder.Decode(&wire); err != nil {
+		return Authority{}, invalid("decode authority: %v", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return Authority{}, invalid("authority contains multiple JSON values")
+	}
+	if wire.ABI != SnapshotABIVersion {
+		return Authority{}, invalid("unsupported authority abi %d", wire.ABI)
+	}
+	authority := Authority{ProviderID: wire.ProviderID, KeyID: wire.KeyID, PublicKey: ed25519.PublicKey(wire.PublicKey)}
+	if err := authority.Validate(); err != nil {
+		return Authority{}, err
+	}
+	return authority, nil
 }
 
 type Entry struct {

@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/cyberphone/json-canonicalization/go/src/webpki.org/jsoncanonicalizer"
-	"github.com/mirkobrombin/cpak/pkg/signature"
 )
 
 type envelope struct {
@@ -30,6 +29,23 @@ type envelope struct {
 // provider authority. Host freshness is evaluated against the caller's single
 // injected time.
 func Verify(document []byte, authority Authority, now time.Time) (Snapshot, error) {
+	snapshot, err := Authenticate(document, authority)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if snapshot.IssuedAt.After(now) {
+		return Snapshot{}, fmt.Errorf("%w: snapshot was issued in the future", ErrUnavailable)
+	}
+	if !now.Before(snapshot.ExpiresAt) {
+		return Snapshot{}, fmt.Errorf("%w: snapshot has expired", ErrUnavailable)
+	}
+	return snapshot, nil
+}
+
+// Authenticate verifies the schema, configured authority and signed contents
+// without applying host freshness. Stores use it only to retain the monotonic
+// sequence of an expired active snapshot; consumers use Verify.
+func Authenticate(document []byte, authority Authority) (Snapshot, error) {
 	if len(document) == 0 || len(document) > MaxSnapshotSize {
 		return Snapshot{}, invalid("document size is outside the supported range")
 	}
@@ -55,12 +71,6 @@ func Verify(document []byte, authority Authority, now time.Time) (Snapshot, erro
 	issued, expires, err := validateSigned(signed)
 	if err != nil {
 		return Snapshot{}, err
-	}
-	if issued.After(now) {
-		return Snapshot{}, fmt.Errorf("%w: snapshot was issued in the future", ErrUnavailable)
-	}
-	if !now.Before(expires) {
-		return Snapshot{}, fmt.Errorf("%w: snapshot has expired", ErrUnavailable)
 	}
 	return Snapshot{
 		ProviderID: parsed.ProviderID,
@@ -108,8 +118,8 @@ func Sign(providerID string, privateKey ed25519.PrivateKey, signed Signed) ([]by
 }
 
 func parseEnvelope(document []byte) (envelope, Signed, []byte, error) {
-	if err := signature.RejectDuplicateJSONKeys(document); err != nil {
-		return envelope{}, Signed{}, nil, invalid("duplicate or malformed JSON: %v", err)
+	if err := rejectDuplicateKeys(document); err != nil {
+		return envelope{}, Signed{}, nil, err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(document))
 	decoder.DisallowUnknownFields()
@@ -137,4 +147,59 @@ func parseEnvelope(document []byte) (envelope, Signed, []byte, error) {
 		return envelope{}, Signed{}, nil, invalid("canonicalize signed object: %v", err)
 	}
 	return parsed, signed, canonical, nil
+}
+
+func rejectDuplicateKeys(document []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(document))
+	var walk func() error
+	walk = func() error {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		delimiter, ok := token.(json.Delim)
+		if !ok {
+			return nil
+		}
+		switch delimiter {
+		case '{':
+			seen := make(map[string]struct{})
+			for decoder.More() {
+				keyToken, err := decoder.Token()
+				if err != nil {
+					return err
+				}
+				key, ok := keyToken.(string)
+				if !ok {
+					return errors.New("object key is not text")
+				}
+				if _, duplicate := seen[key]; duplicate {
+					return fmt.Errorf("duplicate key %q", key)
+				}
+				seen[key] = struct{}{}
+				if err := walk(); err != nil {
+					return err
+				}
+			}
+			_, err = decoder.Token()
+			return err
+		case '[':
+			for decoder.More() {
+				if err := walk(); err != nil {
+					return err
+				}
+			}
+			_, err = decoder.Token()
+			return err
+		default:
+			return errors.New("unexpected delimiter")
+		}
+	}
+	if err := walk(); err != nil {
+		return invalid("duplicate or malformed JSON: %v", err)
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return invalid("document contains multiple JSON values")
+	}
+	return nil
 }
