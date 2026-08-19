@@ -46,8 +46,9 @@ and intermediate but not a trust root.
 
 `hack/poc-ca` is development tooling and is not linked into the production cpak
 runtime. It creates a new output directory with mode `0700`. Every private key
-is emitted as encrypted PKCS#8 PEM with mode `0600`; the passphrase is read from
-a separate owner-only file and never accepted as a command-line argument.
+is emitted as encrypted PKCS#8 PEM with mode `0600`, scrypt (`N=32768`, `r=8`,
+`p=1`, 16-byte salt), and AES-256-GCM; the passphrase is read from a separate
+owner-only file and never accepted as a command-line argument.
 
 Generated private material is disposable. It must remain outside the source
 checkout, must never enter a container image or CI artifact, and must be removed

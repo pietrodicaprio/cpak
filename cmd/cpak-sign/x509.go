@@ -14,6 +14,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -71,10 +72,14 @@ func signX509(arguments []string) error {
 	if err = os.WriteFile(*outputPath, der, 0o644); err != nil {
 		return fmt.Errorf("write detached CMS evidence: %w", err)
 	}
-	fingerprint := sha256.Sum256(leafs[0].RawSubjectPublicKeyInfo)
-	fmt.Fprintf(os.Stderr, "signed state as %s with experimental private-PKI publisher x509-spki-sha256:%s\n", *outputPath, hex.EncodeToString(fingerprint[:]))
-	fmt.Fprintln(os.Stderr, "assurance: experimental; this signature has no public trust or publisher reputation unless an administrator explicitly grants it")
+	reportX509Signing(os.Stderr, *outputPath, leafs[0])
 	return nil
+}
+
+func reportX509Signing(writer io.Writer, outputPath string, leaf *x509.Certificate) {
+	fingerprint := sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
+	fmt.Fprintf(writer, "signed state as %s with experimental X.509 publisher x509-spki-sha256:%s\n", outputPath, hex.EncodeToString(fingerprint[:]))
+	fmt.Fprintln(writer, "assurance: experimental; this signature has no public trust or publisher reputation unless an administrator explicitly grants it")
 }
 
 func readCertificates(path string) ([]*x509.Certificate, error) {
