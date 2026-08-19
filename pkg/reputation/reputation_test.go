@@ -234,4 +234,27 @@ func TestAuthorityAndPublisherIdentifiersAreExact(t *testing.T) {
 	if KeyID(publicKey) == "" || !strings.HasPrefix(KeyID(publicKey), "ed25519-sha256:") {
 		t.Fatalf("unexpected key id %q", KeyID(publicKey))
 	}
+	authority, err := NewAuthority("cpak-poc", publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document, err := MarshalAuthority(authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ParseAuthority(document)
+	if err != nil || parsed.ProviderID != authority.ProviderID || parsed.KeyID != authority.KeyID || !bytes.Equal(parsed.PublicKey, authority.PublicKey) {
+		t.Fatalf("authority round trip: got %+v, %v", parsed, err)
+	}
+	for name, candidate := range map[string][]byte{
+		"duplicate": bytes.Replace(document, []byte(`"abi": 1`), []byte(`"abi": 1, "abi": 1`), 1),
+		"unknown":   bytes.Replace(document, []byte(`"abi": 1`), []byte(`"abi": 1, "future": true`), 1),
+		"trailing":  append(append([]byte(nil), document...), []byte("{}")...),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ParseAuthority(candidate); !errors.Is(err, ErrInvalidSnapshot) {
+				t.Fatalf("got %v", err)
+			}
+		})
+	}
 }
