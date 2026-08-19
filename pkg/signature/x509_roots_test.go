@@ -225,6 +225,15 @@ func TestLocalRootImportRequiresThePreviewedFingerprintAndKeepsPurposesSeparate(
 	if _, err := store.Import(source, RootPurposeTimestamping, preview.Fingerprint); err != nil {
 		t.Fatal(err)
 	}
+	admitted := filepath.Join(store.TimestampingDirectory, preview.Fingerprint+".der")
+	if info, err := os.Stat(admitted); err != nil || info.Mode().Perm() != 0o644 {
+		t.Fatalf("admitted root mode = %v, %v", info, err)
+	}
+	for _, directory := range []string{store.Boundary, store.TimestampingDirectory} {
+		if info, err := os.Stat(directory); err != nil || info.Mode().Perm() != 0o755 {
+			t.Fatalf("trust directory %q mode = %v, %v", directory, info, err)
+		}
+	}
 	trust, err := store.Load()
 	if err != nil {
 		t.Fatal(err)
@@ -235,14 +244,13 @@ func TestLocalRootImportRequiresThePreviewedFingerprintAndKeepsPurposesSeparate(
 	if trust.Roots[preview.Fingerprint].Source != RootSourceLocal {
 		t.Fatalf("local root source = %q", trust.Roots[preview.Fingerprint].Source)
 	}
-	admitted := filepath.Join(store.TimestampingDirectory, preview.Fingerprint+".der")
 	if err := os.Chmod(admitted, 0o666); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Load(); err == nil {
 		t.Fatal("unprivileged-writable root file was accepted")
 	}
-	if err := os.Chmod(admitted, 0o600); err != nil {
+	if err := os.Chmod(admitted, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Import(source, RootPurposeTimestamping, preview.Fingerprint); err == nil {
@@ -258,6 +266,9 @@ func TestLocalRootImportRequiresThePreviewedFingerprintAndKeepsPurposesSeparate(
 
 func TestRootImportHasAnAtomicCommitPointAcrossFailures(t *testing.T) {
 	boundary := t.TempDir()
+	if err := os.Chmod(boundary, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	store := LocalRootStore{Boundary: boundary, CodeSigningDirectory: filepath.Join(boundary, "code-signing.d"), OwnerUID: uint32(os.Getuid())}
 	cert, der := testSelfSignedRoot(t, "atomic root")
 	source := filepath.Join(t.TempDir(), "root.der")
@@ -322,17 +333,42 @@ func TestLocalRootStoreRejectsFilesystemConfusion(t *testing.T) {
 	}
 }
 
+func TestRootImportDoesNotCreateThroughASymlinkedBoundaryComponent(t *testing.T) {
+	boundary := t.TempDir()
+	outside := t.TempDir()
+	redirect := filepath.Join(boundary, "redirect")
+	if err := os.Symlink(outside, redirect); err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(redirect, "code-signing.d")
+	store := LocalRootStore{Boundary: boundary, CodeSigningDirectory: directory, OwnerUID: uint32(os.Getuid())}
+	cert, der := testSelfSignedRoot(t, "redirected root")
+	source := filepath.Join(t.TempDir(), "root.der")
+	if err := os.WriteFile(source, der, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Import(source, RootPurposeCodeSigning, fingerprintOf(cert)); err == nil {
+		t.Fatal("root import followed a symlink inside the trust boundary")
+	}
+	if _, err := os.Lstat(filepath.Join(outside, "code-signing.d")); !os.IsNotExist(err) {
+		t.Fatalf("root import created outside its boundary: %v", err)
+	}
+}
+
 func TestLocalTrustLoadsOnlyRootOwnedOfflineCRLs(t *testing.T) {
 	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
 	pki := newCMSTestPKI(t, now, nil, nil)
 	boundary := t.TempDir()
+	if err := os.Chmod(boundary, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	revocation := filepath.Join(boundary, "revocation", "code-signing.d")
 	if err := os.MkdirAll(revocation, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	list := createTestCRL(t, pki.intermediate, pki.intermediateKey, now, nil, nil)
 	path := filepath.Join(revocation, "publisher.crl")
-	if err := os.WriteFile(path, list.Raw, 0o600); err != nil {
+	if err := os.WriteFile(path, list.Raw, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	store := LocalRootStore{Boundary: boundary, PublisherCRLDirectory: revocation, OwnerUID: uint32(os.Getuid())}
@@ -348,6 +384,39 @@ func TestLocalTrustLoadsOnlyRootOwnedOfflineCRLs(t *testing.T) {
 	}
 	if _, err := store.Load(); err == nil {
 		t.Fatal("unprivileged-writable CRL was accepted")
+	}
+}
+
+func TestPrepareVerifierAccessMigratesOnlySafeTrustMaterial(t *testing.T) {
+	boundary := t.TempDir()
+	directory := filepath.Join(boundary, "code-signing.d")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, der := testSelfSignedRoot(t, "legacy local root")
+	path := filepath.Join(directory, "legacy.der")
+	if err := os.WriteFile(path, der, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := LocalRootStore{Boundary: boundary, CodeSigningDirectory: directory, OwnerUID: uint32(os.Getuid())}
+	if err := store.PrepareVerifierAccess(); err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range []struct {
+		path string
+		mode os.FileMode
+	}{{boundary, 0o755}, {directory, 0o755}, {path, 0o644}} {
+		info, err := os.Stat(candidate.path)
+		if err != nil || info.Mode().Perm() != candidate.mode {
+			t.Fatalf("%q mode = %v, %v; want %o", candidate.path, info, err, candidate.mode)
+		}
+	}
+
+	if err := os.Chmod(path, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PrepareVerifierAccess(); err == nil {
+		t.Fatal("migration made an unprivileged-writable root look safe")
 	}
 }
 

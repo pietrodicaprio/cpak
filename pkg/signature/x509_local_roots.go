@@ -162,7 +162,10 @@ func (s LocalRootStore) Import(path, purpose, expectedFingerprint string) (RootP
 		temporary.Close()
 		_ = os.Remove(temporaryName)
 	}()
-	if err := temporary.Chmod(0o600); err != nil {
+	// Certificates and revocation lists are public trust material. They stay
+	// root-owned and immutable to the verifier, but the unprivileged verifier
+	// process must be able to read them.
+	if err := temporary.Chmod(0o644); err != nil {
 		return RootPreview{}, err
 	}
 	if err := temporary.Chown(int(s.OwnerUID), -1); err != nil && os.Geteuid() == 0 {
@@ -340,28 +343,122 @@ func (s LocalRootStore) ensureSecureDirectory(directory string) error {
 	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 		return errors.New("local root directory escapes its security boundary")
 	}
+	paths, err := s.directoryPaths(directory)
+	if err != nil {
+		return err
+	}
+	// Validate every existing ancestor before MkdirAll gets a chance to follow
+	// one. Otherwise a symlink inside the boundary could redirect creation
+	// outside it before the post-creation validation noticed.
+	missing := make(map[string]bool)
+	for _, path := range paths {
+		info, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			missing[path] = true
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if err := validateLocalRootDirectoryInfo(path, info, s.OwnerUID, false); err != nil {
+			return err
+		}
+	}
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return err
 	}
 	if os.Geteuid() == 0 {
-		for path := filepath.Clean(directory); ; path = filepath.Dir(path) {
-			if err := os.Chown(path, int(s.OwnerUID), -1); err != nil {
-				return err
+		for _, path := range paths {
+			if missing[path] {
+				if err := os.Chown(path, int(s.OwnerUID), -1); err != nil {
+					return err
+				}
 			}
-			if path == filepath.Clean(s.Boundary) {
-				break
-			}
+		}
+	}
+	if err := s.validateDirectoryAccess(directory, false); err != nil {
+		return err
+	}
+	for _, path := range paths {
+		if err := os.Chmod(path, 0o755); err != nil {
+			return err
 		}
 	}
 	return s.validateDirectory(directory)
 }
 
+// PrepareVerifierAccess upgrades trust material admitted before verification
+// moved into an unprivileged process. It changes no owner and grants no write
+// access: directories become traversable and public certificates and CRLs
+// become readable. Every path is validated before its mode is changed.
+func (s LocalRootStore) PrepareVerifierAccess() error {
+	seen := make(map[string]bool)
+	var files, paths []string
+	seenPaths := make(map[string]bool)
+	for _, directory := range []string{
+		s.CodeSigningDirectory,
+		s.TimestampingDirectory,
+		s.PublisherCRLDirectory,
+		s.TimestampCRLDirectory,
+	} {
+		directory = filepath.Clean(directory)
+		if directory == "." || seen[directory] {
+			continue
+		}
+		seen[directory] = true
+		if _, err := os.Lstat(directory); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		if err := s.validateDirectoryAccess(directory, false); err != nil {
+			return err
+		}
+		entries, err := os.ReadDir(directory)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			path := filepath.Join(directory, entry.Name())
+			if err := validateTrustedRegularFile(path, s.OwnerUID, false); err != nil {
+				return err
+			}
+			files = append(files, path)
+		}
+		directoryPaths, err := s.directoryPaths(directory)
+		if err != nil {
+			return err
+		}
+		for _, path := range directoryPaths {
+			if !seenPaths[path] {
+				paths = append(paths, path)
+				seenPaths[path] = true
+			}
+		}
+	}
+	for _, path := range files {
+		if err := os.Chmod(path, 0o644); err != nil {
+			return err
+		}
+	}
+	for _, path := range paths {
+		if err := os.Chmod(path, 0o755); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s LocalRootStore) validateDirectory(directory string) error {
+	return s.validateDirectoryAccess(directory, true)
+}
+
+func (s LocalRootStore) directoryPaths(directory string) ([]string, error) {
 	boundary := filepath.Clean(s.Boundary)
 	directory = filepath.Clean(directory)
 	relative, err := filepath.Rel(boundary, directory)
 	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return errors.New("local root directory escapes its security boundary")
+		return nil, errors.New("local root directory escapes its security boundary")
 	}
 	paths := []string{boundary}
 	if relative != "." {
@@ -371,21 +468,39 @@ func (s LocalRootStore) validateDirectory(directory string) error {
 			paths = append(paths, current)
 		}
 	}
+	return paths, nil
+}
+
+func (s LocalRootStore) validateDirectoryAccess(directory string, verifierReadable bool) error {
+	paths, err := s.directoryPaths(directory)
+	if err != nil {
+		return err
+	}
 	for _, path := range paths {
 		info, err := os.Lstat(path)
 		if err != nil {
 			return err
 		}
-		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			return fmt.Errorf("local root path %q is not a real directory", path)
+		if err := validateLocalRootDirectoryInfo(path, info, s.OwnerUID, verifierReadable); err != nil {
+			return err
 		}
-		stat, ok := info.Sys().(*syscall.Stat_t)
-		if !ok || stat.Uid != s.OwnerUID {
-			return fmt.Errorf("local root path %q has an unsafe owner", path)
-		}
-		if info.Mode().Perm()&0o022 != 0 {
-			return fmt.Errorf("local root path %q is writable by another account", path)
-		}
+	}
+	return nil
+}
+
+func validateLocalRootDirectoryInfo(path string, info os.FileInfo, owner uint32, verifierReadable bool) error {
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("local root path %q is not a real directory", path)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != owner {
+		return fmt.Errorf("local root path %q has an unsafe owner", path)
+	}
+	if info.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("local root path %q is writable by another account", path)
+	}
+	if verifierReadable && info.Mode().Perm()&0o005 != 0o005 {
+		return fmt.Errorf("local root path %q is not accessible to the unprivileged verifier", path)
 	}
 	return nil
 }
@@ -442,9 +557,8 @@ func readBoundedRegularFile(path string, limit int64, trusted bool, owner uint32
 		return nil, errors.New("root file has an invalid size")
 	}
 	if trusted {
-		stat, ok := info.Sys().(*syscall.Stat_t)
-		if !ok || stat.Uid != owner || info.Mode().Perm()&0o022 != 0 {
-			return nil, errors.New("root file has unsafe ownership or permissions")
+		if err := validateTrustedRegularFileInfo(info, owner, true); err != nil {
+			return nil, err
 		}
 	}
 	file, err := os.Open(path)
@@ -460,6 +574,28 @@ func readBoundedRegularFile(path string, limit int64, trusted bool, owner uint32
 		return nil, errors.New("root file changed while it was read")
 	}
 	return data, nil
+}
+
+func validateTrustedRegularFile(path string, owner uint32, verifierReadable bool) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	return validateTrustedRegularFileInfo(info, owner, verifierReadable)
+}
+
+func validateTrustedRegularFileInfo(info os.FileInfo, owner uint32, verifierReadable bool) error {
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return errors.New("root path is not a regular file")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != owner || info.Mode().Perm()&0o022 != 0 {
+		return errors.New("root file has unsafe ownership or permissions")
+	}
+	if verifierReadable && info.Mode().Perm()&0o004 == 0 {
+		return errors.New("root file is not readable by the unprivileged verifier")
+	}
+	return nil
 }
 
 func fingerprintOf(cert *x509.Certificate) string {

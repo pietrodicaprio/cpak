@@ -101,6 +101,7 @@ func TestTheChildReportsARefusalInsteadOfDying(t *testing.T) {
 func TestTheChildRefusesARequestItCannotName(t *testing.T) {
 	for name, request := range map[string]string{
 		"a field no request has": `{"evidence":{},"now":"2026-01-01T00:00:00Z","extra":true}`,
+		"a repeated field":       `{"evidence":{},"now":"2026-01-01T00:00:00Z","now":"2026-01-01T00:00:00Z"}`,
 		"not an object at all":   `["bundle"]`,
 		"multiple values":        `{} {}`,
 		"nothing":                ``,
@@ -117,6 +118,26 @@ func TestARequestPastTheLimitIsRefused(t *testing.T) {
 	oversized := strings.Repeat("a", verifierRequestLimit+1)
 	if err := RunVerifier(strings.NewReader(oversized), &out); err == nil {
 		t.Fatal("a request past the limit was read")
+	}
+}
+
+func TestTheParentRequiresExactlyOneChildAnswer(t *testing.T) {
+	result := signature.VerificationResult{Cryptographic: signature.CryptographicVerified}
+	for name, answer := range map[string]verifierResponse{
+		"neither": {},
+		"both":    {Result: &result, Error: "ambiguous"},
+	} {
+		if err := validateVerifierResponse(answer); !errors.Is(err, ErrVerifierUnavailable) {
+			t.Fatalf("%s response = %v, want unavailable verifier", name, err)
+		}
+	}
+	for name, answer := range map[string]verifierResponse{
+		"verdict": {Result: &result},
+		"error":   {Error: "signature refused"},
+	} {
+		if err := validateVerifierResponse(answer); err != nil {
+			t.Fatalf("%s response = %v", name, err)
+		}
 	}
 }
 

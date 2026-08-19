@@ -86,6 +86,28 @@ func TestTheCallerAsksAgainExactlyOncePastAStaleAuthority(t *testing.T) {
 	}
 }
 
+func TestSignedEnrolmentAlsoRetriesPastAStaleAuthority(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root records signed enrolments directly")
+	}
+	saved := enrolSignedOverBus
+	t.Cleanup(func() { enrolSignedOverBus = saved })
+	attempts := 0
+	enrolSignedOverBus = func(Enrolment) error {
+		attempts++
+		if attempts == 1 {
+			return dbus.Error{Name: errAuthorityStaleName, Body: []any{"stale"}}
+		}
+		return nil
+	}
+	if err := dispatchSignedEnrolment(Enrolment{}); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 {
+		t.Fatalf("signed enrolment was attempted %d times, want one retry", attempts)
+	}
+}
+
 // Everything that is not that refusal is an answer, and repeating it would
 // ask a user to be authorised twice or record something twice.
 func TestNothingElseIsRetried(t *testing.T) {

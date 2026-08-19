@@ -146,6 +146,9 @@ func runVerifierProcess(ctx context.Context, self string, request []byte, isolat
 	if out.Len() > verifierResponseLimit {
 		return verifierResponse{}, fmt.Errorf("%w: it answered %d bytes", ErrVerifierUnavailable, out.Len())
 	}
+	if err := signature.RejectDuplicateJSONKeys(out.Bytes()); err != nil {
+		return verifierResponse{}, fmt.Errorf("%w: %v", ErrVerifierUnavailable, err)
+	}
 	decoder := json.NewDecoder(&out)
 	decoder.DisallowUnknownFields()
 	var answer verifierResponse
@@ -155,7 +158,17 @@ func runVerifierProcess(ctx context.Context, self string, request []byte, isolat
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return verifierResponse{}, fmt.Errorf("%w: verifier returned multiple JSON values", ErrVerifierUnavailable)
 	}
-	return answer, nil
+	return answer, validateVerifierResponse(answer)
+}
+
+func validateVerifierResponse(answer verifierResponse) error {
+	if answer.Result != nil && answer.Error != "" {
+		return fmt.Errorf("%w: it answered with both a verdict and an error", ErrVerifierUnavailable)
+	}
+	if answer.Result == nil && answer.Error == "" {
+		return fmt.Errorf("%w: it answered with neither a verdict nor an error", ErrVerifierUnavailable)
+	}
+	return nil
 }
 
 func verifierAttributes(isolate bool) *syscall.SysProcAttr {
@@ -191,6 +204,9 @@ func RunVerifier(in io.Reader, out io.Writer) error {
 	}
 	if len(encoded) > verifierRequestLimit {
 		return fmt.Errorf("the verification request exceeds %d bytes", verifierRequestLimit)
+	}
+	if err := signature.RejectDuplicateJSONKeys(encoded); err != nil {
+		return fmt.Errorf("read the verification request: %w", err)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(encoded))
 	decoder.DisallowUnknownFields()

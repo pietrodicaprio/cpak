@@ -13,6 +13,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/mirkobrombin/cpak/pkg/signature"
 )
 
 //go:embed assets/it.cpak.SystemAuthority1.service
@@ -46,6 +48,9 @@ func Install() ([]string, error) {
 	target, err := writableLayout()
 	if err != nil {
 		return nil, err
+	}
+	if err := signature.DefaultLocalRootStore().PrepareVerifierAccess(); err != nil {
+		return nil, fmt.Errorf("prepare local trust material for the signature verifier: %w", err)
 	}
 	if err := installExecutable(target.binary); err != nil {
 		return nil, err
