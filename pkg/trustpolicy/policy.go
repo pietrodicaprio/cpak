@@ -40,7 +40,10 @@ import (
 // under one set of rules is never enforced under another. It is neither the
 // signature ABI nor the integrity ABI: the three describe different things and
 // move for different reasons.
-const ABIVersion = 1
+const (
+	ABIVersion        = 1
+	CurrentABIVersion = 2
+)
 
 // reasonLimit caps how much administrator prose travels with a revocation. The
 // reason is printed where an application refused to start, so it has to fit in
@@ -75,6 +78,10 @@ type Policy struct {
 	ApprovedOrigins []string     `json:"approved_origins,omitempty"`
 	ApprovalSigners []Signer     `json:"approval_signers,omitempty"`
 	Revoked         []Revocation `json:"revoked,omitempty"`
+
+	ApprovedPublisherIDs []string          `json:"approved_publisher_ids,omitempty"`
+	X509                 *X509Policy       `json:"x509,omitempty"`
+	Reputation           *ReputationPolicy `json:"reputation,omitempty"`
 }
 
 // Revocation withdraws trust from what was already approved. A revocation with
@@ -111,7 +118,10 @@ func (p Policy) Empty() bool {
 		len(p.ApprovedSigners) == 0 &&
 		len(p.ApprovedOrigins) == 0 &&
 		len(p.ApprovalSigners) == 0 &&
-		len(p.Revoked) == 0
+		len(p.Revoked) == 0 &&
+		len(p.ApprovedPublisherIDs) == 0 &&
+		p.X509 == nil &&
+		p.Reputation == nil
 }
 
 // Validate refuses a policy that cannot mean anything, so that an administrator
@@ -127,13 +137,24 @@ func (p Policy) Validate() error {
 	if p.ABI == 0 && p.Empty() {
 		return nil
 	}
-	if p.ABI != ABIVersion {
+	if p.ABI != ABIVersion && p.ABI != CurrentABIVersion {
 		return fmt.Errorf("%w: unsupported policy abi %d", ErrInvalidPolicy, p.ABI)
+	}
+	if p.ABI == ABIVersion && (len(p.ApprovedPublisherIDs) != 0 || p.X509 != nil || p.Reputation != nil) {
+		return fmt.Errorf("%w: trust policy abi 1 cannot contain normalized publisher or reputation fields", ErrInvalidPolicy)
+	}
+	if p.ABI == CurrentABIVersion {
+		if p.X509 == nil || p.Reputation == nil {
+			return fmt.Errorf("%w: trust policy abi 2 requires explicit x509 and reputation sections", ErrInvalidPolicy)
+		}
+		if err := p.validateV2(); err != nil {
+			return err
+		}
 	}
 	// A require flag with nothing that could satisfy it refuses everything for
 	// ever, which nobody sets on purpose and which looks, at a launch, exactly
 	// like the control working.
-	if p.RequirePublisher && len(p.ApprovedSigners) == 0 {
+	if p.RequirePublisher && len(p.ApprovedSigners) == 0 && len(p.ApprovedPublisherIDs) == 0 {
 		return fmt.Errorf("%w: require_publisher is set and approved_signers is empty, so nothing could ever be published", ErrInvalidPolicy)
 	}
 	if p.RequireApproval && len(p.ApprovalSigners) == 0 {

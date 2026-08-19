@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/mirkobrombin/cpak/pkg/signature"
@@ -183,7 +184,7 @@ func decodeTrustPolicy(document string) (trustpolicy.Policy, error) {
 // An empty policy returns before anything is decided at all. That is not an
 // optimisation: it is the guarantee that a host nobody manages records exactly
 // what it records today.
-func (l AnchorLedger) admitTrust(enrolment Enrolment) error {
+func (l AnchorLedger) admitTrust(enrolment *Enrolment) error {
 	policy, err := TrustStore{Directory: l.Directory, OwnerUID: l.OwnerUID}.Policy()
 	if err != nil {
 		return fmt.Errorf("read the host trust policy: %w", err)
@@ -194,13 +195,17 @@ func (l AnchorLedger) admitTrust(enrolment Enrolment) error {
 	if decision := policy.AllowsOrigin(enrolment.Origin); !decision.Allowed {
 		return refusedBy(decision)
 	}
-	if err := admitPublisher(policy, enrolment); err != nil {
+	publisher, err := admitPublisher(policy, *enrolment)
+	if err != nil {
 		return err
 	}
-	if decision := policy.IsRevoked(enrolment.Origin, publisherGeneration(enrolment)); !decision.Allowed {
+	if decision := policy.IsRevoked(enrolment.Origin, publisherGeneration(*enrolment)); !decision.Allowed {
 		return refusedBy(decision)
 	}
-	return admitApproval(policy, enrolment)
+	if err := admitApproval(policy, *enrolment); err != nil {
+		return err
+	}
+	return l.admitReputation(policy, enrolment, publisher)
 }
 
 // admitPublisher puts the identity that signed to the list the administrator
@@ -208,22 +213,51 @@ func (l AnchorLedger) admitTrust(enrolment Enrolment) error {
 // A package signed by its own repository proves it came from where it says it
 // came from, and every package can say that of itself; who may publish for
 // this host is a decision only the owner of the host can make.
-func admitPublisher(policy trustpolicy.Policy, enrolment Enrolment) error {
+func admitPublisher(policy trustpolicy.Policy, enrolment Enrolment) (*signature.PublisherIdentity, error) {
 	verified, err := enrolment.Signer()
 	if errors.Is(err, ErrUnsigned) {
 		if policy.RequirePublisher {
-			return fmt.Errorf("%w: %s is signed by nobody and this host enrols only what an approved publisher signed",
+			return nil, fmt.Errorf("%w: %s is signed by nobody and this host enrols only what an approved publisher signed",
 				ErrTrustRefused, enrolment.Origin)
 		}
-		return nil
+		return nil, nil
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
-	decision := policy.AllowsPublisher(verified.Identity.Issuer, verified.Identity.Repo, enrolment.Origin)
+	publisherID := ""
+	if verified.Publisher != nil {
+		publisherID = verified.Publisher.ID
+	}
+	decision := policy.AllowsNormalizedPublisher(publisherID, verified.Identity.Issuer, verified.Identity.Repo, enrolment.Origin)
 	if !decision.Allowed {
-		return refusedBy(decision)
+		return nil, refusedBy(decision)
 	}
+	return verified.Publisher, nil
+}
+
+func (l AnchorLedger) admitReputation(policy trustpolicy.Policy, enrolment *Enrolment, publisher *signature.PublisherIdentity) error {
+	if policy.ABI != trustpolicy.CurrentABIVersion || policy.Reputation == nil || policy.Reputation.Mode == trustpolicy.ReputationOff {
+		return nil
+	}
+	if publisher == nil {
+		return fmt.Errorf("%w: publisher reputation requires a verified normalized publisher identity", ErrTrustRefused)
+	}
+	now := time.Now()
+	if l.Now != nil {
+		now = l.Now()
+	}
+	lookup := DefaultReputationStore().Lookup
+	if l.ReputationLookup != nil {
+		lookup = l.ReputationLookup
+	}
+	result, _ := lookup(publisher.ID, now)
+	decision := policy.DecidesReputation(result, publisher.ID, enrolment.Origin, now, trustpolicy.InvocationInteractiveTerminal)
+	if !decision.Allowed {
+		return fmt.Errorf("%w: %s", ErrTrustRefused, decision.Reason)
+	}
+	enrolment.Reputation = &result
+	enrolment.ReputationDecision = &decision
 	return nil
 }
 

@@ -210,6 +210,35 @@ func UnavailableResult(providerID, publisherID, reasonCode string) Result {
 	}
 }
 
+func ValidPublisherID(value string) bool {
+	return publisherPattern.MatchString(value)
+}
+
+func (r Result) Validate() error {
+	if r.ProviderID != "" && !namePattern.MatchString(r.ProviderID) {
+		return errors.New("reputation result has an invalid provider id")
+	}
+	if !ValidPublisherID(r.PublisherID) {
+		return errors.New("reputation result has an invalid publisher id")
+	}
+	if r.Status != Unavailable && !validEntryStatus(r.Status) {
+		return errors.New("reputation result has an invalid status")
+	}
+	if !namePattern.MatchString(r.ReasonCode) {
+		return errors.New("reputation result has an invalid reason code")
+	}
+	if r.Status == Unavailable {
+		if !r.IssuedAt.IsZero() || !r.ExpiresAt.IsZero() || r.Sequence != 0 {
+			return errors.New("unavailable reputation result claims snapshot metadata")
+		}
+		return nil
+	}
+	if r.ProviderID == "" || r.Sequence == 0 || r.Sequence > MaxSequence || r.IssuedAt.IsZero() || !r.ExpiresAt.After(r.IssuedAt) {
+		return errors.New("reputation result is missing authenticated snapshot metadata")
+	}
+	return nil
+}
+
 func validEntryStatus(status Status) bool {
 	switch status {
 	case Unknown, Established, Caution, Blocked:
