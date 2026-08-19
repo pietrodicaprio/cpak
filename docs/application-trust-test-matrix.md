@@ -44,7 +44,7 @@ behaviour require the real integration path described in the Evidence column.
 | AT-SIG-006 | Changed resolved image digest invalidates evidence | `TestCMSIsBoundToEveryCanonicalStateField/image` | 2 | Implemented |
 | AT-SIG-007 | Changed lock digest invalidates evidence | `TestCMSIsBoundToEveryCanonicalStateField/lock` | 2 | Implemented |
 | AT-SIG-008 | Changed generation invalidates evidence | `TestCMSIsBoundToEveryCanonicalStateField/generation` | 2 | Implemented |
-| AT-SIG-009 | A tag or unresolved image reference is never signed or verified | State and signing CLI negative tests | 2-3 | Planned |
+| AT-SIG-009 | A tag or unresolved image reference is never signed or verified | Existing state validation plus `TestFetchPackageSignatureRefusesAReferenceInPlaceOfAResolvedDigest`; signing production remains Phase 3 | 2-3 | Implemented (Phase 2 verifier scope) |
 | AT-SIG-010 | Altered CMS signature is invalid | `TestCMSRejectsMalformedAndWeakInputs/bit_flip` | 2 | Implemented |
 | AT-SIG-011 | Altered signer certificate is invalid | `TestCMSRejectsCertificateSubstitutionAndBrokenChains` | 2 | Implemented |
 | AT-SIG-012 | Malformed, truncated, trailing, BER-only, and oversized CMS fail closed | `TestCMSRejectsMalformedAndWeakInputs` plus `FuzzStrictCMSParser` | 2 | Implemented |
@@ -117,7 +117,7 @@ behaviour require the real integration path described in the Evidence column.
 | AT-ROOT-004 | Code-signing and timestamp purposes load into separate pools | `TestLocalRootImportRequiresThePreviewedFingerprintAndKeepsPurposesSeparate` | 2 | Implemented |
 | AT-ROOT-005 | Sectigo example root fingerprint matches reviewed CCADB and Sectigo sources | `TestEmbeddedSectigoRootsCarryReviewedProvenance` plus Phase 2 source review | 2 | Implemented |
 | AT-ROOT-006 | Administrator sees subject and exact SHA-256 before confirmation | `TestTrustRootPreviewShowsTheExactIdentityBeforeMutation` | 2 | Implemented |
-| AT-ROOT-007 | Non-root caller cannot add or remove a root | Real polkit/socket integration test on Linux | 2 | Planned |
+| AT-ROOT-007 | Non-root caller cannot add or remove a root | `TestTrustRootMutationEscalationBindsThePreviewedFingerprint` on native Linux proves mutation is handed to the existing administrator re-entry; live escalation frontends remain lifecycle scope | 2, 5 | Implemented (Phase 2 command boundary) |
 | AT-ROOT-008 | Symlink, traversal, unsafe parent, unsafe ownership, and writable file are rejected | `TestLocalRootStoreRejectsFilesystemConfusion`, `TestLocalRootDirectoryCannotEscapeItsBoundary`, and writable root/CRL cases | 2 | Implemented |
 | AT-ROOT-009 | Root update is atomic across interruption | `TestRootImportHasAnAtomicCommitPointAcrossFailures` | 2 | Implemented |
 | AT-ROOT-010 | Duplicate import, removal, and re-addition have deterministic outcomes | `TestTrustRootCommandImportRemoveAndReaddLifecycle` | 2 | Implemented |

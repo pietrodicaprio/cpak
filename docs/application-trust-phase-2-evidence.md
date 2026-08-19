@@ -1,6 +1,6 @@
 # Application Trust POC Phase 2 Evidence
 
-- Status: implementation complete; native Linux gate pending
+- Status: complete
 - Baseline: Phase 1 (`3559e4239f1b590ba7270f3a8f6897db2e945f15`)
 - Branch: `poc/application-trust-framework`
 - Last updated: 2026-08-19
@@ -19,6 +19,9 @@ The implementation is split into reviewable milestones:
 | `4af38a7` | Strict CMS verifier, RFC 3161 validation, CRL evaluation, embedded/public and local trust material, negative and fuzz corpus |
 | `907be5b` | X.509 OCI discovery, mixed-candidate behavior, enrolment, and independent authority re-verification |
 | `fb88e60` | Root preview/add/remove/status commands and X.509 evidence diagnostics |
+| `80b2c77` | Security hardening for TSA algorithms, CRL issuer usage, weak algorithms, malformed timestamps, unsafe subjects, and invalid roots |
+| `f46bf2c` | Phase 2 requirement-to-evidence map and pre-Linux certification record |
+| `2cc6779` | Linux-discovered correction to the OCI diagnostic assertion |
 
 No pull request, release, tag, or change to the official Containerpak
 repository is part of this phase.
@@ -125,8 +128,8 @@ algorithm, and revocation decisions determine acceptance.
 
 No unresolved critical or high-severity implementation finding remains in the
 reviewed Phase 2 scope. Reputation decisions, publisher exceptions, live
-polkit behavior, and the complete install/update lifecycle remain assigned to
-later phases and cannot weaken these cryptographic results.
+escalation frontend interaction, and the complete install/update lifecycle
+remain assigned to later phases and cannot weaken these cryptographic results.
 
 ## 7. Verification record
 
@@ -135,22 +138,33 @@ Executed from the repository root using the normal Go module and build caches:
 | Check | Current result |
 | --- | --- |
 | `go test ./pkg/signature` | Pass |
+| `go test -race ./pkg/signature` | Pass |
 | `GOOS=linux GOARCH=amd64 go test -exec /usr/bin/true ./...` | Pass; compile evidence only |
 | `GOOS=linux GOARCH=amd64 go vet ./...` | Pass |
 | `go test ./pkg/signature -run '^$' -fuzz '^FuzzStrictCMSParser$' -fuzztime=10s` | Pass; 44,359 executions |
 | `go test ./pkg/signature -run '^$' -fuzz '^FuzzRootBundleParser$' -fuzztime=10s` | Pass; 7,698 executions |
 | `go mod tidy` followed by module diff | Pass; only direct/indirect classification changes, no `go.sum` diff |
 | `git diff --check` | Pass |
+| GitHub Actions Portability run `32230981575` at `2cc6779` | Pass: native `go test ./...`, `go vet ./...`, and build on Ubuntu 22.04, 24.04, and latest; binary smoke tests on Debian 13, Fedora 42, Arch, openSUSE Tumbleweed, and Ubuntu 26.04 |
 
 Native macOS cannot compile the repository's Linux-only sandbox and peer
 credential packages. The cross-target command proves compilation, not runtime
-behavior. Phase 2 is not certified complete until the same revision passes the
-native Ubuntu test/race/vet gate, including the CLI and privileged authority
-tests.
+behavior. The native Linux run at
+<https://github.com/pietrodicaprio/cpak/actions/runs/32230981575> executes the
+CLI, OCI, root-store, signature, and privileged-authority tests on all three
+kernel runners. The first run (`32230764768`) exposed an overly literal test
+assertion around a correctly quoted OCI media-type diagnostic; commit
+`2cc6779` corrected only that assertion. It also observed one transient
+baseline Landlock failure on Ubuntu 22.04. The clean rerun passed the same
+Landlock test and every Phase 2 test on all runners.
+
+Portability was enabled only for these manual runs and returned to the
+`disabled_manually` state afterwards. No release-producing workflow ran.
 
 ## 8. Completion decision
 
-The implementation and local evidence satisfy the cryptographic, trust-store,
-OCI, migration, and authority design requirements. Certification remains
-pending solely on native Linux execution and recording that immutable CI
-evidence here. No Phase 3 CA or signing workflow is claimed by this phase.
+The implementation and native Linux evidence satisfy the cryptographic,
+trust-store, OCI, migration, authority, fuzz, and portability requirements.
+The privileged authority independently reverifies both legacy Sigstore and
+tagged X.509 evidence through the common dispatcher. Phase 2 is complete. No
+Phase 3 CA or signing workflow is claimed by this phase.
