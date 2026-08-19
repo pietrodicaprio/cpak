@@ -543,6 +543,20 @@ ABI 1 output for compatibility.
 
 ## 12. Reputation snapshot contract
 
+### 12.0 Provider authority and privileged state
+
+A provider authority document is strict JSON containing ABI 1, one provider
+ID, one `ed25519-sha256:<hex>` key ID, and the matching raw Ed25519 public key.
+It is separate from the snapshot, code-signing roots, timestamping roots, and
+publisher certificates. Duplicate keys, unknown fields, trailing JSON values,
+invalid key lengths, and key-ID mismatches are rejected.
+
+The configured authority and active snapshot are root-owned regular files under
+`/var/lib/cpak/reputation/v1`. Readers reject symlinks, unexpected ownership,
+or group/world-writable state. Configuring a different authority invalidates
+the previous snapshot. Clearing the authority removes both records and does not
+change trust roots or integrity anchors.
+
 ### 12.1 Snapshot format
 
 The media type is
@@ -628,6 +642,24 @@ unavailability is not exception-equivalent in the POC.
 Reputation is evaluated only after signature, identity, origin authorization,
 and administrator policy have succeeded. It is refreshed at install or update,
 not at every launch.
+
+### 12.4 Administration and diagnostics
+
+Provider configuration is confirmed against the full provider key ID. Snapshot
+import is confirmed against SHA-256 of the complete envelope. Across privilege
+escalation, the privileged process rereads the named regular file and requires
+the same exact value; `--yes` without `--fingerprint` is invalid.
+
+The historical authenticated result and policy action are stored in the
+enrolment record. `cpak audit` and `cpak system explain` report provider, status,
+provider reason code, policy action, and policy reason code. These fields are
+diagnostic history, not launch inputs. A launch does not read the snapshot,
+contact a provider, or reinterpret an existing enrolment after a reputation
+update.
+
+In `warn` mode, graphical and interactive-terminal callers may present the
+warning. A non-interactive caller receives `confirmation-required`; it may not
+infer consent or use `--yes` to turn reputation into an allow decision.
 
 ## 13. Decision precedence
 
