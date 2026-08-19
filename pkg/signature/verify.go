@@ -144,8 +144,9 @@ var (
 // speak for the origin, which is a different question and MatchesOrigin is
 // where it is answered.
 type Verified struct {
-	State    State    `json:"state"`
-	Identity Identity `json:"identity"`
+	State     State              `json:"state"`
+	Identity  Identity           `json:"identity,omitempty"`
+	Publisher *PublisherIdentity `json:"publisher,omitempty"`
 }
 
 // Verify checks a bundle offline against the bundled trust root, confirms it

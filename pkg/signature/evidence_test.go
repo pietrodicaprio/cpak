@@ -73,7 +73,7 @@ func TestStoredEvidenceDecoderFailsClosed(t *testing.T) {
 	}
 }
 
-func TestUnsupportedVerifierIsInvalidEvidenceNotUnsigned(t *testing.T) {
+func TestMalformedX509EvidenceIsInvalidNotUnsigned(t *testing.T) {
 	evidence := SignatureEvidence{
 		ABI: EvidenceABIVersion, Kind: EvidenceX509CMS, State: evidenceTestState(),
 		MediaType: X509CMSMediaType, Payload: []byte{1, 2, 3},
@@ -82,8 +82,8 @@ func TestUnsupportedVerifierIsInvalidEvidenceNotUnsigned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Cryptographic != CryptographicUnsupported || result.ReasonCode != "unsupported-evidence-kind" {
-		t.Fatalf("got %+v, want a typed unsupported result", result)
+	if result.Cryptographic != CryptographicInvalid || result.ReasonCode != "invalid-cms" {
+		t.Fatalf("got %+v, want a typed invalid result", result)
 	}
 }
 
