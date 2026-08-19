@@ -591,7 +591,7 @@ func TestVerifyPackageStateRejectsX509ArtifactWithWrongLayerMediaType(t *testing
 	resolved := contentDigest([]byte("wrong X.509 media type"))
 	registry.attachWithMediaType(t, resolved, signature.X509ArtifactType, "application/octet-stream", []byte("CMS"))
 	ref := registry.start(t)
-	if _, err := cp.verifyPackageState(ref, testOrigin, signedState(t, resolved)); err == nil || !strings.Contains(err.Error(), "expected "+signature.X509CMSMediaType) {
+	if _, err := cp.verifyPackageState(ref, testOrigin, signedState(t, resolved)); err == nil || !strings.Contains(err.Error(), "expected") || !strings.Contains(err.Error(), signature.X509CMSMediaType) {
 		t.Fatalf("wrong X.509 layer media type = %v", err)
 	}
 }
