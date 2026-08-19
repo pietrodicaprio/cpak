@@ -1,6 +1,6 @@
 # Application Trust POC Test Matrix
 
-- Status: Phase 2 implementation map
+- Status: Phases 0 through 3 implemented; Phases 4 through 6 planned
 - Baseline: cpak v2.6.0 (`12e835c`)
 - Last updated: 2026-08-19
 
@@ -192,7 +192,22 @@ behaviour require the real integration path described in the Evidence column.
 | AT-LIFE-013 | Empty, long, malformed, stale, and unavailable data remain readable and safe | CLI matrix and terminal escape tests | 5 | Planned |
 | AT-LIFE-014 | Existing unmanaged-host defaults remain backward compatible | Existing install/enrol/launch suite | 1-5 | Existing/Planned |
 
-## 12. Phase and final verification commands
+## 12. Invocation context and desktopless operation
+
+| ID | Requirement | Evidence | Phase | State |
+| --- | --- | --- | --- | --- |
+| AT-HDL-001 | Graphical, interactive-terminal, and non-interactive callers consume the same versioned decision result | Shared decision-core table plus frontend adapter tests | 4-5 | Planned |
+| AT-HDL-002 | A binary-only package with no desktop entry uses the normal install, update, enrolment, audit, explain, and run paths | Real OCI lifecycle fixture with `binaries` and no `desktop_entries` | 5 | Planned |
+| AT-HDL-003 | Missing display, session bus, portal, Secret Service, and graphical privilege agent cannot weaken policy or prevent safe headless operation | Environment-cleared Linux integration test | 5 | Planned |
+| AT-HDL-004 | Non-interactive `warn` returns confirmation-required and does not block, launch a helper, or assume consent | Detached-stdio timeout test plus decision and exit-code assertions | 4-5 | Planned |
+| AT-HDL-005 | `--yes` acknowledges an operation but cannot accept unknown/caution reputation or override invalid, revoked, or denied evidence | CLI negative table across every protected result | 4-5 | Planned |
+| AT-HDL-006 | Trust-root and reputation administration work through direct root, `sudo`, and `doas` without `pkexec` or `run0` | Linux privilege-frontend matrix with exact fingerprint assertions | 5 | Planned |
+| AT-HDL-007 | Human output, machine output, audit record, reason code, final action, and exit code agree | Golden-output and structured-result consistency test | 5 | Planned |
+| AT-HDL-008 | Offline or unavailable reputation follows configured policy without desktop or launch-time network access | Network-deny lifecycle table for all policy modes | 4-5 | Planned |
+| AT-HDL-009 | Service start/restart verifies enrolled state, while a later policy/reputation change does not claim to terminate an already running process | systemd-equivalent lifecycle fixture and documented non-goal assertion | 5 | Planned |
+| AT-HDL-010 | cpak and the AppImage actor emit conforming results for shared valid, unknown, invalid, and blocked headless fixtures | Cross-actor schema and reason-code conformance harness | 6 | Planned |
+
+## 13. Phase and final verification commands
 
 Phase 0 requires at minimum:
 
@@ -208,6 +223,7 @@ executed in the project's documented Linux environment; cross-compilation is
 evidence of compilation only, not runtime behaviour.
 
 The final POC uses the complete verification gate from
-`application-trust-poc-plan.md`, including tagged UI tests, schema generation,
-Linux builds, fuzzing, real OCI referrers, offline verification, dependency and
-license audit, secret inspection, and the scoped security review.
+`application-trust-poc-plan.md`, including tagged UI tests, headless and no-TTY
+tests, schema generation, Linux builds, fuzzing, real OCI referrers, offline
+verification, cpak/AppImage conformance, dependency and license audit, secret
+inspection, and the scoped security review.
