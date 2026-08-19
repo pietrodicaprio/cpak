@@ -481,7 +481,10 @@ func (c *Cpak) verifiedPackageSignature(app types.Application, published Publish
 	now := time.Now()
 	for _, candidate := range attached {
 		state.Generation = candidate.generation
-		evidence := signature.NewSigstoreEvidence(state, candidate.bundle)
+		evidence := signature.SignatureEvidence{
+			ABI: signature.EvidenceABIVersion, Kind: candidate.kind, State: state,
+			MediaType: candidate.mediaType, Payload: candidate.payload,
+		}
 		result, verified, verifyErr := checkEvidenceAt(evidence, now)
 		if verifyErr != nil {
 			if identity, mismatched := publisherMismatch(verifyErr); mismatched {
@@ -501,7 +504,7 @@ func (c *Cpak) verifiedPackageSignature(app types.Application, published Publish
 		}
 		if !madeByAnother {
 			madeByAnother = true
-			foreign = verified.Identity.Repo
+			foreign = verifiedPublisherName(verified)
 		}
 	}
 	// A signature that holds and was made by somebody else outranks one that
@@ -531,7 +534,11 @@ func whoseSignature(repo string) string {
 // generation the referrer that carries it declares.
 type attachedSignature struct {
 	generation uint64
-	bundle     []byte
+	kind       signature.EvidenceKind
+	mediaType  string
+	payload    []byte
+	// bundle is retained for the Sigstore-only approval referrer path.
+	bundle []byte
 }
 
 // attachedSignatures reads them all. The listing is done here and not through
@@ -544,23 +551,27 @@ var ErrSignatureUnnamed = errors.New("a published signature names no publisher g
 
 func (c *Cpak) attachedSignatures(ref oci.Reference, origin, imageDigest string) ([]attachedSignature, error) {
 	client := &oci.Client{Credentials: registryauth.Provider{Origin: origin, Path: c.Options.RegistryAuthPath}}
-	referrers, err := client.Referrers(c.Ctx, ref, imageDigest, packageSignatureArtifactType)
-	if err != nil {
-		return nil, fmt.Errorf("list the signatures of %s@%s: %w", ref.ContextName(), imageDigest, err)
-	}
-	attached := make([]attachedSignature, 0, len(referrers))
+	var attached []attachedSignature
 	skipped := 0
-	for _, referrer := range referrers {
-		generation, named := signedGeneration(referrer)
-		if !named {
-			skipped++
-			continue
+	for _, profile := range registryEvidenceProfiles {
+		referrers, err := client.Referrers(c.Ctx, ref, imageDigest, profile.artifactType)
+		if err != nil {
+			return nil, fmt.Errorf("list the signatures of %s@%s: %w", ref.ContextName(), imageDigest, err)
 		}
-		bundle, payloadErr := client.ReferrerPayloadOfMediaType(c.Ctx, ref, referrer, maxSignatureBundle, signature.SigstoreBundleMediaType)
-		if payloadErr != nil {
-			return nil, fmt.Errorf("read the signature %s of %s: %w", referrer.Digest, ref.ContextName(), payloadErr)
+		for _, referrer := range referrers {
+			generation, named := signedGeneration(referrer)
+			if !named {
+				skipped++
+				continue
+			}
+			payload, payloadErr := client.ReferrerPayloadOfMediaType(c.Ctx, ref, referrer, maxSignatureBundle, profile.mediaType)
+			if payloadErr != nil {
+				return nil, fmt.Errorf("read the signature %s of %s: %w", referrer.Digest, ref.ContextName(), payloadErr)
+			}
+			attached = append(attached, attachedSignature{
+				generation: generation, kind: profile.kind, mediaType: profile.mediaType, payload: payload,
+			})
 		}
-		attached = append(attached, attachedSignature{generation: generation, bundle: bundle})
 	}
 	// The newest state a publisher attached is the one an installation should
 	// be recorded under, so a re-signed package does not keep answering with
@@ -622,7 +633,7 @@ func describeSignature(origin string, signed *systemauthority.SignedState) Enrol
 		return EnrolmentSignature{Reason: fmt.Errorf("%w: %w", ErrSignatureUnverified, err)}
 	}
 	if result.OriginAuthorization != string(signature.OriginAuthorized) {
-		return EnrolmentSignature{Reason: fmt.Errorf("%w: %s", ErrSignatureForeign, whoseSignature(verified.Identity.Repo))}
+		return EnrolmentSignature{Reason: fmt.Errorf("%w: %s", ErrSignatureForeign, whoseSignature(verifiedPublisherName(verified)))}
 	}
 	return EnrolmentSignature{
 		Verified: true, Identity: verified.Identity, State: verified.State,
@@ -645,7 +656,14 @@ func reportSignature(origin string, uid uint32, found EnrolmentSignature) {
 	switch {
 	case found.Verified:
 		if isVerbose {
-			logger.Printf("%s is signed by %s", origin, found.Identity.Repo)
+			publisher := found.Identity.Repo
+			if found.Publisher != nil {
+				publisher = found.Publisher.DisplayName
+				if publisher == "" {
+					publisher = found.Publisher.ID
+				}
+			}
+			logger.Printf("%s is signed by %s", origin, publisher)
 		}
 	case found.Unsigned():
 		if signedBefore(uid, origin) {
