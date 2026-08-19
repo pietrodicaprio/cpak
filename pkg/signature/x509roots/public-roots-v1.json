@@ -1,0 +1,33 @@
+{
+  "abi": 1,
+  "sources": [
+    {
+      "name": "CCADB Microsoft Code Signing Roots",
+      "url": "https://ccadb.my.salesforce-sites.com/microsoft/IncludedRootsPEMTxtForMSFT?MicrosoftEKUs=Code+Signing",
+      "retrieved_at": "2026-08-19T07:20:25Z",
+      "sha256": "7686156ec2528a6dc6ee1a03afef15a9d626420e6ba73e7d4d8e050326c684e1",
+      "license": "CDLA-2.0-Permissive"
+    },
+    {
+      "name": "Sectigo code-signing chain documentation",
+      "url": "https://www.sectigo.com/knowledge-base/detail/sectigo-new-rsa-and-ecc-root-intermediate-certificates-2025",
+      "retrieved_at": "2026-08-19T07:20:25Z",
+      "sha256": "349d4f2b5b95486085c82343811525586012bfe59f13d3b478cddb45017c7c80",
+      "license": "reference-only"
+    }
+  ],
+  "roots": [
+    {
+      "sha256": "7e76260ae69a55d3f060b0fd18b2a8c01443c87b60791030c9fa0b0585101a38",
+      "subject": "C=GB, O=Sectigo Limited, CN=Sectigo Public Code Signing Root R46",
+      "purposes": ["code-signing"],
+      "der": "MIIFeDCCA2CgAwIBAgIQSyw7AQGLrSq8jHtbPu2QVzANBgkqhkiG9w0BAQwFADBWMQswCQYDVQQGEwJHQjEYMBYGA1UEChMPU2VjdGlnbyBMaW1pdGVkMS0wKwYDVQQDEyRTZWN0aWdvIFB1YmxpYyBDb2RlIFNpZ25pbmcgUm9vdCBSNDYwHhcNMjEwMzIyMDAwMDAwWhcNNDYwMzIxMjM1OTU5WjBWMQswCQYDVQQGEwJHQjEYMBYGA1UEChMPU2VjdGlnbyBMaW1pdGVkMS0wKwYDVQQDEyRTZWN0aWdvIFB1YmxpYyBDb2RlIFNpZ25pbmcgUm9vdCBSNDYwggIiMA0GCSqGSIb3DQEBAQUAA4ICDwAwggIKAoICAQCN55QSIgQkdC7/FiMCkoq2rjaFrEfUI5ErPtx94jGgUW+shJHjUoq14pbe0IdjJImK/+8Skzt9u7aKvb0Ffyeba2XTpQxpsbxJOZrxbW6q5KCDJ9qaDStQ6Utbs7hkNqR+Sj2pcaths3OzPAsM79szV+W+NDfjlxtd/R8SPYIDdub7P2bSlDFp+m2zNKzBenjcklDyZMeqLQSrw2rq4C+np9xu1+j/2iGrQL+57g2extmeme/G3h+pDHazJyCh1rr9gOcB0u/rgimVcI3/uxXP/tEPNqIuTzKQdEZrRzUTdwUzT2MuuC3hv2WnBGsY2HH6zAjybYmZELGt2z4s5KoYsMYHAXVn3m3pY2MeNn9pib6qRT5uWl+PoVvLnTCGMOgDs0DGDQ84zWeoU4j6uDBl+m/H5x2xg3RpPqzEaDux5mczmrYI4IAFSEDu9oJkRqj1c7AGlfJsZZ+/VVscnFcax3hGfHCqlBuCF6yH6bbJDoEcQNYWFyn8XJwYK+pF9e+91WdPKF4F7pBMeufG9ND8+s0+MkYTIDaKBOq3qgdGnA2TOglmmVhcKaO5DKYwODzQRjY1fJy67sPV+Qp2+n4FG0DKkjXp1XrRtX8ArqmQqsV/AZwQsRb8zG4Y3G9i/qZQp7h7uJ0VP/4gDHXIIloTlRmQAOka1cKG8eOO7F/05QIDAQABo0IwQDAdBgNVHQ4EFgQUMuuSmv81lkgvKEBCcCA2kVwXheYwDgYDVR0PAQH/BAQDAgGGMA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZIhvcNAQEMBQADggIBAHZlwuPXIkrXHYle/2lexhQCTXOmzc0oyrA36r+nySGqql/av/aDbNCA0QpcAKTL88w5D55BcYjVPOiKe4wXI/fKNHSRbAauUD8AWbImPDwXg1cDPi3RGj3UzwdUskMLUnKoiPXEF/Jv0Vil0WjkPZgIGO429EhImvpUcPCI1HAWMEJJ0Nk/dUtFcdiuorthDoiFUFe5uhErNikfjyBynlyeidGC2kWNapnahHFrM6UQu3nwl/Z0gaA/V8eGjDCMDjiVrgHGHqvcqB9vL9f/dh6uF3Nt5bl1s2EGqJUzwk5vsjfylb6FVBK5yL1iQnb3Kvz1NzEDJlf+0ebb8BYCcoOMCLOErKnkB/ihiMQTWlBHVEKm7dBBNCyYsT6iNKEMXb2s9395p79tDFYyhRtLl7jhrOSkPHHxo+FOY9b0Rrr1CwjhYzztolkvCtQsayOinqFN7tESzRgzUO1Bbst/PUFgC2MLePV170MVtzYLEK/cXBipmNk22R3YhLMGioLjexskp0LO7g8+VlwyfexL3lYrOzu6+XpY0FG2bNb2WKJSJHpEhqEcYD9J0/z6+YQcBcI0v+Lm8RkqmS9WVzWctfUHw0Yv3jg9GQ37o/HfE57nqXJYMa+96trX1m13MzOO9Kz9wb9Jh9JwBWd0Bqb2eEAtFgSRDx/TFsS4ehcNJMmy"
+    },
+    {
+      "sha256": "8f6371d8cc5aa7ca149667a98b5496398951e4319f7afbcc6a660d673e438d0b",
+      "subject": "C=GB, O=Sectigo Limited, CN=Sectigo Public Code Signing Root E46",
+      "purposes": ["code-signing"],
+      "der": "MIICKDCCAa+gAwIBAgIQUCSbou+Opr9sLB8aY4XUwzAKBggqhkjOPQQDAzBWMQswCQYDVQQGEwJHQjEYMBYGA1UEChMPU2VjdGlnbyBMaW1pdGVkMS0wKwYDVQQDEyRTZWN0aWdvIFB1YmxpYyBDb2RlIFNpZ25pbmcgUm9vdCBFNDYwHhcNMjEwMzIyMDAwMDAwWhcNNDYwMzIxMjM1OTU5WjBWMQswCQYDVQQGEwJHQjEYMBYGA1UEChMPU2VjdGlnbyBMaW1pdGVkMS0wKwYDVQQDEyRTZWN0aWdvIFB1YmxpYyBDb2RlIFNpZ25pbmcgUm9vdCBFNDYwdjAQBgcqhkjOPQIBBgUrgQQAIgNiAAQIMoEDH487om+BR4zle7m6wWmyW0nAKLkUWG8kM85Qm3PZO8FoOZx6Yc5c0iJHRKuAhanllayqrmZYhlanuIODzLTRDqlR+EtnOX+MubY5aDSPGUq6jiHrQrisVp0J3AejQjBAMB0GA1UdDgQWBBTPfSygkHqYHd22XoXC4NoVcdLlXjAOBgNVHQ8BAf8EBAMCAYYwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAwNnADBkAjACd++zAerlV83j8HflRwwwlLmgchbsaGX/4g44dv/oG8KfzCVTRg6sZHMobtK0IqYCMGk5W6+oBFyZMtOebrSwXs8lGjll/zHz43Zy8DMXO+iiqzSEwWGneZ6KupkGGqfVKw=="
+    }
+  ]
+}

@@ -17,7 +17,10 @@ import (
 	"unicode/utf8"
 )
 
-const EvidenceABIVersion = 1
+const (
+	EvidenceABIVersion       = 1
+	MaxSignatureEvidenceSize = 1 << 20
+)
 
 type EvidenceKind string
 
@@ -166,6 +169,7 @@ type verifierSet map[EvidenceKind]Verifier
 
 var commonVerifiers = verifierSet{
 	EvidenceSigstoreBundle: SigstoreVerifier{},
+	EvidenceX509CMS:        X509CMSVerifier{},
 }
 
 // VerifyEvidence dispatches only on the tagged kind. An absent adapter is an
@@ -396,15 +400,27 @@ func LegacyVerified(result VerificationResult, state State) (Verified, error) {
 		}
 		return Verified{}, fmt.Errorf("signature: %s: %s", result.ReasonCode, result.Diagnostic)
 	}
+	if result.Chain == ChainUntrusted || result.Chain == ChainInvalid {
+		return Verified{}, fmt.Errorf("signature: %s: %s", result.ReasonCode, result.Diagnostic)
+	}
+	if result.SigningTime == SigningTimeMissing || result.SigningTime == SigningTimeExpired ||
+		result.SigningTime == SigningTimeNotYetValid || result.SigningTime == SigningTimeInvalid {
+		return Verified{}, fmt.Errorf("signature: %s: %s", result.ReasonCode, result.Diagnostic)
+	}
+	if result.Revocation == RevocationRevoked || result.Revocation == RevocationStale {
+		return Verified{}, fmt.Errorf("signature: %s: %s", result.ReasonCode, result.Diagnostic)
+	}
 	if result.legacyIdentity != nil {
-		return Verified{State: state, Identity: *result.legacyIdentity}, nil
+		return Verified{State: state, Identity: *result.legacyIdentity, Publisher: result.Publisher}, nil
 	}
 	if result.Publisher == nil {
 		return Verified{}, errors.New("signature: verified evidence names no usable publisher identity")
 	}
-	return Verified{State: state, Identity: Identity{
-		Issuer:  result.Publisher.Issuer,
-		Subject: result.Publisher.Claims["subject"],
-		Repo:    result.Publisher.Repository,
-	}}, nil
+	verified := Verified{State: state, Publisher: result.Publisher}
+	if result.Publisher.Kind == "sigstore-oidc-v1" {
+		verified.Identity = Identity{
+			Issuer: result.Publisher.Issuer, Subject: result.Publisher.Claims["subject"], Repo: result.Publisher.Repository,
+		}
+	}
+	return verified, nil
 }
