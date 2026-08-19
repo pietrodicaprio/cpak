@@ -359,7 +359,8 @@ func verifyTimestamp(token, signerSignature []byte, publisher *x509.Certificate,
 		return time.Time{}, errors.New("RFC 3161 message imprint does not cover the CMS signature")
 	}
 	tsa := parsedCMS.payload.GetOnlySigner()
-	if tsa == nil || !onlyExtendedKeyUsage(tsa, x509.ExtKeyUsageTimeStamping) || tsa.IsCA || tsa.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
+	if tsa == nil || !onlyExtendedKeyUsage(tsa, x509.ExtKeyUsageTimeStamping) || tsa.IsCA || tsa.KeyUsage&x509.KeyUsageDigitalSignature == 0 ||
+		!allowedPublicKey(tsa.PublicKey) || !allowedCertificateSignature(tsa.SignatureAlgorithm) {
 		return time.Time{}, errors.New("RFC 3161 signer is not a dedicated timestamping certificate")
 	}
 	chains, err := verifyCMSAt(parsedCMS.payload, trust.TimestampRoots, x509.ExtKeyUsageTimeStamping, stamp.Time)
@@ -572,7 +573,7 @@ func evaluateRevocation(chain []*x509.Certificate, lists []*x509.RevocationList,
 }
 
 func validateCRL(list *x509.RevocationList, issuer *x509.Certificate) error {
-	if list.NextUpdate.IsZero() || !list.NextUpdate.After(list.ThisUpdate) || list.CheckSignatureFrom(issuer) != nil {
+	if issuer.KeyUsage&x509.KeyUsageCRLSign == 0 || list.NextUpdate.IsZero() || !list.NextUpdate.After(list.ThisUpdate) || list.CheckSignatureFrom(issuer) != nil {
 		return errors.New("CRL has an invalid issuer, signature, or validity window")
 	}
 	if len(list.AuthorityKeyId) != 0 && len(issuer.SubjectKeyId) != 0 && !bytes.Equal(list.AuthorityKeyId, issuer.SubjectKeyId) {
