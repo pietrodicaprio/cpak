@@ -1,7 +1,7 @@
 # Application Trust POC Phase 2 Evidence
 
 - Status: complete
-- Baseline: Phase 1 (`3559e4239f1b590ba7270f3a8f6897db2e945f15`)
+- Baseline: Phase 1 (`cc0c382894adbb315c6a085b9f2dc6d7cc149989`)
 - Branch: `poc/application-trust-framework`
 - Last updated: 2026-08-19
 
@@ -16,12 +16,12 @@ The implementation is split into reviewable milestones:
 
 | Commit | Boundary |
 | --- | --- |
-| `4af38a7` | Strict CMS verifier, RFC 3161 validation, CRL evaluation, embedded/public and local trust material, negative and fuzz corpus |
-| `907be5b` | X.509 OCI discovery, mixed-candidate behavior, enrolment, and independent authority re-verification |
-| `fb88e60` | Root preview/add/remove/status commands and X.509 evidence diagnostics |
-| `80b2c77` | Security hardening for TSA algorithms, CRL issuer usage, weak algorithms, malformed timestamps, unsafe subjects, and invalid roots |
-| `f46bf2c` | Phase 2 requirement-to-evidence map and pre-Linux certification record |
-| `2cc6779` | Linux-discovered correction to the OCI diagnostic assertion |
+| `7493043` | Strict CMS verifier, RFC 3161 validation, CRL evaluation, embedded/public and local trust material, negative and fuzz corpus |
+| `bedbbb3` | X.509 OCI discovery, mixed-candidate behavior, enrolment, and independent authority re-verification |
+| `dc21c26` | Root preview/add/remove/status commands and X.509 evidence diagnostics |
+| `b8bdcd9` | Security hardening for TSA algorithms, CRL issuer usage, weak algorithms, malformed timestamps, unsafe subjects, and invalid roots |
+| `2b19f1f` | Phase 2 requirement-to-evidence map and pre-Linux certification record |
+| `901e7af` | Linux-discovered correction to the OCI diagnostic assertion |
 
 No pull request, release, tag, or change to the official Containerpak
 repository is part of this phase.
@@ -82,10 +82,11 @@ The default security boundary is `/etc/cpak/trust`:
 - `revocation/timestamping.d`: cached TSA-chain CRLs.
 
 Every component from the boundary down must be a real directory with the
-configured privileged owner and no group/other write bit. Admitted root and
-CRL files must be regular, non-symlink, owner-controlled, bounded files. Root
-imports bind the unprivileged preview to an exact lowercase SHA-256, write and
-flush a private temporary file, and commit with a no-overwrite hard link.
+configured privileged owner, no group/other write bit, and read/traverse access
+for the unprivileged verifier. Admitted root and CRL files must be regular,
+non-symlink, owner-controlled, bounded, and verifier-readable. Root imports bind
+the unprivileged preview to an exact lowercase SHA-256, write and flush a
+root-owned temporary file, and commit with a no-overwrite hard link.
 Fault-injection tests prove that failure before the link leaves no admitted
 file and failure after the link leaves a complete parseable root rather than a
 partial destination.
@@ -145,7 +146,7 @@ Executed from the repository root using the normal Go module and build caches:
 | `go test ./pkg/signature -run '^$' -fuzz '^FuzzRootBundleParser$' -fuzztime=10s` | Pass; 7,698 executions |
 | `go mod tidy` followed by module diff | Pass; only direct/indirect classification changes, no `go.sum` diff |
 | `git diff --check` | Pass |
-| GitHub Actions Portability run `32230981575` at `2cc6779` | Pass: native `go test ./...`, `go vet ./...`, and build on Ubuntu 22.04, 24.04, and latest; binary smoke tests on Debian 13, Fedora 42, Arch, openSUSE Tumbleweed, and Ubuntu 26.04 |
+| GitHub Actions Portability run `32230981575` at original pre-rebase head `2cc6779` | Pass: native `go test ./...`, `go vet ./...`, and build on Ubuntu 22.04, 24.04, and latest; binary smoke tests on Debian 13, Fedora 42, Arch, openSUSE Tumbleweed, and Ubuntu 26.04 |
 
 Native macOS cannot compile the repository's Linux-only sandbox and peer
 credential packages. The cross-target command proves compilation, not runtime
@@ -154,7 +155,7 @@ behavior. The native Linux run at
 CLI, OCI, root-store, signature, and privileged-authority tests on all three
 kernel runners. The first run (`32230764768`) exposed an overly literal test
 assertion around a correctly quoted OCI media-type diagnostic; commit
-`2cc6779` corrected only that assertion. It also observed one transient
+Original pre-rebase commit `2cc6779` corrected only that assertion. It also observed one transient
 baseline Landlock failure on Ubuntu 22.04. The clean rerun passed the same
 Landlock test and every Phase 2 test on all runners.
 
