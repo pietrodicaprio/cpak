@@ -728,7 +728,7 @@ func timestampedCMSWithTSAOptions(t *testing.T, state State, pki cmsTestPKI, tok
 }
 
 func TestRFC3161TimestampPreservesAnExpiredPublisherCertificate(t *testing.T) {
-	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Second).Add(2 * time.Hour)
 	pki := newCMSTestPKI(t, now, nil, func(cert *x509.Certificate) {
 		cert.NotBefore = now.Add(-48 * time.Hour)
 		cert.NotAfter = now.Add(-time.Hour)
@@ -741,7 +741,7 @@ func TestRFC3161TimestampPreservesAnExpiredPublisherCertificate(t *testing.T) {
 }
 
 func TestRFC3161MessageImprintMismatchFails(t *testing.T) {
-	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Second).Add(2 * time.Hour)
 	pki := newCMSTestPKI(t, now, nil, func(cert *x509.Certificate) {
 		cert.NotBefore = now.Add(-48 * time.Hour)
 		cert.NotAfter = now.Add(-time.Hour)
@@ -754,7 +754,7 @@ func TestRFC3161MessageImprintMismatchFails(t *testing.T) {
 }
 
 func TestRFC3161RejectsUntrustedAndWrongEKUTSAs(t *testing.T) {
-	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Second).Add(2 * time.Hour)
 	newExpiredPublisher := func(t *testing.T) cmsTestPKI {
 		return newCMSTestPKI(t, now, nil, func(cert *x509.Certificate) {
 			cert.NotBefore = now.Add(-48 * time.Hour)
@@ -777,14 +777,14 @@ func TestRFC3161RejectsUntrustedAndWrongEKUTSAs(t *testing.T) {
 			t.Fatalf("wrong-EKU TSA = %+v", result)
 		}
 	})
-	t.Run("expired TSA", func(t *testing.T) {
+	t.Run("TSA not valid at token time", func(t *testing.T) {
 		pki := newExpiredPublisher(t)
-		tokenTime := now.Add(-2 * time.Hour)
+		tokenTime := now.Add(-3 * time.Hour)
 		der := timestampedCMSWithTSAOptions(t, testX509State(), pki, tokenTime, now, func(cert *x509.Certificate) {
-			cert.NotAfter = tokenTime.Add(-time.Minute)
+			cert.NotBefore = tokenTime.Add(time.Minute)
 		}, true)
 		if result := verifyTestCMS(t, testX509State(), der, pki.trust, now); result.Cryptographic != CryptographicInvalid || result.ReasonCode != "invalid-rfc3161-timestamp" {
-			t.Fatalf("expired TSA = %+v", result)
+			t.Fatalf("TSA outside token validity = %+v", result)
 		}
 	})
 	t.Run("malformed timestamp token", func(t *testing.T) {
