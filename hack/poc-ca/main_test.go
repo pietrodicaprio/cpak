@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/youmark/pkcs8"
 )
 
 func TestGeneratedProfilesSeparateRootIntermediatePublisherAndTSA(t *testing.T) {
@@ -63,6 +65,9 @@ func TestGeneratedProfilesSeparateRootIntermediatePublisherAndTSA(t *testing.T) 
 		block, rest := pem.Decode(encoded)
 		if block == nil || block.Type != "ENCRYPTED PRIVATE KEY" || len(rest) != 0 {
 			t.Fatalf("%s is not one encrypted PKCS#8 key", name)
+		}
+		if _, err := pkcs8.ParsePKCS8PrivateKey(block.Bytes, []byte("correct horse battery staple")); err != nil {
+			t.Fatalf("decrypt %s: %v", name, err)
 		}
 	}
 	if _, err := x509.ParseRevocationList(readPEM(t, filepath.Join(output, "publisher.crl.pem"), "X509 CRL")); err != nil {
