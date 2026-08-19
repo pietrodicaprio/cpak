@@ -1,6 +1,6 @@
 # Application Trust POC Test Matrix
 
-- Status: Phases 0 through 3 implemented; Phases 4 through 6 planned
+- Status: Phases 0 through 4 implemented; Phases 5 and 6 planned
 - Baseline: cpak v2.6.0 (`12e835c`)
 - Last updated: 2026-08-19
 
