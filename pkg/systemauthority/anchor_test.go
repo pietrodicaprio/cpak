@@ -812,10 +812,8 @@ func useBundleVerifier(t *testing.T, verify func([]byte, signature.State) (signa
 				OriginAuthorization: string(signature.OriginUnsupported), ReasonCode: "test-refusal", Diagnostic: err.Error(),
 			}, nil
 		}
-		publisher := &signature.PublisherIdentity{
-			Kind: "sigstore-oidc-v1", ID: "test", Issuer: verified.Identity.Issuer,
-			Repository: verified.Identity.Repo, Claims: map[string]string{"subject": verified.Identity.Subject},
-		}
+		publisher, _ := signature.NormalizeOIDCIdentity(verified.Identity)
+		publisher.Claims["subject"] = verified.Identity.Subject
 		authorization := signature.AuthorizeOIDCOrigin(publisher, evidence.State.Origin)
 		return signature.VerificationResult{
 			EvidenceKind: evidence.Kind, Cryptographic: signature.CryptographicVerified,

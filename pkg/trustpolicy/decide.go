@@ -101,6 +101,33 @@ func (p Policy) AllowsPublisher(issuer, repo, origin string) Decision {
 	return refuse("%s is not one of the %d publishers the administrator approved", identityLabel(issuer, repo), len(p.ApprovedSigners))
 }
 
+// AllowsNormalizedPublisher evaluates the stable publisher ID introduced by
+// policy ABI 2, while retaining the exact ABI 1 OIDC selector path. When both
+// selector forms are present, either explicit administrator approval is
+// sufficient; absence is never a wildcard when RequirePublisher is set.
+func (p Policy) AllowsNormalizedPublisher(publisherID, issuer, repo, origin string) Decision {
+	if decision, decided := p.settled(); decided {
+		return decision
+	}
+	if publisherID != "" {
+		for _, approved := range p.ApprovedPublisherIDs {
+			if approved == publisherID {
+				return allow("publisher %q is an identity the administrator approved", publisherID)
+			}
+		}
+	}
+	if len(p.ApprovedSigners) != 0 {
+		return p.AllowsPublisher(issuer, repo, origin)
+	}
+	if len(p.ApprovedPublisherIDs) == 0 && !p.RequirePublisher {
+		return allow("the administrator did not restrict who may publish")
+	}
+	if publisherID == "" {
+		return refuse("nothing signed %s with a normalized publisher identity", origin)
+	}
+	return refuse("publisher %q is not one of the %d normalized identities the administrator approved", publisherID, len(p.ApprovedPublisherIDs))
+}
+
 // AllowsApproval reports whether an identity may counter-sign on behalf of this
 // organisation. It is the part that stops a signature being an end in itself: a
 // publisher signature is the publisher asserting themselves, while an approval
@@ -180,8 +207,11 @@ func (p Policy) IsRevoked(origin string, generation uint64) Decision {
 // is the answer the enforcement level already gives next door: absent is
 // permissive, present and unreadable is not.
 func (p Policy) settled() (Decision, bool) {
-	if p.ABI != 0 && p.ABI != ABIVersion {
-		return refuse("this cpak enforces trust policy abi %d and this host holds abi %d, so none of it can be applied", ABIVersion, p.ABI), true
+	if p.ABI != 0 && p.ABI != ABIVersion && p.ABI != CurrentABIVersion {
+		return refuse("this cpak enforces trust policy through abi %d and this host holds abi %d, so none of it can be applied", CurrentABIVersion, p.ABI), true
+	}
+	if p.ABI == CurrentABIVersion && (p.X509 == nil || p.Reputation == nil) {
+		return refuse("this host trust policy abi 2 is missing a required x509 or reputation section"), true
 	}
 	if p.Empty() {
 		return allow("no administrator trust policy is in force on this host"), true
