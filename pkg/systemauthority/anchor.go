@@ -20,7 +20,9 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	"github.com/mirkobrombin/cpak/pkg/integrity"
+	"github.com/mirkobrombin/cpak/pkg/reputation"
 	"github.com/mirkobrombin/cpak/pkg/signature"
+	"github.com/mirkobrombin/cpak/pkg/trustpolicy"
 	"github.com/mirkobrombin/cpak/pkg/types"
 )
 
@@ -135,6 +137,12 @@ type Enrolment struct {
 	// proving it needs no network: an administrator reading this ledger on a
 	// machine with no internet reaches the same answer the authority did.
 	Signature *SignedState `json:"signature,omitempty"`
+
+	// Reputation and ReputationDecision are the authenticated provider result
+	// and policy consequence at enrolment time. They are historical diagnostics,
+	// not launch-time inputs and never replace the signed snapshot or policy.
+	Reputation         *reputation.Result              `json:"reputation,omitempty"`
+	ReputationDecision *trustpolicy.ReputationDecision `json:"reputation_decision,omitempty"`
 }
 
 // SignedState is the compatibility-facing shape used by the existing cpak API.
@@ -262,8 +270,10 @@ func (s SignedState) Signer(origin string) (signature.Verified, error) {
 // reads it and only the authority writes it, so a reader proves the file was
 // produced by the owner before it believes a single field of it.
 type AnchorLedger struct {
-	Directory string
-	OwnerUID  uint32
+	Directory        string
+	OwnerUID         uint32
+	ReputationLookup func(string, time.Time) (reputation.Result, error)
+	Now              func() time.Time
 }
 
 var _ integrity.AnchorWriter = AnchorLedger{}
@@ -325,13 +335,20 @@ func (l AnchorLedger) Store(anchor integrity.Anchor) error {
 // next enrolment can be ordered against this one instead of being put to the
 // owner because two hashes differ.
 func (l AnchorLedger) Record(enrolment Enrolment) error {
+	// Reputation is authority output. A caller may carry an old record or put
+	// arbitrary values on the wire; neither gets to select the new decision.
+	enrolment.Reputation = nil
+	enrolment.ReputationDecision = nil
 	if err := validateEnrolment(enrolment); err != nil {
 		return err
 	}
 	if err := l.admitSignature(enrolment); err != nil {
 		return err
 	}
-	if err := l.admitTrust(enrolment); err != nil {
+	if err := l.admitTrust(&enrolment); err != nil {
+		return err
+	}
+	if err := validateEnrolment(enrolment); err != nil {
 		return err
 	}
 	path, err := l.anchorPath(enrolment.UID, enrolment.Origin)
@@ -788,6 +805,20 @@ func validateEnrolment(enrolment Enrolment) error {
 	}
 	if err := validateSignedState(enrolment); err != nil {
 		return err
+	}
+	if (enrolment.Reputation == nil) != (enrolment.ReputationDecision == nil) {
+		return errors.New("enrolment reputation result and decision must appear together")
+	}
+	if enrolment.Reputation != nil {
+		if err := enrolment.Reputation.Validate(); err != nil {
+			return fmt.Errorf("enrolment reputation result: %w", err)
+		}
+		if err := enrolment.ReputationDecision.Validate(); err != nil {
+			return fmt.Errorf("enrolment reputation decision: %w", err)
+		}
+		if enrolment.Signature == nil {
+			return errors.New("an unsigned enrolment cannot name publisher reputation")
+		}
 	}
 	if enrolment.Policy == nil {
 		return nil
