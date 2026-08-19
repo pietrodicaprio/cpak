@@ -117,6 +117,28 @@ func Sign(providerID string, privateKey ed25519.PrivateKey, signed Signed) ([]by
 	return append(document, '\n'), nil
 }
 
+func ParseSigned(document []byte) (Signed, error) {
+	if len(document) == 0 || len(document) > MaxSnapshotSize {
+		return Signed{}, invalid("signed payload size is outside the supported range")
+	}
+	if err := rejectDuplicateKeys(document); err != nil {
+		return Signed{}, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(document))
+	decoder.DisallowUnknownFields()
+	signed := Signed{}
+	if err := decoder.Decode(&signed); err != nil {
+		return Signed{}, invalid("decode signed object: %v", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return Signed{}, invalid("signed object contains multiple JSON values")
+	}
+	if _, _, err := validateSigned(signed); err != nil {
+		return Signed{}, err
+	}
+	return signed, nil
+}
+
 func parseEnvelope(document []byte) (envelope, Signed, []byte, error) {
 	if err := rejectDuplicateKeys(document); err != nil {
 		return envelope{}, Signed{}, nil, err
@@ -133,14 +155,9 @@ func parseEnvelope(document []byte) (envelope, Signed, []byte, error) {
 	if len(parsed.Signed) == 0 || bytes.Equal(parsed.Signed, []byte("null")) {
 		return envelope{}, Signed{}, nil, invalid("signed object is missing")
 	}
-	signedDecoder := json.NewDecoder(bytes.NewReader(parsed.Signed))
-	signedDecoder.DisallowUnknownFields()
-	signed := Signed{}
-	if err := signedDecoder.Decode(&signed); err != nil {
-		return envelope{}, Signed{}, nil, invalid("decode signed object: %v", err)
-	}
-	if err := signedDecoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return envelope{}, Signed{}, nil, invalid("signed object contains multiple JSON values")
+	signed, err := ParseSigned(parsed.Signed)
+	if err != nil {
+		return envelope{}, Signed{}, nil, err
 	}
 	canonical, err := jsoncanonicalizer.Transform(parsed.Signed)
 	if err != nil {
