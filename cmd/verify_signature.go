@@ -10,20 +10,20 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/mirkobrombin/cpak/pkg/signature"
 	"github.com/mirkobrombin/go-cli-builder/v3/pkg/cli"
 )
 
-// VerifySignatureCmd checks one bundle against one state by hand. It exists so
-// that the format can be exercised with cosign before anything in cpak calls
-// it: --print-canonical writes the exact bytes a publisher signs, and the same
-// command then verifies whatever cosign made of them.
+// VerifySignatureCmd checks one evidence payload against one state by hand.
+// --print-canonical writes the exact bytes a publisher signs; the same command
+// verifies either the legacy Sigstore bundle or detached X.509 CMS evidence.
 //
 // It reads two files and writes none.
 type VerifySignatureCmd struct {
-	Bundle         string `arg:"bundle" help:"Path to the sigstore bundle attached to the image"`
+	Bundle         string `arg:"bundle" help:"Path to the Sigstore bundle or detached CMS payload attached to the image"`
 	State          string `cli:"state" help:"Path to a JSON file holding the signed state"`
 	Origin         string `cli:"origin" help:"Package origin, as host/owner/repository"`
 	ManifestSHA256 string `cli:"manifest-sha256" help:"SHA-256 of the manifest the package is configured by"`
@@ -32,6 +32,7 @@ type VerifySignatureCmd struct {
 	Generation     int    `cli:"generation" help:"Generation of the signed state, starting at 1"`
 	PrintCanonical bool   `cli:"print-canonical" help:"Write the exact bytes a publisher signs to standard output and stop"`
 	AnyIdentity    bool   `cli:"any-identity" help:"Report who signed without requiring that they may speak for the origin"`
+	EvidenceKind   string `cli:"evidence-kind" help:"Evidence format: sigstore (default) or x509-cms"`
 
 	cli.Base
 }
@@ -50,13 +51,17 @@ func (c *VerifySignatureCmd) Run() error {
 		return writeErr
 	}
 	if c.Bundle == "" {
-		return errors.New("a bundle is needed to verify anything: pass the path to the sigstore bundle")
+		return errors.New("an evidence payload is needed to verify anything: pass the path to the Sigstore bundle or detached CMS file")
 	}
-	bundleJSON, err := os.ReadFile(c.Bundle)
+	payload, err := os.ReadFile(c.Bundle)
 	if err != nil {
 		return err
 	}
-	result, err := signature.VerifyEvidence(signature.NewSigstoreEvidence(state, bundleJSON), nil, time.Now())
+	evidence, err := c.evidence(state, payload)
+	if err != nil {
+		return err
+	}
+	result, err := signature.VerifyEvidence(evidence, nil, time.Now())
 	var verified signature.Verified
 	if err == nil {
 		verified, err = signature.LegacyVerified(result, state)
@@ -64,8 +69,22 @@ func (c *VerifySignatureCmd) Run() error {
 	if err != nil {
 		return err
 	}
-	c.reportSigner(verified)
-	return c.reportOrigin(verified, state.Origin)
+	c.reportSigner(verified, result)
+	return c.reportOrigin(verified, result, state.Origin)
+}
+
+func (c *VerifySignatureCmd) evidence(state signature.State, payload []byte) (signature.SignatureEvidence, error) {
+	switch strings.ToLower(strings.TrimSpace(c.EvidenceKind)) {
+	case "", "sigstore":
+		return signature.NewSigstoreEvidence(state, payload), nil
+	case "x509", "x509-cms":
+		return signature.SignatureEvidence{
+			ABI: signature.EvidenceABIVersion, Kind: signature.EvidenceX509CMS, State: state,
+			MediaType: signature.X509CMSMediaType, Payload: payload,
+		}, nil
+	default:
+		return signature.SignatureEvidence{}, fmt.Errorf("unsupported evidence kind %q: use sigstore or x509-cms", c.EvidenceKind)
+	}
 }
 
 // signedState reads the state either from the file a publisher signed or from
@@ -108,7 +127,16 @@ func (c *VerifySignatureCmd) stateFromFlags() (signature.State, error) {
 	}, nil
 }
 
-func (c *VerifySignatureCmd) reportSigner(verified signature.Verified) {
+func (c *VerifySignatureCmd) reportSigner(verified signature.Verified, result signature.VerificationResult) {
+	if verified.Publisher != nil && verified.Publisher.Kind == "x509-spki-v1" {
+		c.Logger.Info("The CMS signature covers this state and was issued to")
+		c.Logger.Info("  publisher:  %s", verified.Publisher.DisplayName)
+		c.Logger.Info("  identity:   %s", verified.Publisher.ID)
+		c.Logger.Info("  root:       %s", result.RootSource)
+		c.Logger.Info("  time:       %s", result.SigningTime)
+		c.Logger.Info("  revocation: %s", result.Revocation)
+		return
+	}
 	c.Logger.Info("The bundle covers this state and was issued to")
 	c.Logger.Info("  issuer:     %s", orNone(verified.Identity.Issuer))
 	c.Logger.Info("  subject:    %s", orNone(verified.Identity.Subject))
@@ -118,7 +146,12 @@ func (c *VerifySignatureCmd) reportSigner(verified signature.Verified) {
 // reportOrigin is the half that decides. Verifying a bundle says somebody
 // signed this state; only the repository in the certificate says whether that
 // somebody was the publisher of this origin.
-func (c *VerifySignatureCmd) reportOrigin(verified signature.Verified, origin string) error {
+func (c *VerifySignatureCmd) reportOrigin(verified signature.Verified, result signature.VerificationResult, origin string) error {
+	if result.OriginAuthorization == string(signature.OriginAuthorized) && verified.Publisher != nil && verified.Publisher.Kind == "x509-spki-v1" {
+		c.Logger.Success("The X.509 publisher signed the exact state containing origin %s.", origin)
+		c.Logger.Info("What that proves: this publisher key signed the exact manifest and resolved image. What it does not prove: that the software is safe, reputable, or permitted by host policy.")
+		return nil
+	}
 	publisher, _ := signature.NormalizeOIDCIdentity(verified.Identity)
 	if signature.AuthorizeOIDCOrigin(publisher, origin).Status == signature.OriginAuthorized {
 		c.Logger.Success("The certificate names %s, which is the origin of this package.", origin)
