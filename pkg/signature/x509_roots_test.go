@@ -157,6 +157,48 @@ func TestRootBundleFailsClosed(t *testing.T) {
 	if _, err := ParseRootBundle(document); err == nil {
 		t.Fatal("duplicate JSON key was accepted")
 	}
+
+	issueInvalid := func(isCA, selfSigned bool) RootBundleEntry {
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parentKey := key
+		template := &x509.Certificate{
+			SerialNumber: big.NewInt(11), Subject: pkix.Name{CommonName: "invalid root"},
+			NotBefore: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), NotAfter: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
+			IsCA: isCA, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
+		}
+		parent := *template
+		if !selfSigned {
+			parentKey, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			parent.Subject = pkix.Name{CommonName: "different issuer"}
+			parent.SerialNumber = big.NewInt(12)
+		}
+		der, err := x509.CreateCertificate(rand.Reader, template, &parent, &key.PublicKey, parentKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cert, err := x509.ParseCertificate(der)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return RootBundleEntry{SHA256: fingerprintOf(cert), Subject: cert.Subject.String(), Purposes: []string{RootPurposeCodeSigning}, DER: der}
+	}
+	for name, entry := range map[string]RootBundleEntry{
+		"non-CA": issueInvalid(false, true), "not self-signed": issueInvalid(true, false),
+	} {
+		t.Run(name, func(t *testing.T) {
+			bundle := validTestRootBundle(t)
+			bundle.Roots[0] = entry
+			if _, err := ParseRootBundle(encodeRootBundle(t, bundle)); err == nil {
+				t.Fatal("invalid root certificate was accepted")
+			}
+		})
+	}
 }
 
 func TestLocalRootImportRequiresThePreviewedFingerprintAndKeepsPurposesSeparate(t *testing.T) {
