@@ -16,8 +16,10 @@ import (
 	"github.com/mirkobrombin/cpak/pkg/logger"
 	"github.com/mirkobrombin/cpak/pkg/oci"
 	"github.com/mirkobrombin/cpak/pkg/registryauth"
+	"github.com/mirkobrombin/cpak/pkg/reputation"
 	"github.com/mirkobrombin/cpak/pkg/signature"
 	"github.com/mirkobrombin/cpak/pkg/systemauthority"
+	"github.com/mirkobrombin/cpak/pkg/trustpolicy"
 	"github.com/mirkobrombin/cpak/pkg/types"
 )
 
@@ -755,8 +757,10 @@ func (c *Cpak) forgetEnrolment(app types.Application) {
 // application, put back through the same offline check the authority made
 // before it recorded it.
 type RecordedSignature struct {
-	Origin   string
-	Enrolled bool
+	Origin             string
+	Enrolled           bool
+	Reputation         *reputation.Result
+	ReputationDecision *trustpolicy.ReputationDecision
 	EnrolmentSignature
 }
 
@@ -796,6 +800,8 @@ func (c *Cpak) RecordedSignatureOf(origin string) RecordedSignature {
 		return found
 	}
 	found.Enrolled = true
+	found.Reputation = recorded.Reputation
+	found.ReputationDecision = recorded.ReputationDecision
 	if recorded.Signature == nil {
 		found.Reason = ErrPackageUnsigned
 		return found

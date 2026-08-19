@@ -461,6 +461,16 @@ func (c *SystemCmd) reportPublisher(origin string) {
 	default:
 		c.Logger.Error("  A publisher signature was recorded for it and no longer verifies: %v", found.Reason)
 	}
+	c.reportRecordedReputation(found)
+}
+
+func (c *SystemCmd) reportRecordedReputation(found cpak.RecordedSignature) {
+	if found.Reputation == nil || found.ReputationDecision == nil {
+		return
+	}
+	c.Logger.Info("    Reputation at enrolment: provider %s, status %s, reason %s, policy action %s (%s)",
+		found.Reputation.ProviderID, found.Reputation.Status, found.Reputation.ReasonCode,
+		found.ReputationDecision.Action, found.ReputationDecision.ReasonCode)
 }
 
 func (c *SystemCmd) reportLedgerSide(explanation cpak.LaunchExplanation) {

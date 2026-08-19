@@ -813,6 +813,12 @@ func useBundleVerifier(t *testing.T, verify func([]byte, signature.State) (signa
 			}, nil
 		}
 		publisher, _ := signature.NormalizeOIDCIdentity(verified.Identity)
+		if publisher == nil {
+			return signature.VerificationResult{
+				EvidenceKind: evidence.Kind, Cryptographic: signature.CryptographicVerified,
+				OriginAuthorization: string(signature.OriginUnsupported), ReasonCode: "test-identity-invalid",
+			}, nil
+		}
 		publisher.Claims["subject"] = verified.Identity.Subject
 		authorization := signature.AuthorizeOIDCOrigin(publisher, evidence.State.Origin)
 		return signature.VerificationResult{
