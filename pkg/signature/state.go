@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -59,6 +60,46 @@ type State struct {
 	ImageDigest    string `json:"image_digest"`
 	LockSHA256     string `json:"lock_sha256,omitempty"`
 	Generation     uint64 `json:"generation"`
+}
+
+// ParseCanonicalState reads the one line format produced by Canonical and
+// rejects every alternative spelling. It lets independent publisher and
+// verifier commands exchange the exact signed bytes without translating them
+// through JSON.
+func ParseCanonicalState(document []byte) (State, error) {
+	lines := strings.Split(string(document), "\n")
+	if len(lines) != 8 || lines[0] != canonicalPrefix || lines[7] != "" {
+		return State{}, fmt.Errorf("%w: payload is not one canonical state", ErrInvalidState)
+	}
+	names := []string{"abi", "origin", "manifest_sha256", "image_digest", "lock_sha256", "generation"}
+	values := make([]string, len(names))
+	for index, name := range names {
+		prefix := name + "="
+		if !strings.HasPrefix(lines[index+1], prefix) {
+			return State{}, fmt.Errorf("%w: canonical field %d is not %s", ErrInvalidState, index+1, name)
+		}
+		values[index] = strings.TrimPrefix(lines[index+1], prefix)
+	}
+	abi, err := strconv.Atoi(values[0])
+	if err != nil {
+		return State{}, fmt.Errorf("%w: invalid abi", ErrInvalidState)
+	}
+	generation, err := strconv.ParseUint(values[5], 10, 64)
+	if err != nil {
+		return State{}, fmt.Errorf("%w: invalid generation", ErrInvalidState)
+	}
+	state := State{
+		ABI: abi, Origin: values[1], ManifestSHA256: values[2], ImageDigest: values[3],
+		LockSHA256: values[4], Generation: generation,
+	}
+	canonical, err := state.Canonical()
+	if err != nil {
+		return State{}, err
+	}
+	if !bytes.Equal(canonical, document) {
+		return State{}, fmt.Errorf("%w: payload uses a non-canonical field encoding", ErrInvalidState)
+	}
+	return state, nil
 }
 
 // Canonical is the exact byte string a publisher signs.

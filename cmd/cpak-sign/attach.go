@@ -7,6 +7,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -21,14 +24,12 @@ import (
 )
 
 const (
-	// signatureArtifactType is how cpak recognises its own referrers among
-	// everything else that can hang off an image.
+	// Legacy aliases keep the default Sigstore publication profile explicit.
 	signatureArtifactType = signature.SigstoreArtifactType
-
-	bundleMediaType   = signature.SigstoreBundleMediaType
-	defaultBundlePath = "cpak-state.sigstore.json"
-	bundleLimit       = 1 << 20
-	stateLimit        = 64 << 10
+	bundleMediaType       = signature.SigstoreBundleMediaType
+	defaultBundlePath     = "cpak-state.sigstore.json"
+	bundleLimit           = 1 << 20
+	stateLimit            = 64 << 10
 
 	// generationAnnotation carries the one field of a signed state that the
 	// installing machine cannot derive from what it installed. It is a hint and
@@ -44,13 +45,12 @@ const (
 // one that fails; nothing in cpak-sign replaces it.
 var verifyState = signature.VerifyEvidence
 
-func checkStateEvidence(bundle []byte, state signature.State) (signature.VerificationResult, signature.Verified, error) {
-	evidence := signature.NewSigstoreEvidence(state, bundle)
-	result, err := verifyState(evidence, nil, time.Now())
+func checkStateEvidence(evidence signature.SignatureEvidence, trust signature.TrustMaterial) (signature.VerificationResult, signature.Verified, error) {
+	result, err := verifyState(evidence, trust, time.Now())
 	if err != nil {
 		return result, signature.Verified{}, err
 	}
-	verified, err := signature.LegacyVerified(result, state)
+	verified, err := signature.LegacyVerified(result, evidence.State)
 	return result, verified, err
 }
 
@@ -71,7 +71,9 @@ func attachSignature(arguments []string) error {
 	flags := flag.NewFlagSet("attach", flag.ContinueOnError)
 	image := flags.String("image", "", "image repository the signature is attached to")
 	statePath := flags.String("state", defaultStatePath, "path to the payload that was signed")
-	bundlePath := flags.String("bundle", defaultBundlePath, "path to the sigstore bundle")
+	bundlePath := flags.String("bundle", "", "path to the Sigstore bundle or detached CMS evidence")
+	evidenceKind := flags.String("evidence-kind", "sigstore", "evidence format: sigstore or x509-cms")
+	trustRootPath := flags.String("trust-root", "", "publication-time X.509 root used to validate the CMS before upload; does not import trust")
 	if err := flags.Parse(arguments); err != nil {
 		return err
 	}
@@ -86,21 +88,82 @@ func attachSignature(arguments []string) error {
 	if err != nil {
 		return err
 	}
-	bundle, err := readFile(*bundlePath, bundleLimit)
+	selectedBundlePath := *bundlePath
+	if selectedBundlePath == "" {
+		if strings.EqualFold(strings.TrimSpace(*evidenceKind), "x509") || strings.EqualFold(strings.TrimSpace(*evidenceKind), "x509-cms") {
+			selectedBundlePath = defaultCMSPath
+		} else {
+			selectedBundlePath = defaultBundlePath
+		}
+	}
+	bundle, err := readFile(selectedBundlePath, bundleLimit)
 	if err != nil {
 		return fmt.Errorf("read the bundle: %w", err)
 	}
-	result, verified, err := checkStateEvidence(bundle, state)
+	evidence, artifactType, layerMediaType, _, err := publicationEvidence(*evidenceKind, state, bundle)
 	if err != nil {
-		return fmt.Errorf("the bundle in %s does not cover the state in %s: %w", *bundlePath, *statePath, err)
+		return err
+	}
+	trust, err := publicationTrust(*trustRootPath, evidence.Kind)
+	if err != nil {
+		return err
+	}
+	result, verified, err := checkStateEvidence(evidence, trust)
+	if err != nil {
+		return fmt.Errorf("the evidence in %s does not cover the state in %s: %w", selectedBundlePath, *statePath, err)
 	}
 	if result.OriginAuthorization != string(signature.OriginAuthorized) {
 		return fmt.Errorf("the state was signed by %s from %s, which cannot speak for %s", verified.Identity.Subject, verified.Identity.Issuer, state.Origin)
 	}
-	return attachBundle(context.Background(), reference, state, bundle)
+	return attachBundle(context.Background(), reference, state, bundle, artifactType, layerMediaType)
 }
 
-func attachBundle(ctx context.Context, reference oci.Reference, state signature.State, bundle []byte) error {
+func publicationEvidence(kind string, state signature.State, payload []byte) (signature.SignatureEvidence, string, string, string, error) {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "", "sigstore":
+		return signature.NewSigstoreEvidence(state, payload), signature.SigstoreArtifactType, signature.SigstoreBundleMediaType, defaultBundlePath, nil
+	case "x509", "x509-cms":
+		return signature.NewX509CMSEvidence(state, payload), signature.X509ArtifactType, signature.X509CMSMediaType, defaultCMSPath, nil
+	default:
+		return signature.SignatureEvidence{}, "", "", "", fmt.Errorf("unsupported evidence kind %q: use sigstore or x509-cms", kind)
+	}
+}
+
+func publicationTrust(path string, kind signature.EvidenceKind) (signature.TrustMaterial, error) {
+	if kind != signature.EvidenceX509CMS {
+		if path != "" {
+			return nil, errors.New("--trust-root applies only to x509-cms evidence")
+		}
+		return nil, nil
+	}
+	if path == "" {
+		return nil, nil
+	}
+	certificates, err := readCertificates(path)
+	if err != nil {
+		return nil, fmt.Errorf("read publication trust root: %w", err)
+	}
+	if len(certificates) != 1 {
+		return nil, fmt.Errorf("publication trust root contains %d certificates, expected exactly one", len(certificates))
+	}
+	root := certificates[0]
+	if !root.IsCA || root.CheckSignatureFrom(root) != nil {
+		return nil, errors.New("publication trust root is not a self-signed CA")
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(root)
+	sum := sha256.Sum256(root.Raw)
+	fingerprint := hex.EncodeToString(sum[:])
+	return &signature.X509TrustSet{
+		CodeSigningRoots: pool, TimestampRoots: x509.NewCertPool(),
+		Roots: map[string]signature.X509Root{fingerprint: {
+			Certificate: root, Fingerprint: fingerprint, Source: signature.RootSourceLocal,
+			Purposes: map[string]bool{signature.RootPurposeCodeSigning: true},
+		}},
+	}, nil
+}
+
+func attachBundle(ctx context.Context, reference oci.Reference, state signature.State, bundle []byte, artifactType, layerMediaType string) error {
 	client := newRegistry(reference)
 	if err := client.authorize(ctx); err != nil {
 		return err
@@ -113,14 +176,14 @@ func attachBundle(ctx context.Context, reference oci.Reference, state signature.
 	if err != nil {
 		return err
 	}
-	layer, err := client.pushBlob(ctx, bundleMediaType, bundle)
+	layer, err := client.pushBlob(ctx, layerMediaType, bundle)
 	if err != nil {
 		return err
 	}
 	encoded, err := json.Marshal(referrer{
 		SchemaVersion: 2,
 		MediaType:     manifestMediaType,
-		ArtifactType:  signatureArtifactType,
+		ArtifactType:  artifactType,
 		Config:        config,
 		Layers:        []descriptor{layer},
 		Subject:       subject,
@@ -195,34 +258,7 @@ func readSignedState(path string) (signature.State, error) {
 // comes back as the same bytes, so a reading that differs from the one in
 // pkg/signature cannot be published.
 func parseCanonicalState(content []byte) (signature.State, error) {
-	lines := strings.Split(strings.TrimSuffix(string(content), "\n"), "\n")
-	if len(lines) < 2 {
-		return signature.State{}, errors.New("the payload carries no fields")
-	}
-	fields := make(map[string]string, len(lines))
-	for _, line := range lines[1:] {
-		name, value, found := strings.Cut(line, "=")
-		if !found {
-			return signature.State{}, fmt.Errorf("%q is not a field of a state", line)
-		}
-		fields[name] = value
-	}
-	abi, err := strconv.Atoi(fields["abi"])
-	if err != nil {
-		return signature.State{}, fmt.Errorf("the payload names abi %q", fields["abi"])
-	}
-	generation, err := strconv.ParseUint(fields["generation"], 10, 64)
-	if err != nil {
-		return signature.State{}, fmt.Errorf("the payload names generation %q", fields["generation"])
-	}
-	return signature.State{
-		ABI:            abi,
-		Origin:         fields["origin"],
-		ManifestSHA256: fields["manifest_sha256"],
-		ImageDigest:    fields["image_digest"],
-		LockSHA256:     fields["lock_sha256"],
-		Generation:     generation,
-	}, nil
+	return signature.ParseCanonicalState(content)
 }
 
 func readFile(path string, limit int64) ([]byte, error) {

@@ -82,7 +82,7 @@ func approveState(arguments []string) error {
 	if err != nil {
 		return fmt.Errorf("read the approval bundle: %w", err)
 	}
-	result, verified, err := checkStateEvidence(bundle, state)
+	result, verified, err := checkStateEvidence(signature.NewSigstoreEvidence(state, bundle), nil)
 	if err != nil {
 		return fmt.Errorf("the bundle in %s does not approve the state in %s: %w", *bundlePath, *statePath, err)
 	}

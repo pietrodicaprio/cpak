@@ -105,3 +105,37 @@ func TestAuthorityIndependentlyReverifiesTaggedX509Evidence(t *testing.T) {
 		t.Fatalf("authority checks=%d verified=%+v recorded=%+v", checks, verified, recorded.Signature)
 	}
 }
+
+func TestRemovingX509TrustBreaksFullReverificationWithoutChangingTheLedger(t *testing.T) {
+	now := time.Now().UTC()
+	evidence, admitted := testX509AuthorityEvidence(t, now)
+	saved := verifyEvidence
+	t.Cleanup(func() { verifyEvidence = saved })
+	currentTrust := admitted
+	verifyEvidence = func(got signature.SignatureEvidence, _ signature.TrustMaterial, _ time.Time) (signature.VerificationResult, error) {
+		return signature.VerifyEvidence(got, currentTrust, now)
+	}
+	ledger := testAnchorLedger(t)
+	anchor := testAnchor()
+	if err := ledger.Record(Enrolment{Anchor: anchor, Signature: SignedStateFromEvidence(evidence)}); err != nil {
+		t.Fatal(err)
+	}
+	before, found, err := ledger.Recorded(anchor.UID, anchor.Origin)
+	if err != nil || !found || before.Signature == nil {
+		t.Fatalf("record before removal: found=%v err=%v record=%+v", found, err, before)
+	}
+	currentTrust = &signature.X509TrustSet{
+		CodeSigningRoots: x509.NewCertPool(), TimestampRoots: x509.NewCertPool(),
+		Roots: map[string]signature.X509Root{},
+	}
+	if _, err = before.Signer(); err == nil {
+		t.Fatal("full verification succeeded after the only trusted root was removed")
+	}
+	after, found, err := ledger.Recorded(anchor.UID, anchor.Origin)
+	if err != nil || !found || after.Signature == nil {
+		t.Fatalf("record after removal: found=%v err=%v record=%+v", found, err, after)
+	}
+	if after.Signature.Kind != before.Signature.Kind || string(after.Signature.Bundle) != string(before.Signature.Bundle) || after.Signature.State != before.Signature.State {
+		t.Fatalf("trust removal changed ledger evidence: before=%+v after=%+v", before.Signature, after.Signature)
+	}
+}

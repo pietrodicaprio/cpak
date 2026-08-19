@@ -5,6 +5,7 @@
 package signature
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -44,6 +45,30 @@ func TestCanonicalIsTheDocumentedByteString(t *testing.T) {
 	}
 	if string(canonical) != want {
 		t.Fatalf("the canonical encoding is the signed message and must be exactly the documented bytes\n got: %q\nwant: %q", canonical, want)
+	}
+}
+
+func TestParseCanonicalStateAcceptsOnlyTheExactSignedEncoding(t *testing.T) {
+	state := validState()
+	canonical, err := state.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ParseCanonicalState(canonical)
+	if err != nil || parsed != state {
+		t.Fatalf("parsed = %+v, err = %v", parsed, err)
+	}
+	for name, changed := range map[string][]byte{
+		"missing final newline": canonical[:len(canonical)-1],
+		"extra field":           append(append([]byte{}, canonical...), []byte("unknown=value\n")...),
+		"non-canonical number":  bytes.Replace(canonical, []byte("generation=7"), []byte("generation=07"), 1),
+		"wrong order":           bytes.Replace(canonical, []byte("abi=1\norigin="), []byte("origin="), 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ParseCanonicalState(changed); err == nil {
+				t.Fatal("non-canonical state parsed")
+			}
+		})
 	}
 }
 
