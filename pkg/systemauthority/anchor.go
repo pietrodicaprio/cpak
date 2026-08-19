@@ -6,6 +6,7 @@ package systemauthority
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -73,6 +74,7 @@ const (
 	// and an inclusion proof are nowhere near this, and the cap is what stops
 	// whoever wrote the file from deciding how much a reader reads.
 	signatureBundleLimit = 256 << 10
+	encodedBundleLimit   = ((signatureBundleLimit + 2) / 3) * 4
 
 	// anchorSizeLimit bounds the whole record: the anchor, the policy and the
 	// bundle together.
@@ -88,6 +90,8 @@ const (
 )
 
 var anchorRootPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+var enrolSignedOverBus = signedEnrolmentOverBus
 
 // ErrAnchorDowngrade reports an enrolment that would put an application back to
 // a generation it already left. The caller has to tell it from a failure,
@@ -961,7 +965,7 @@ func dispatchSignedEnrolment(enrolment Enrolment) error {
 	if os.Geteuid() == 0 {
 		return asRefusal(DefaultAnchorLedger().Record(enrolment))
 	}
-	err := signedEnrolmentOverBus(enrolment)
+	err := retryPastStale(func() error { return enrolSignedOverBus(enrolment) })
 	if errors.Is(err, errTransportUnavailable) {
 		return ErrNoAuthority
 	}
@@ -978,16 +982,16 @@ func signedEnrolmentOverBus(enrolment Enrolment) error {
 	if err != nil {
 		return err
 	}
-	state, err := json.Marshal(enrolment.Signature.State)
+	state, bundle, err := encodeSignedState(*enrolment.Signature)
 	if err != nil {
-		return fmt.Errorf("encode the signed state: %w", err)
+		return err
 	}
 	anchor := enrolment.Anchor
 	call := connection.Object(BusName, ObjectPath).Call(InterfaceName+".EnrolSignedAnchor", 0,
 		int32(anchor.ABI), anchor.UID, anchor.Origin, anchor.Generation,
 		anchor.ImageDigest, anchor.ManifestDigest,
 		anchor.PackageRoot, anchor.PolicyRoot, anchor.LaunchRoot, policy,
-		string(state), string(enrolment.Signature.Bundle))
+		state, bundle)
 	if call.Err == nil {
 		return nil
 	}
@@ -995,6 +999,29 @@ func signedEnrolmentOverBus(enrolment Enrolment) error {
 		return errTransportUnavailable
 	}
 	return fmt.Errorf("%s: %w", integritySubject(anchorEnrolAction), call.Err)
+}
+
+type signedStateWire struct {
+	State           signature.State        `json:"state"`
+	EvidenceABI     int                    `json:"evidence_abi"`
+	Kind            signature.EvidenceKind `json:"kind"`
+	MediaType       string                 `json:"media_type"`
+	PayloadEncoding string                 `json:"payload_encoding"`
+}
+
+// encodeSignedState keeps the D-Bus method ABI stable while carrying the
+// common evidence profile. D-Bus strings must be UTF-8, so binary CMS evidence
+// travels as canonical base64 rather than being coerced into text.
+func encodeSignedState(signed SignedState) (string, string, error) {
+	wire := signedStateWire{
+		State: signed.State, EvidenceABI: signed.ABI, Kind: signed.Kind,
+		MediaType: signed.MediaType, PayloadEncoding: "base64",
+	}
+	state, err := json.Marshal(wire)
+	if err != nil {
+		return "", "", fmt.Errorf("encode the signed state: %w", err)
+	}
+	return string(state), base64.StdEncoding.EncodeToString(signed.Bundle), nil
 }
 
 // EnrolSignedAnchor is EnrolAnchor with the publisher signature beside it. It
@@ -1067,7 +1094,42 @@ func decodeSignedState(state, bundle string) (*SignedState, error) {
 	if state == "" && bundle == "" {
 		return nil, nil
 	}
-	if len(state) > signatureBundleLimit || len(bundle) > signatureBundleLimit {
+	if len(state) > signatureBundleLimit || len(bundle) > encodedBundleLimit {
+		return nil, errors.New("signed state is too large")
+	}
+	if err := signature.RejectDuplicateJSONKeys([]byte(state)); err != nil {
+		return nil, fmt.Errorf("decode the signed state: %w", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(state), &fields); err != nil {
+		return nil, fmt.Errorf("decode the signed state: %w", err)
+	}
+	if _, commonEvidence := fields["state"]; commonEvidence {
+		decoder := json.NewDecoder(strings.NewReader(state))
+		decoder.DisallowUnknownFields()
+		wire := signedStateWire{}
+		if err := decoder.Decode(&wire); err != nil {
+			return nil, fmt.Errorf("decode the signed state: %w", err)
+		}
+		if err := decoder.Decode(&struct{}{}); err != io.EOF {
+			return nil, errors.New("signed state contains multiple JSON values")
+		}
+		if wire.PayloadEncoding != "base64" {
+			return nil, errors.New("signed state has an unsupported payload encoding")
+		}
+		payload, err := base64.StdEncoding.Strict().DecodeString(bundle)
+		if err != nil {
+			return nil, errors.New("signed state payload is not canonical base64")
+		}
+		if len(payload) > signatureBundleLimit {
+			return nil, errors.New("signed state is too large")
+		}
+		return &SignedState{
+			State: wire.State, Bundle: payload, ABI: wire.EvidenceABI,
+			Kind: wire.Kind, MediaType: wire.MediaType,
+		}, nil
+	}
+	if len(bundle) > signatureBundleLimit {
 		return nil, errors.New("signed state is too large")
 	}
 	decoder := json.NewDecoder(strings.NewReader(state))

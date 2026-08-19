@@ -1165,6 +1165,29 @@ func TestTheSignedEnrolmentIsCarriedByTheBusInterface(t *testing.T) {
 	}
 }
 
+func TestCommonEvidenceCrossesTheExistingBusABIWithoutTreatingCMSAsText(t *testing.T) {
+	signed := SignedState{
+		State:  testSignedState(2).State,
+		Bundle: []byte{0xff, 0x00, 0x81, 0x7f},
+		ABI:    signature.EvidenceABIVersion, Kind: signature.EvidenceX509CMS,
+		MediaType: signature.X509CMSMediaType,
+	}
+	state, bundle, err := encodeSignedState(signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(bundle, string(signed.Bundle)) {
+		t.Fatal("binary CMS evidence was placed raw in a D-Bus string")
+	}
+	decoded, err := decodeSignedState(state, bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.ABI != signed.ABI || decoded.Kind != signed.Kind || decoded.MediaType != signed.MediaType || decoded.State != signed.State || !bytes.Equal(decoded.Bundle, signed.Bundle) {
+		t.Fatalf("common evidence changed across the bus: %+v", decoded)
+	}
+}
+
 func TestTheServiceRecordsASignedEnrolment(t *testing.T) {
 	ledger := testAnchorLedger(t)
 	authorizer := &testAuthorizer{}
