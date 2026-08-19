@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -56,6 +57,18 @@ func TestX509SignAcceptsEncryptedSoftwareKeyAndProducesDetachedEvidence(t *testi
 	}
 	if result.Cryptographic != signature.CryptographicVerified || result.Chain != signature.ChainTrustedLocal {
 		t.Fatalf("verification = %+v", result)
+	}
+}
+
+func TestX509SigningReportDoesNotImplyPublicTrustOrReputation(t *testing.T) {
+	pki := newCommandPKI(t, time.Now())
+	var report bytes.Buffer
+	reportX509Signing(&report, "state.cms", pki.leaf)
+	text := report.String()
+	for _, required := range []string{"experimental X.509 publisher", "assurance: experimental", "no public trust", "no public", "reputation"} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("report %q does not contain %q", text, required)
+		}
 	}
 }
 

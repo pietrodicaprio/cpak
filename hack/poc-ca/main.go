@@ -35,6 +35,13 @@ import (
 
 var experimentalPolicy = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 55555, 1, 1}
 
+var pocKeyEncryption = &pkcs8.Opts{
+	Cipher: pkcs8.AES256GCM,
+	KDFOpts: pkcs8.ScryptOpts{
+		SaltSize: 16, CostParameter: 32768, BlockSize: 8, ParallelizationParameter: 1,
+	},
+}
+
 type issued struct {
 	certificate *x509.Certificate
 	key         *ecdsa.PrivateKey
@@ -122,7 +129,7 @@ func run(arguments []string, now time.Time) error {
 		"tsa-key.pem":                       tsa.key,
 	}
 	for name, key := range keys {
-		der, marshalErr := pkcs8.MarshalPrivateKey(key, passphrase, nil)
+		der, marshalErr := pkcs8.MarshalPrivateKey(key, passphrase, pocKeyEncryption)
 		if marshalErr != nil {
 			return fmt.Errorf("encrypt %s: %w", name, marshalErr)
 		}
