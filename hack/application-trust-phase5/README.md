@@ -3,7 +3,8 @@
 `run-linux.sh` is the first executable Phase 5 gate. It runs the repository's
 tests and vet on Linux, builds the real `cpak`, `cpak-sign`, and
 `cpak-installer` binaries, and then exercises the X.509 and reputation
-administration CLI in a disposable user and mount namespace.
+administration CLI in a disposable mount namespace. By default it obtains root
+only inside an unprivileged user namespace.
 
 The namespace makes the caller root only inside the test and replaces
 `/var/lib` with a private `tmpfs`. It also uses a temporary home and removes
@@ -16,6 +17,17 @@ Run it from any checkout path on a disposable Linux test machine:
 ```sh
 ./hack/application-trust-phase5/run-linux.sh
 ```
+
+On a disposable CI runner that disables unprivileged user namespaces, an
+explicit mode may use passwordless `sudo` only to create the private mount
+namespace:
+
+```sh
+./hack/application-trust-phase5/run-linux.sh --sudo-namespace
+```
+
+That mode still runs the administration lifecycle directly as root inside the
+private namespace. It is not evidence for cpak's own `sudo` reinvocation path.
 
 The current harness proves:
 

@@ -147,10 +147,18 @@ if [[ "${1:-}" == "--inside-namespace" ]]; then
   exit 0
 fi
 
+namespace_mode="${1:-}"
+if [[ -n "$namespace_mode" && "$namespace_mode" != "--sudo-namespace" ]]; then
+  fail "unknown argument: $namespace_mode"
+fi
+
 [[ "$(uname -s)" == "Linux" ]] || fail "this harness must run on Linux"
 for command_name in go python3 unshare mount sha256sum awk grep; do
   require_command "$command_name"
 done
+if [[ "$namespace_mode" == "--sudo-namespace" ]]; then
+  require_command sudo
+fi
 
 temp_root="${TMPDIR:-/tmp}"
 temp_root="${temp_root%/}"
@@ -209,7 +217,12 @@ PY
   --key-passphrase-file "$phase5_dir/passphrase" \
   --output "$phase5_dir/state.cms"
 
-unshare --user --map-root-user --mount --fork \
-  "$0" --inside-namespace "$phase5_dir"
+if [[ "$namespace_mode" == "--sudo-namespace" ]]; then
+  sudo --non-interactive unshare --mount --fork \
+    "$0" --inside-namespace "$phase5_dir"
+else
+  unshare --user --map-root-user --mount --fork \
+    "$0" --inside-namespace "$phase5_dir"
+fi
 
 printf 'phase5: Linux core and isolated administrator harness passed\n'
