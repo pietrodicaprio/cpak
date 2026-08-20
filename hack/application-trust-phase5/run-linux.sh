@@ -316,7 +316,8 @@ PY
 
 inside_namespace() {
   phase5_dir="$2"
-  phase5_bin_dir="$3"
+  local phase5_bin_source="$3"
+  phase5_bin_dir="/opt/cpak-phase5"
   cleanup_uid="${4:-}"
   cleanup_gid="${5:-}"
   unset SUDO_UID SUDO_GID SUDO_USER
@@ -341,6 +342,9 @@ inside_namespace() {
   mount --make-rprivate /
   mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /var/lib
   mkdir -p /var/lib/cpak
+  mount -t tmpfs -o mode=0755,nosuid,nodev,exec tmpfs /opt
+  mkdir -p "$phase5_bin_dir"
+  cp -a "$phase5_bin_source/." "$phase5_bin_dir/"
 
   local root_fingerprint
   root_fingerprint="$(python3 - "$phase5_dir/pki/manifest.json" <<'PY'
@@ -431,14 +435,13 @@ if [[ -n "$namespace_mode" && "$namespace_mode" != "--sudo-namespace" ]]; then
 fi
 
 [[ "$(uname -s)" == "Linux" ]] || fail "this harness must run on Linux"
-for command_name in go python3 unshare mount sha256sum awk grep; do
+for command_name in go python3 unshare mount sha256sum awk grep cp; do
   require_command "$command_name"
 done
 if [[ "$namespace_mode" == "--sudo-namespace" ]]; then
   require_command sudo
   require_command id
   require_command chown
-  require_command cp
   require_command script
   require_command timeout
   require_command sleep
