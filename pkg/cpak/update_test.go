@@ -1188,6 +1188,7 @@ func TestUpdatingAPackageInstalledBeforeTheMigrationLeavesItLaunchable(t *testin
 	manifest := newTestManifest()
 	manifest.ManifestVersion = "1.0"
 	manifest.Override.FsHostHome = true
+	manifest.Image = newSignatureRegistry().start(t).ContextName() + ":main"
 	stub := &updateStub{
 		manifest:    manifest,
 		layers:      installed.ParsedLayers,
