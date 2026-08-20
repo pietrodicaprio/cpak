@@ -112,7 +112,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417
-        with:
-          go-version-file: go.mod
-      - run: ./hack/application-trust-phase5/run-linux.sh --sudo-namespace
+      - run: |
+          docker run --rm --privileged \
+            --security-opt apparmor=unconfined \
+            --security-opt seccomp=unconfined \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            --workdir /workspace \
+            golang:1.25.8-bookworm \
+            bash -euc '
+              apt-get update
+              apt-get install -y --no-install-recommends ca-certificates coreutils mount python3 util-linux
+              ./hack/application-trust-phase5/run-linux.sh --root-namespace
+            '

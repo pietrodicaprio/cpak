@@ -26,11 +26,18 @@ namespace:
 ./hack/application-trust-phase5/run-linux.sh --sudo-namespace
 ```
 
-That mode still runs cpak directly as root inside the private namespace. It is
-not evidence for cpak's own `sudo` reinvocation path. Because binding the
+An already-root disposable container with the required kernel capabilities
+uses the separate root mode:
+
+```sh
+./hack/application-trust-phase5/run-linux.sh --root-namespace
+```
+
+Those modes still run cpak directly as root inside the private namespace. They
+are not evidence for cpak's own `sudo` reinvocation path. Because binding the
 fixture repository to HTTPS port 443 requires a privileged network port, the
-process-level package lifecycle currently runs only in this disposable-runner
-mode. The default user-namespace mode still executes the core X.509 and
+process-level package lifecycle currently runs only in these disposable-runner
+modes. The default user-namespace mode still executes the core X.509 and
 reputation administration lifecycle.
 
 The current harness proves:
