@@ -23,6 +23,7 @@ func TestEscalationPrefersTheToolTheSessionCanAnswer(t *testing.T) {
 }
 
 func TestEscalationCoversEveryToolItKnows(t *testing.T) {
+	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
 	tools := escalationTools()
 	for _, want := range []string{"pkexec", "run0", "sudo", "doas"} {
 		found := false
@@ -35,15 +36,36 @@ func TestEscalationCoversEveryToolItKnows(t *testing.T) {
 	}
 }
 
+func TestHeadlessEscalationNeverLaunchesAGraphicalHelper(t *testing.T) {
+	t.Setenv("WAYLAND_DISPLAY", "")
+	t.Setenv("DISPLAY", "")
+	tools := escalationTools()
+	if strings.Join(tools, ",") != "sudo,doas" {
+		t.Fatalf("headless escalation candidates = %v, want only sudo and doas", tools)
+	}
+	for _, forbidden := range graphicalEscalation {
+		for _, candidate := range tools {
+			if candidate == forbidden {
+				t.Fatalf("headless escalation would launch graphical helper %s", forbidden)
+			}
+		}
+	}
+}
+
 func TestEscalationReportsWhenTheHostHasNoTool(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	_, err := escalationTool()
 	if err == nil {
 		t.Fatal("a host without any escalation tool was accepted")
 	}
-	for _, want := range []string{"sudo", "doas", "pkexec", "run0", "root"} {
+	for _, want := range []string{"sudo", "doas", "root"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("the error does not mention %s: %v", want, err)
+		}
+	}
+	for _, forbidden := range []string{"pkexec", "run0"} {
+		if strings.Contains(err.Error(), forbidden) {
+			t.Fatalf("the headless error suggests graphical helper %s: %v", forbidden, err)
 		}
 	}
 }
