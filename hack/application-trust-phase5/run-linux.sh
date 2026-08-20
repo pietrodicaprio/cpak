@@ -360,8 +360,9 @@ inside_namespace() {
   mount --make-rprivate /
   mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /var/lib
   mkdir -p /var/lib/cpak
-  mount -t tmpfs -o mode=0755,nosuid,nodev,exec tmpfs /opt
+  [[ -d "$phase5_bin_source" ]] || fail "executable staging directory is unavailable"
   mkdir -p "$phase5_bin_dir"
+  mount -t tmpfs -o mode=0755,nosuid,nodev,exec tmpfs "$phase5_bin_dir"
   cp -a "$phase5_bin_source/." "$phase5_bin_dir/"
 
   local root_fingerprint
