@@ -353,8 +353,9 @@ inside_namespace() {
   trap cleanup_namespace EXIT
   export HOME="$phase5_dir/home"
   export XDG_CONFIG_HOME="$HOME/.config"
-  export XDG_DATA_HOME="$phase5_data_root"
+  export XDG_DATA_HOME="$phase5_data_root/xdg"
   export XDG_STATE_HOME="$HOME/.local/state"
+  export CPAK_INSTALLATION_PATH="$phase5_data_root/cpak"
   unset DISPLAY WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS
 
   mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"
