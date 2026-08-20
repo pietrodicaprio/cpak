@@ -25,7 +25,8 @@ import sys
 
 expected_status = int(sys.argv[1])
 expected_action = sys.argv[2]
-document = json.loads(pathlib.Path(sys.argv[3]).read_text(encoding="utf-8"))
+output = pathlib.Path(sys.argv[3])
+document = json.loads(output.read_text(encoding="utf-8"))
 actual_status = int(sys.argv[4])
 
 if document.get("schema_version") != 1:
@@ -88,9 +89,12 @@ if result.get("context") != expected_context or result.get("operation") != expec
         f"expected={expected_context!r}/{expected_operation!r}"
     )
 if final.get("exit_code") != expected_status or actual_status != expected_status:
+    stderr = output.with_suffix(".err")
+    detail = stderr.read_text(encoding="utf-8", errors="replace")[-4000:] if stderr.exists() else ""
     raise SystemExit(
         f"exit disagreement: process={actual_status}, decision={final.get('exit_code')}, "
-        f"action={final.get('action')!r}, reason={final.get('reason_code')!r}, expected={expected_status}"
+        f"action={final.get('action')!r}, reason={final.get('reason_code')!r}, "
+        f"expected={expected_status}; stderr tail={detail!r}"
     )
 if final.get("action") != expected_action or not final.get("reason_code"):
     raise SystemExit(f"unexpected final decision: {final!r}")
