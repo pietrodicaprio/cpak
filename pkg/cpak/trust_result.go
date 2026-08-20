@@ -153,14 +153,19 @@ func (e ApplicationEnrolment) applicationTrustResultAtSource(operation applicati
 		result.Policy.ReasonCode = finalReason
 		result.Final, err = applicationtrust.NewFinal(finalAction, finalReason)
 	} else if action == applicationtrust.PolicyWarn {
-		response := applicationtrust.NoConfirmation
-		switch e.Confirmation {
-		case applicationtrust.ConfirmationAccepted:
-			response = applicationtrust.Confirm
-		case applicationtrust.ConfirmationDeclined:
-			response = applicationtrust.Decline
+		if source == applicationtrust.SourceRecorded && e.Confirmation == applicationtrust.ConfirmationAccepted {
+			result.Policy.Confirmation = applicationtrust.ConfirmationAccepted
+			result.Final, err = applicationtrust.NewFinal(applicationtrust.FinalWarn, reason)
+		} else {
+			response := applicationtrust.NoConfirmation
+			switch e.Confirmation {
+			case applicationtrust.ConfirmationAccepted:
+				response = applicationtrust.Confirm
+			case applicationtrust.ConfirmationDeclined:
+				response = applicationtrust.Decline
+			}
+			result.Policy.Confirmation, result.Final, err = applicationtrust.ResolvePolicyAction(action, context, response, reason)
 		}
-		result.Policy.Confirmation, result.Final, err = applicationtrust.ResolvePolicyAction(action, context, response, reason)
 	} else {
 		result.Policy.Confirmation, result.Final, err = applicationtrust.ResolvePolicyAction(action, context, applicationtrust.NoConfirmation, reason)
 	}
