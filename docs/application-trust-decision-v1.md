@@ -99,6 +99,20 @@ The official actor adapter owns prompt collection. The portable decision core
 receives confirmation as a separate typed input; it never infers confirmation
 from a TTY, display, `--yes`, environment variable, timeout, or default value.
 
+cpak selects a graphical adapter only through the explicit `--graphical`
+frontend contract. A display variable alone cannot opt a command into consent,
+and `--non-interactive` or `--json` always wins over `--graphical`. The desktop
+prompt names the origin, publisher display name and normalized ID, provider,
+status, provider reason, and host-policy reason. Its actions are `Leave
+unenrolled` and `Enrol this installation`; close and Escape decline, while
+Enter cannot accept the warning. If no adapter can display the prompt, the
+result remains `confirmation-required` with exit 23.
+
+If the authority returns a different warning after a graphical or terminal
+acceptance, cpak displays the new evidence and asks again. The previous answer
+is never carried across the changed authority challenge. Repeated changes are
+bounded and finish as `confirmation-required` rather than looping forever.
+
 A result with `decision_source=recorded` may report an accepted warning while
 the reader itself is non-interactive. That state is historical authority output:
 the record exists only because an earlier dedicated confirmation completed.

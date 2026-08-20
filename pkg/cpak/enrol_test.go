@@ -687,7 +687,7 @@ func TestReputationWarningUsesOnlyTheDedicatedEnrolmentConfirmation(t *testing.T
 			options := EnrolmentOptions{}
 			if test.callback {
 				options.ConfirmReputation = func(got ReputationWarning) applicationtrust.ConfirmationResponse {
-					if got.ProviderID != warning.Result.ProviderID || got.Status != warning.Result.Status || got.ProviderReason != warning.Result.ReasonCode || got.PublisherID == "" {
+					if got.Origin != app.Origin || got.ProviderID != warning.Result.ProviderID || got.Status != warning.Result.Status || got.ProviderReason != warning.Result.ReasonCode || got.PublisherID == "" {
 						t.Fatalf("warning = %+v", got)
 					}
 					return test.response
@@ -727,16 +727,27 @@ func TestChangedReputationWarningRequiresANewConfirmation(t *testing.T) {
 	first := warning("first-warning", 4)
 	changed := warning("changed-warning", 5)
 	recordAnchor = func(integrity.Anchor, *types.Override, *systemauthority.SignedState) error { return first }
-	confirmAnchor = func(integrity.Anchor, *types.Override, *systemauthority.SignedState, string) error { return changed }
-
-	enrolment := cp.EnrolPublishedApplicationWithOptions(app, publishedTestPackage(t), EnrolmentOptions{
-		ConfirmReputation: func(ReputationWarning) applicationtrust.ConfirmationResponse { return applicationtrust.Confirm },
-	})
-	if enrolment.Outcome != EnrolmentConfirmationRequired || enrolment.Confirmation != applicationtrust.ConfirmationRequired {
-		t.Fatalf("enrolment=%+v, want a new confirmation", enrolment)
+	confirmations := 0
+	confirmAnchor = func(integrity.Anchor, *types.Override, *systemauthority.SignedState, string) error {
+		confirmations++
+		if confirmations == 1 {
+			return changed
+		}
+		return nil
 	}
-	if enrolment.Reputation == nil || enrolment.Reputation.Sequence != changed.Result.Sequence || enrolment.Reputation.ReasonCode != changed.Result.ReasonCode {
-		t.Fatalf("reputation=%+v, want the changed warning", enrolment.Reputation)
+
+	shown := []string{}
+	enrolment := cp.EnrolPublishedApplicationWithOptions(app, publishedTestPackage(t), EnrolmentOptions{
+		ConfirmReputation: func(warning ReputationWarning) applicationtrust.ConfirmationResponse {
+			shown = append(shown, warning.ProviderReason)
+			return applicationtrust.Confirm
+		},
+	})
+	if enrolment.Outcome != EnrolmentRecorded || enrolment.Confirmation != applicationtrust.ConfirmationAccepted {
+		t.Fatalf("enrolment=%+v, want the changed warning to be confirmed separately", enrolment)
+	}
+	if !reflect.DeepEqual(shown, []string{"first-warning", "changed-warning"}) || confirmations != 2 {
+		t.Fatalf("shown=%v confirmations=%d", shown, confirmations)
 	}
 }
 

@@ -13,6 +13,17 @@ import (
 	"github.com/mirkobrombin/cpak/pkg/bootstrap"
 )
 
+func TestClosedInputCannotApproveATerminalInstall(t *testing.T) {
+	confirmed, err := readInstallConfirmation(strings.NewReader(""))
+	if confirmed || err == nil {
+		t.Fatalf("confirmed=%v err=%v", confirmed, err)
+	}
+	confirmed, err = readInstallConfirmation(strings.NewReader("\n"))
+	if err != nil || !confirmed {
+		t.Fatalf("explicit default confirmed=%v err=%v", confirmed, err)
+	}
+}
+
 func TestInstallCpakIsAtomicAndIdempotent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -65,16 +76,11 @@ func TestInstallMigratesStorageBeforeInstallingTheApplication(t *testing.T) {
 	t.Setenv("HOME", home)
 	payload := []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/calls\"\n")
 	capsule := bootstrap.Capsule{
-		Metadata: bootstrap.Metadata{
-			Name:           "Demo",
-			Origin:         "github.com/containerpak/demo",
-			Ref:            strings.Repeat("a", 40),
-			ManifestDigest: "sha256:" + strings.Repeat("b", 64),
-		},
+		Metadata:  bootstrap.Metadata{Name: "Demo", Origin: "github.com/containerpak/demo"},
 		Payload:   payload,
 		Companion: []byte("storage service"),
 	}
-	if err := install(capsule, func(string) {}); err != nil {
+	if err := install(capsule, func(string) {}, false); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(home, "calls"))
@@ -82,19 +88,25 @@ func TestInstallMigratesStorageBeforeInstallingTheApplication(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	wantInstall := "install --commit " + strings.Repeat("a", 40) + " --signed-installer github.com/containerpak/demo"
-	if len(lines) != 2 || lines[0] != "storage migrate" || lines[1] != wantInstall {
+	if len(lines) != 2 || lines[0] != "storage migrate" || lines[1] != "install --yes github.com/containerpak/demo" {
 		t.Fatalf("commands = %q", lines)
 	}
 }
 
-func TestPermissionLinesShowTheSignedDetails(t *testing.T) {
-	lines := permissionLines([]bootstrap.Permission{
-		{Name: "Network", Detail: "internet and local network"},
-		{Name: "Files", Detail: "home, read and write"},
-	})
-	if strings.Join(lines, "\n") != "Network: internet and local network\nFiles: home, read and write" {
-		t.Fatalf("permission lines = %q", lines)
+func TestGraphicalInstallSelectsOnlyTheDedicatedTrustFrontend(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	payload := []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/calls\"\n")
+	capsule := bootstrap.Capsule{Metadata: bootstrap.Metadata{Name: "Demo", Origin: "github.com/containerpak/demo"}, Payload: payload}
+	if err := install(capsule, func(string) {}, true); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(home, "calls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(data)); got != "storage migrate\ninstall --yes --graphical github.com/containerpak/demo" {
+		t.Fatalf("command = %q", got)
 	}
 }
 
@@ -111,6 +123,7 @@ func TestGUIProgressLabelHidesCommandOutput(t *testing.T) {
 		{message: "Verified runtime source google-chrome.deb", want: "Verified google-chrome.deb"},
 		{message: "Using cached runtime source google-chrome.deb", want: "Preparing google-chrome.deb"},
 		{message: "Installing runtime source google-chrome.deb", want: "Installing google-chrome.deb"},
+		{message: "Checking publisher reputation again", want: "Checking publisher reputation again"},
 		{message: "Extracting layer", want: "Installing Bottles"},
 		{message: "Resolved commit f2700afd2980dda29a73284f8b182e32c2071d5cb4fc9b7ac72579641b3cbb", want: ""},
 	}
@@ -118,5 +131,17 @@ func TestGUIProgressLabelHidesCommandOutput(t *testing.T) {
 		if got := guiProgressLabel(test.message, "Bottles"); got != test.want {
 			t.Fatalf("guiProgressLabel(%q) = %q, want %q", test.message, got, test.want)
 		}
+	}
+}
+
+func TestGraphicalTrustExitLabelsDescribeInstalledButUnenrolledState(t *testing.T) {
+	for _, code := range []int{20, 21, 22, 23} {
+		label, ok := graphicalInstallExitLabel(code)
+		if !ok || !strings.Contains(label, "Installed, not enrolled") {
+			t.Fatalf("code %d label=%q ok=%v", code, label, ok)
+		}
+	}
+	if _, ok := graphicalInstallExitLabel(1); ok {
+		t.Fatal("generic operational failure was described as a trust outcome")
 	}
 }
