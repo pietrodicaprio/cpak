@@ -233,13 +233,13 @@ run_graphical_enrolment() {
     >"$phase5_dir/xvfb.log" 2>&1 &
   xvfb_pid=$!
   for _ in {1..100}; do
-    if DISPLAY="$display_number" xdotool getmouselocation >/dev/null 2>&1; then
+    if DISPLAY="$display_number" xwininfo -root >/dev/null 2>&1; then
       break
     fi
     kill -0 "$xvfb_pid" 2>/dev/null || fail "the graphical test display stopped"
     sleep 0.1
   done
-  DISPLAY="$display_number" xdotool getmouselocation >/dev/null 2>&1 || \
+  DISPLAY="$display_number" xwininfo -root >/dev/null 2>&1 || \
     fail "the graphical test display did not become ready"
 
   DISPLAY="$display_number" "$phase5_bin_dir/cpak" install \
@@ -260,11 +260,8 @@ run_graphical_enrolment() {
     fail "the publisher reputation window did not appear"
   fi
 
-  sleep 1
-  DISPLAY="$display_number" xdotool windowfocus "$window_id" \
-    mousemove --sync --window "$window_id" 429 479
-  sleep 0.2
-  DISPLAY="$display_number" xdotool click 1
+  DISPLAY="$display_number" "$phase5_bin_dir/cpak-phase5-x11-click" \
+    --window "$window_id" --x 429 --y 479
   for _ in {1..300}; do
     kill -0 "$install_pid" 2>/dev/null || break
     sleep 0.1
@@ -550,7 +547,6 @@ inside_namespace() {
   fi
   if [[ "$graphical_runtime" == "1" ]]; then
     require_command Xvfb
-    require_command xdotool
     require_command xwininfo
   elif [[ -n "$graphical_runtime" ]]; then
     fail "CPAK_PHASE5_GRAPHICAL must be empty or 1"
@@ -696,6 +692,7 @@ CGO_ENABLED=0 go build -tags cpak_ui_builtin -trimpath -o "$phase5_bin_dir/cpak-
 CGO_ENABLED=0 go build -trimpath -o "$phase5_bin_dir/cpak-storaged" ./cmd/cpak-storaged
 CGO_ENABLED=0 go build -trimpath -o "$phase5_bin_dir/cpak-phase5-fixture" ./hack/application-trust-phase5/fixture-server
 CGO_ENABLED=0 go build -trimpath -o "$phase5_bin_dir/phase5-payload" ./hack/application-trust-phase5/payload
+CGO_ENABLED=0 go build -trimpath -o "$phase5_bin_dir/cpak-phase5-x11-click" ./hack/application-trust-phase5/x11-click
 
 printf '%s\n' 'phase5-disposable-material' >"$phase5_dir/passphrase"
 chmod 0600 "$phase5_dir/passphrase"
