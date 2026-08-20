@@ -32,9 +32,12 @@ if document.get("schema_version") != 1:
     raise SystemExit(f"unexpected decision schema: {document.get('schema_version')!r}")
 final = document.get("final", {})
 if final.get("exit_code") != expected_status or actual_status != expected_status:
+    stderr = output.with_suffix(".err")
+    detail = stderr.read_text(encoding="utf-8", errors="replace")[-4000:] if stderr.exists() else ""
     raise SystemExit(
         f"exit disagreement: process={actual_status}, decision={final.get('exit_code')}, "
-        f"action={final.get('action')!r}, reason={final.get('reason_code')!r}, expected={expected_status}"
+        f"action={final.get('action')!r}, reason={final.get('reason_code')!r}, "
+        f"expected={expected_status}; stderr tail={detail!r}"
     )
 if final.get("action") != expected_action:
     raise SystemExit(f"final action={final.get('action')!r}, expected={expected_action!r}")
