@@ -242,12 +242,12 @@ run_graphical_enrolment() {
   DISPLAY="$display_number" xdotool getmouselocation >/dev/null 2>&1 || \
     fail "the graphical test display did not become ready"
 
-  DISPLAY="$display_number" timeout 30 "$phase5_bin_dir/cpak" install \
+  DISPLAY="$display_number" "$phase5_bin_dir/cpak" install \
     --branch main --yes --graphical "$origin" \
     >"$phase5_dir/install-graphical.log" 2>&1 &
   install_pid=$!
   for _ in {1..100}; do
-    if DISPLAY="$display_number" xdotool search --name '^Publisher reputation$' \
+    if DISPLAY="$display_number" xdotool search --pid "$install_pid" \
       >"$phase5_dir/reputation-window" 2>/dev/null; then
       window_id="$(head -n 1 "$phase5_dir/reputation-window")"
       break
@@ -256,8 +256,19 @@ run_graphical_enrolment() {
     sleep 0.1
   done
   [[ -n "$window_id" ]] || fail "the publisher reputation window did not appear"
+  [[ "$(DISPLAY="$display_number" xdotool getwindowname "$window_id")" == "Publisher reputation" ]] || \
+    fail "the graphical confirmation opened an unexpected window"
 
   DISPLAY="$display_number" xdotool mousemove --window "$window_id" 429 479 click 1
+  for _ in {1..300}; do
+    kill -0 "$install_pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$install_pid" 2>/dev/null; then
+    kill "$install_pid" 2>/dev/null || true
+    wait "$install_pid" 2>/dev/null || true
+    fail "the graphical enrolment did not finish after confirmation"
+  fi
   set +e
   wait "$install_pid"
   status=$?
