@@ -1,8 +1,8 @@
 # Application Trust POC Test Matrix
 
-- Status: Phases 0 through 4 implemented; Phases 5 and 6 planned
-- Baseline: cpak v2.6.0 (`12e835c`)
-- Last updated: 2026-08-19
+- Status: Phases 0 through 4 implemented; Phase 5 in progress; Phase 6 planned
+- Baseline: cpak v2.8.7 (`be29d55`)
+- Last updated: 2026-08-20
 
 ## 1. How to read this matrix
 
@@ -135,7 +135,7 @@ behaviour require the real integration path described in the Evidence column.
 | AT-CA-005 | No reusable private key or passphrase is tracked | Phase 3 tracked-file inventory and secret-pattern scan; generator emits keys only into a new caller-selected directory | 3, 6 | Implemented for Phase 3; repeat at publication |
 | AT-CA-006 | Signing accepts an encrypted software key through a safe runtime path | `TestX509SignAcceptsEncryptedSoftwareKeyAndProducesDetachedEvidence` and unsafe-mode/wrong-passphrase negatives | 3 | Implemented |
 | AT-CA-007 | Signing boundary accepts `crypto.Signer` without evidence-format changes | `TestSignX509CMSUsesCryptoSignerAndProducesVerifierEvidence` | 3 | Implemented |
-| AT-CA-008 | Clean Linux environment can generate, sign, attach, import, verify, and enrol | Linux portability suite exercises generator, signer, fake OCI attach, local-root lifecycle, verification, and authority enrolment; `application-trust-poc-demo.md` composes the same commands | 3, 5 | Implemented for Phase 3 POC; real install/update matrix remains Phase 5 |
+| AT-CA-008 | Clean Linux environment can generate, sign, attach, import, verify, and enrol | Linux portability suite exercises generator, signer, real loopback OCI attachment, local-root lifecycle, verification, installation, and authority enrolment; `application-trust-poc-demo.md` composes the same commands | 3, 5 | Implemented for X.509 on the real CLI/OCI path; Sigstore row remains Phase 5 |
 | AT-CA-009 | Same artifact is untrusted before explicit POC-root import | `TestAttachPublishesX509CMSOnlyAfterPublicationTimeTrust`, unknown-root verifier cases, and explicit root-store lifecycle tests | 3 | Implemented |
 | AT-CA-010 | Root removal causes full re-verification failure without ledger corruption | `TestRemovingX509TrustBreaksFullReverificationWithoutChangingTheLedger` | 3 | Implemented |
 | AT-CA-011 | CLI labels POC assurance experimental | `TestX509SigningReportDoesNotImplyPublicTrustOrReputation` and runbook wording | 3, 5 | Implemented for Phase 3 CLI |
@@ -177,16 +177,16 @@ behaviour require the real integration path described in the Evidence column.
 
 | ID | Requirement | Evidence | Phase | State |
 | --- | --- | --- | --- | --- |
-| AT-LIFE-001 | Fresh signed install succeeds for Sigstore and POC X.509 | Real OCI end-to-end matrix | 5 | Planned |
-| AT-LIFE-002 | Signed update succeeds for the same publisher and next generation | Real OCI end-to-end matrix | 5 | Planned |
+| AT-LIFE-001 | Fresh signed install succeeds for Sigstore and POC X.509 | `run-linux.sh --sudo-namespace` against the real loopback package repository, OCI registry, and CMS referrer | 5 | Executed for X.509; Sigstore remains planned |
+| AT-LIFE-002 | Signed update succeeds for the same publisher and next generation | The same process lifecycle publishes generation 2, imports refreshed established reputation, and executes the real non-interactive update | 5 | Executed for X.509; Sigstore remains planned |
 | AT-LIFE-003 | Replayed or downgraded generation fails | Existing ledger downgrade tests plus X.509 path | 1, 5 | Existing/Planned |
 | AT-LIFE-004 | Publisher key change is visible and policy-controlled | Update integration test | 5 | Authority continuity test proves an unapproved new normalized identity is denied before reputation and an approved new identity receives its own reputation result instead of borrowing the old publisher's; executed Linux update remains Phase 5 |
 | AT-LIFE-005 | Signed-to-unsigned transition remains visible and follows policy | Existing enrolment tests plus common evidence path | 1, 5 | Existing/Planned |
 | AT-LIFE-006 | Invalid attached evidence never falls back to unsigned | Existing tests plus both evidence kinds | 1-2, 5 | Implemented common fail-closed enrolment path; executed Linux fixtures for both evidence kinds remain Phase 5 |
 | AT-LIFE-007 | Changed package with stale evidence is not enrolled under old state | Update integration test | 5 | Update integration fixture now proves stale evidence is invalid, the new bytes remain unenrolled, and the old anchor cannot authorize their launch; executed Linux test remains Phase 5 |
-| AT-LIFE-008 | Reputation is evaluated at install/update, not every launch | Provider call-count lifecycle test | 5 | Implemented published-state refresh even when the image is unchanged; executed Linux lifecycle remains Phase 5 |
-| AT-LIFE-009 | Launch after provider outage uses anchored runtime integrity without PKI/network work | Network-deny launch test | 5 | Regression fixtures now make publisher verification and recorded-decision reads fatal during a recognised command launch, and make reputation lookup fatal after enrolment; Linux execution and process-level network denial remain Phase 5 |
-| AT-LIFE-010 | Trust-root or snapshot correction permits clean retry without corrupt state | Recovery scenarios | 5 | Exact-manifest retry now re-evaluates an installed but unenrolled package without rewriting store state; changed published state and already-enrolled no-op cases are rejected; executed Linux recovery remains Phase 5 |
+| AT-LIFE-008 | Reputation is evaluated at install/update, not every launch | Provider call-count lifecycle test plus the real X.509 process lifecycle | 5 | Executed for install/update with caution then established snapshots; launch execution remains Phase 5 |
+| AT-LIFE-009 | Launch after provider outage uses anchored runtime integrity without PKI/network work | Network-deny launch test | 5 | Offline process-level explain/audit retain the recorded established result after provider and fixture removal; actual command launch with network denial remains Phase 5 |
+| AT-LIFE-010 | Trust-root or snapshot correction permits clean retry without corrupt state | Recovery scenarios plus exact-manifest PTY retry in `run-linux.sh` | 5 | Executed for X.509 installed-but-unenrolled recovery; remaining correction scenarios remain Phase 5 |
 | AT-LIFE-011 | CLI separates evidence, publisher, root source, reputation, policy, and final action | Structured and human-output golden tests | 5 | Portable human projection now drives install/update/audit/explain and names display identity plus normalized publisher ID; native projection tests pass; Linux command goldens remain Phase 5 |
 | AT-LIFE-012 | CLI never describes signed or established software as safe | Forbidden-vocabulary assertion over all outputs | 5-6 | Common application-trust human projection has a native forbidden-positive-safety-claim assertion; remaining non-common CLI surfaces and Linux goldens remain Phase 5 |
 | AT-LIFE-013 | Empty, long, malformed, stale, and unavailable data remain readable and safe | CLI matrix and terminal escape tests | 5 | Common human and graphical prompt fields are bounded and control-sanitized with native tests; full stale/unavailable Linux CLI matrix remains Phase 5 |
@@ -197,17 +197,22 @@ behaviour require the real integration path described in the Evidence column.
 | ID | Requirement | Evidence | Phase | State |
 | --- | --- | --- | --- | --- |
 | AT-HDL-001 | Graphical, interactive-terminal, and non-interactive callers consume the same versioned decision result | Shared decision-core table plus frontend adapter tests | 4-5 | Implemented shared core plus explicit install/update graphical adapter and install/update/audit/explain projections; real Linux frontend lifecycle remains Phase 5 |
-| AT-HDL-002 | A binary-only package with no desktop entry uses the normal install, update, enrolment, audit, explain, and run paths | Real OCI lifecycle fixture with `binaries` and no `desktop_entries` | 5 | Binary-only command fixture clears display and session-bus state, enforces the anchor, and reaches the post-gate layer mount without PKI or recorded-reputation reads; full real OCI lifecycle remains Phase 5 |
-| AT-HDL-003 | Missing display, session bus, portal, Secret Service, and graphical privilege agent cannot weaken policy or prevent safe headless operation | Environment-cleared Linux integration test | 5 | Graphical adapter failure is fail-closed and closed bootstrap stdin no longer defaults to consent; environment-cleared Linux execution remains Phase 5 |
-| AT-HDL-004 | Non-interactive `warn` returns confirmation-required and does not block, launch a helper, or assume consent | Detached-stdio timeout test plus decision and exit-code assertions | 4-5 | Implemented decision core, authority challenge, explicit graphical selection, and CLI exit mapping; detached Linux lifecycle remains Phase 5 |
-| AT-HDL-005 | `--yes` acknowledges an operation but cannot accept unknown/caution reputation or override invalid, revoked, or denied evidence | CLI negative table across every protected result | 4-5 | Implemented separate typed confirmation path; complete CLI negative lifecycle remains Phase 5 |
-| AT-HDL-006 | Trust-root and reputation administration work through direct root, `sudo`, and `doas` without `pkexec` or `run0` | Linux privilege-frontend matrix with exact fingerprint assertions | 5 | Headless discovery is terminal-only and the isolated real-CLI Linux harness covers exact-fingerprint direct-root X.509 and reputation lifecycles; harness execution plus real `sudo` and `doas` rows remain Phase 5 |
-| AT-HDL-007 | Human output, machine output, audit record, reason code, final action, and exit code agree | Golden-output and structured-result consistency test | 5 | Install/update/audit/explain share one validated result and exit projection; the complete human projection is frozen by a portable golden and sanitizes every field; process-level Linux goldens remain Phase 5 |
-| AT-HDL-008 | Offline or unavailable reputation follows configured policy without desktop or launch-time network access | Network-deny lifecycle table for all policy modes | 4-5 | Authority policy tables cover every status and mode; new read/launch spies prove no provider reevaluation after enrolment; process-level network-deny Linux lifecycle remains Phase 5 |
+| AT-HDL-002 | A binary-only package with no desktop entry uses the normal install, update, enrolment, audit, explain, and run paths | Real OCI lifecycle fixture with `binaries` and no `desktop_entries` | 5 | Real install, update, enrolment, audit, and explain executed with display/session-bus variables removed; actual binary run remains Phase 5 |
+| AT-HDL-003 | Missing display, session bus, portal, Secret Service, and graphical privilege agent cannot weaken policy or prevent safe headless operation | Environment-cleared Linux integration test | 5 | Direct-root lifecycle executes without display or session bus, and graphical adapter failure is fail-closed; explicit portal/Secret Service absence and graphical runtime remain Phase 5 |
+| AT-HDL-004 | Non-interactive `warn` returns confirmation-required and does not block, launch a helper, or assume consent | Detached-stdio timeout test plus decision and exit-code assertions | 4-5 | Executed on Linux with detached stdin, `--yes`, JSON/action/exit agreement, and a timeout guard |
+| AT-HDL-005 | `--yes` acknowledges an operation but cannot accept unknown/caution reputation or override invalid, revoked, or denied evidence | CLI negative table across every protected result | 4-5 | Executed for caution reputation; invalid, revoked, and denied process rows remain Phase 5 |
+| AT-HDL-006 | Trust-root and reputation administration work through direct root, `sudo`, and `doas` without `pkexec` or `run0` | Linux privilege-frontend matrix with exact fingerprint assertions | 5 | Exact-fingerprint direct-root X.509 and reputation lifecycles executed in a private mount namespace; real cpak `sudo` and `doas` frontend rows remain Phase 5 |
+| AT-HDL-007 | Human output, machine output, audit record, reason code, final action, and exit code agree | Golden-output and structured-result consistency test | 5 | Process-level JSON/action/exit agreement executed for install/update and recorded output for explain/audit; remaining human goldens remain Phase 5 |
+| AT-HDL-008 | Offline or unavailable reputation follows configured policy without desktop or launch-time network access | Network-deny lifecycle table for all policy modes | 4-5 | Provider and fixture are removed before process-level offline explain/audit of the recorded established decision; all-mode launch network denial remains Phase 5 |
 | AT-HDL-009 | Service start/restart verifies enrolled state, while a later policy/reputation change does not claim to terminate an already running process | systemd-equivalent lifecycle fixture and documented non-goal assertion | 5 | Command/container-reuse fixture now proves changed state is refused before reuse while the existing container record remains untouched; systemd-equivalent executed lifecycle remains Phase 5 |
 | AT-HDL-010 | cpak and the AppImage actor emit conforming results for shared valid, unknown, invalid, and blocked headless fixtures | Cross-actor schema and reason-code conformance harness | 6 | Planned |
 
 ## 13. Phase and final verification commands
+
+The first executed Phase 5 process lifecycle is recorded by
+[Portability run 32411499077](https://github.com/pietrodicaprio/cpak/actions/runs/32411499077)
+at commit `5689688`. It is evidence only for the rows explicitly marked as
+executed above; it is not the complete Phase 5 gate.
 
 Phase 0 requires at minimum:
 

@@ -55,6 +55,10 @@ The current harness proves:
 - all direct-root administration works without a display or session bus while
   host state remains untouched.
 
+The first complete execution of this lifecycle is
+[Portability run 32411499077](https://github.com/pietrodicaprio/cpak/actions/runs/32411499077)
+at commit `5689688`.
+
 It does **not** prove the complete Phase 5 gate. Separate disposable-machine
 runs must still record real `sudo` and `doas` reinvocation, graphical
 confirmation, Sigstore install/update, binary execution, service
