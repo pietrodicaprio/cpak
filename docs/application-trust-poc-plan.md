@@ -667,8 +667,9 @@ tests.
 - Root import/removal and reputation snapshot administration work when run
   directly as root and through `sudo` or `doas`, without `pkexec` or `run0`.
   Headless privilege discovery is now limited to `sudo` and `doas`; direct
-  root execution needs no frontend. Real Linux frontend execution remains a
-  Phase 5 runtime gate.
+  root execution needs no frontend. The isolated Linux harness covers the
+  real direct-root CLI without touching host policy; real `sudo` and `doas`
+  frontend execution remain Phase 5 runtime gates.
 - Human-readable output, machine-readable output, exit codes, and audit records
   agree on the final action and stable reason code.
 - Provider outage and offline cached evidence follow configured policy without
