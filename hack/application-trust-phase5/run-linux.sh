@@ -169,8 +169,9 @@ run_via_frontend() {
 
 write_frontend_policy() {
   local arguments="$1"
+  local sudo_arguments="${arguments//:/\\:}"
   printf '%s ALL=(root) NOPASSWD: %s %s\n' \
-    "$frontend_user" "$phase5_bin_dir/cpak" "$arguments" \
+    "$frontend_user" "$phase5_bin_dir/cpak" "$sudo_arguments" \
     > /etc/sudoers.d/cpak-phase5-frontends
   chmod 0440 /etc/sudoers.d/cpak-phase5-frontends
   visudo -cf /etc/sudoers.d/cpak-phase5-frontends >/dev/null
