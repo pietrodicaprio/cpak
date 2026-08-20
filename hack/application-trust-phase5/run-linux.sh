@@ -138,6 +138,7 @@ payload = {
         "reason_code": "phase5-harness-" + sys.argv[4],
     }],
 }
+
 pathlib.Path(sys.argv[1]).write_text(json.dumps(payload, separators=(",", ":")) + "\n", encoding="utf-8")
 PY
   "$phase5_bin_dir/cpak-sign" reputation-sign \
@@ -151,6 +152,74 @@ PY
   snapshot_fingerprint="$(sha256sum "$snapshot" | awk '{print $1}')"
   "$phase5_bin_dir/cpak" system reputation-import "$snapshot" \
     --fingerprint "$snapshot_fingerprint" --yes
+}
+
+run_via_frontend() {
+  local frontend="$1"
+  shift
+  runuser -u "$frontend_user" -- env \
+    HOME="$HOME" \
+    XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
+    XDG_DATA_HOME="$XDG_DATA_HOME" \
+    XDG_STATE_HOME="$XDG_STATE_HOME" \
+    CPAK_INSTALLATION_PATH="$CPAK_INSTALLATION_PATH" \
+    PATH="$phase5_bin_dir/frontend-$frontend" \
+    "$phase5_bin_dir/cpak" "$@"
+}
+
+write_frontend_policy() {
+  local arguments="$1"
+  printf '%s ALL=(root) NOPASSWD: %s %s\n' \
+    "$frontend_user" "$phase5_bin_dir/cpak" "$arguments" \
+    > /etc/sudoers.d/cpak-phase5-frontends
+  chmod 0440 /etc/sudoers.d/cpak-phase5-frontends
+  visudo -cf /etc/sudoers.d/cpak-phase5-frontends >/dev/null
+
+  printf 'permit nopass %s as root cmd %s args %s\n' \
+    "$frontend_user" "$phase5_bin_dir/cpak" "$arguments" \
+    > /etc/doas.conf
+  chmod 0400 /etc/doas.conf
+}
+
+exercise_root_frontend() {
+  local frontend="$1"
+  local root_fingerprint="$2"
+  local add_arguments="system trust-root-add $phase5_dir/pki/root.pem --purpose code-signing --fingerprint $root_fingerprint --yes"
+  write_frontend_policy "$add_arguments"
+  run_via_frontend "$frontend" system trust-root-add "$phase5_dir/pki/root.pem" \
+    --purpose code-signing --fingerprint "$root_fingerprint" --yes
+  verify_x509 0 allow
+
+  local remove_arguments="system trust-root-remove $root_fingerprint --purpose code-signing --yes"
+  write_frontend_policy "$remove_arguments"
+  run_via_frontend "$frontend" system trust-root-remove "$root_fingerprint" \
+    --purpose code-signing --yes
+  verify_x509 21 invalid
+  printf 'phase5: %s trust-root frontend lifecycle passed\n' "$frontend"
+}
+
+exercise_reputation_frontend() {
+  local frontend="$1"
+  local publisher_id="$2"
+  local provider_key="$3"
+  local snapshot_fingerprint="$4"
+  local arguments="system reputation-provider-set $phase5_dir/reputation-provider.json --fingerprint $provider_key --yes"
+  write_frontend_policy "$arguments"
+  run_via_frontend "$frontend" system reputation-provider-set \
+    "$phase5_dir/reputation-provider.json" --fingerprint "$provider_key" --yes
+
+  arguments="system reputation-import $phase5_dir/reputation-snapshot.json --fingerprint $snapshot_fingerprint --yes"
+  write_frontend_policy "$arguments"
+  run_via_frontend "$frontend" system reputation-import \
+    "$phase5_dir/reputation-snapshot.json" --fingerprint "$snapshot_fingerprint" --yes
+  run_via_frontend "$frontend" system reputation-check "$publisher_id" | \
+    grep -F 'established' >/dev/null
+
+  arguments="system reputation-provider-clear --fingerprint $provider_key --yes"
+  write_frontend_policy "$arguments"
+  run_via_frontend "$frontend" system reputation-provider-clear \
+    --fingerprint "$provider_key" --yes
+  printf 'phase5: %s reputation frontend lifecycle passed\n' "$frontend"
 }
 
 run_process_lifecycle() {
@@ -339,6 +408,7 @@ inside_namespace() {
   cleanup_uid="${4:-}"
   cleanup_gid="${5:-}"
   local phase5_data_root="${6:-$phase5_dir/home/.local/share}"
+  frontend_user="${7:-}"
   unset SUDO_UID SUDO_GID SUDO_USER
   fixture_pid=""
   cleanup_namespace() {
@@ -366,6 +436,20 @@ inside_namespace() {
   mkdir -p "$phase5_bin_dir"
   mount -t tmpfs -o mode=0755,nosuid,nodev,exec tmpfs "$phase5_bin_dir"
   cp -a "$phase5_bin_source/." "$phase5_bin_dir/"
+  chown -R root:root "$phase5_bin_dir"
+
+  if [[ -n "$frontend_user" ]]; then
+    [[ "$frontend_user" =~ ^[a-z_][a-z0-9_-]*$ ]] || fail "unsafe privilege frontend user"
+    for required in runuser visudo sudo doas; do
+      require_command "$required"
+    done
+    for frontend in sudo doas; do
+      local frontend_binary
+      frontend_binary="$(command -v "$frontend")"
+      mkdir -p "$phase5_bin_dir/frontend-$frontend"
+      ln -s "$frontend_binary" "$phase5_bin_dir/frontend-$frontend/$frontend"
+    done
+  fi
 
   local root_fingerprint
   root_fingerprint="$(python3 - "$phase5_dir/pki/manifest.json" <<'PY'
@@ -377,6 +461,10 @@ PY
 )"
 
   verify_x509 21 invalid
+  if [[ -n "$frontend_user" ]]; then
+    exercise_root_frontend sudo "$root_fingerprint"
+    exercise_root_frontend doas "$root_fingerprint"
+  fi
   "$phase5_bin_dir/cpak" system trust-root-add "$phase5_dir/pki/root.pem" \
     --purpose code-signing --fingerprint "$root_fingerprint" --yes
   verify_x509 0 allow
@@ -425,6 +513,11 @@ print(json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["key_id"
 PY
 )"
   snapshot_fingerprint="$(sha256sum "$phase5_dir/reputation-snapshot.json" | awk '{print $1}')"
+
+  if [[ -n "$frontend_user" ]]; then
+    exercise_reputation_frontend sudo "$publisher_id" "$provider_key" "$snapshot_fingerprint"
+    exercise_reputation_frontend doas "$publisher_id" "$provider_key" "$snapshot_fingerprint"
+  fi
 
   "$phase5_bin_dir/cpak" system reputation-provider-set "$phase5_dir/reputation-provider.json" \
     --fingerprint "$provider_key" --yes
@@ -481,6 +574,7 @@ phase5_bin_dir="$(mktemp -d "$exec_root/.cpak-phase5-bin.XXXXXXXX")"
 [[ "$phase5_bin_dir" == "$exec_root/.cpak-phase5-bin."* ]] || fail "unsafe executable directory"
 phase5_data_root="${CPAK_PHASE5_DATA_ROOT:-$phase5_dir/home/.local/share}"
 [[ "$phase5_data_root" == /* ]] || fail "CPAK_PHASE5_DATA_ROOT must be absolute"
+frontend_user="${CPAK_PHASE5_FRONTEND_USER:-}"
 trap 'rm -rf -- "$phase5_dir" "$phase5_bin_dir"' EXIT
 chmod 0700 "$phase5_dir"
 chmod 0755 "$phase5_bin_dir"
@@ -542,14 +636,14 @@ if [[ "$namespace_mode" == "--sudo-namespace" ]]; then
   owner_uid="$(id -u)"
   owner_gid="$(id -g)"
   sudo --non-interactive unshare --mount --pid --fork --mount-proc \
-    "$0" --inside-namespace "$phase5_dir" "$phase5_bin_dir" "$owner_uid" "$owner_gid" "$phase5_data_root"
+    "$0" --inside-namespace "$phase5_dir" "$phase5_bin_dir" "$owner_uid" "$owner_gid" "$phase5_data_root" "$frontend_user"
 elif [[ "$namespace_mode" == "--root-namespace" ]]; then
   [[ "$(id -u)" -eq 0 ]] || fail "--root-namespace requires an already-root disposable environment"
   unshare --mount --pid --fork --mount-proc \
-    "$0" --inside-namespace "$phase5_dir" "$phase5_bin_dir" 0 0 "$phase5_data_root"
+    "$0" --inside-namespace "$phase5_dir" "$phase5_bin_dir" 0 0 "$phase5_data_root" "$frontend_user"
 else
   unshare --user --map-root-user --mount --pid --fork --mount-proc \
-    "$0" --inside-namespace "$phase5_dir" "$phase5_bin_dir" "" "" "$phase5_data_root"
+    "$0" --inside-namespace "$phase5_dir" "$phase5_bin_dir" "" "" "$phase5_data_root" "$frontend_user"
 fi
 
 printf 'phase5: Linux core and isolated administrator harness passed\n'

@@ -122,12 +122,12 @@ jobs:
             golang:1.25.8-bookworm \
             bash -euc '
               apt-get update
-              apt-get install -y --no-install-recommends ca-certificates coreutils dbus mount python3 sudo util-linux
+              apt-get install -y --no-install-recommends ca-certificates coreutils dbus mount opendoas python3 sudo util-linux
               useradd --create-home --uid 1000 --shell /bin/bash phase5
               install -d -o phase5 -g phase5 /opt/cpak-phase5-build
               install -d -o phase5 -g phase5 /cpak-phase5-data
               printf "phase5 ALL=(root) NOPASSWD: /usr/bin/unshare *\n" >/etc/sudoers.d/phase5
               chmod 0440 /etc/sudoers.d/phase5
-              runuser -u phase5 -- env GOFLAGS=-buildvcs=false CPAK_PHASE5_EXEC_ROOT=/opt/cpak-phase5-build CPAK_PHASE5_DATA_ROOT=/cpak-phase5-data \
+              runuser -u phase5 -- env GOFLAGS=-buildvcs=false CPAK_PHASE5_EXEC_ROOT=/opt/cpak-phase5-build CPAK_PHASE5_DATA_ROOT=/cpak-phase5-data CPAK_PHASE5_FRONTEND_USER=phase5 \
                 ./hack/application-trust-phase5/run-linux.sh --sudo-namespace
             '
