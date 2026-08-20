@@ -42,6 +42,48 @@ if not final.get("reason_code"):
 PY
 }
 
+assert_trust_envelope() {
+  local expected_status="$1"
+  local expected_action="$2"
+  local expected_context="$3"
+  local expected_operation="$4"
+  local output="$5"
+  local actual_status="$6"
+  python3 - "$expected_status" "$expected_action" "$expected_context" "$expected_operation" "$output" "$actual_status" <<'PY'
+import json
+import pathlib
+import sys
+
+expected_status = int(sys.argv[1])
+expected_action = sys.argv[2]
+expected_context = sys.argv[3]
+expected_operation = sys.argv[4]
+document = json.loads(pathlib.Path(sys.argv[5]).read_text(encoding="utf-8"))
+actual_status = int(sys.argv[6])
+
+if document.get("schema_version") != 1:
+    raise SystemExit(f"unexpected envelope schema: {document.get('schema_version')!r}")
+trust = document.get("trust")
+if not isinstance(trust, list) or len(trust) != 1:
+    raise SystemExit(f"expected one trust result, got {trust!r}")
+result = trust[0]
+final = result.get("final", {})
+if result.get("schema_version") != 1:
+    raise SystemExit(f"unexpected result schema: {result.get('schema_version')!r}")
+if result.get("context") != expected_context or result.get("operation") != expected_operation:
+    raise SystemExit(
+        f"decision context/operation={result.get('context')!r}/{result.get('operation')!r}, "
+        f"expected={expected_context!r}/{expected_operation!r}"
+    )
+if final.get("exit_code") != expected_status or actual_status != expected_status:
+    raise SystemExit(
+        f"exit disagreement: process={actual_status}, decision={final.get('exit_code')}, expected={expected_status}"
+    )
+if final.get("action") != expected_action or not final.get("reason_code"):
+    raise SystemExit(f"unexpected final decision: {final!r}")
+PY
+}
+
 verify_x509() {
   local expected_status="$1"
   local expected_action="$2"
@@ -55,10 +97,222 @@ verify_x509() {
   assert_decision "$expected_status" "$expected_action" "$output" "$status"
 }
 
+import_reputation_status() {
+  local sequence="$1"
+  local status="$2"
+  local publisher_id="$3"
+  local payload="$phase5_dir/reputation-payload-$sequence.json"
+  local snapshot="$phase5_dir/reputation-snapshot-$sequence.json"
+
+  python3 - "$payload" "$publisher_id" "$sequence" "$status" <<'PY'
+import datetime
+import json
+import pathlib
+import sys
+
+now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+payload = {
+    "sequence": int(sys.argv[3]),
+    "issued_at": (now - datetime.timedelta(minutes=1)).isoformat().replace("+00:00", "Z"),
+    "expires_at": (now + datetime.timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
+    "entries": [{
+        "publisher_id": sys.argv[2],
+        "status": sys.argv[4],
+        "reason_code": "phase5-harness-" + sys.argv[4],
+    }],
+}
+pathlib.Path(sys.argv[1]).write_text(json.dumps(payload, separators=(",", ":")) + "\n", encoding="utf-8")
+PY
+  "$phase5_dir/bin/cpak-sign" reputation-sign \
+    --authority "$phase5_dir/reputation-provider.json" \
+    --key "$phase5_dir/reputation-provider-key.pem" \
+    --key-passphrase-file "$phase5_dir/passphrase" \
+    --payload "$payload" \
+    --output "$snapshot"
+
+  local snapshot_fingerprint
+  snapshot_fingerprint="$(sha256sum "$snapshot" | awk '{print $1}')"
+  "$phase5_dir/bin/cpak" system reputation-import "$snapshot" \
+    --fingerprint "$snapshot_fingerprint" --yes
+}
+
+run_process_lifecycle() {
+  local publisher_id="$1"
+
+  cp /etc/hosts "$phase5_dir/hosts"
+  printf '127.0.0.1 phase5.invalid\n' >>"$phase5_dir/hosts"
+  mount --bind "$phase5_dir/hosts" /etc/hosts
+
+  "$phase5_dir/bin/cpak-phase5-fixture" --directory "$phase5_dir" \
+    >"$phase5_dir/fixture-server.log" 2>&1 &
+  fixture_pid=$!
+  for _ in {1..100}; do
+    [[ -s "$phase5_dir/fixture.json" ]] && break
+    kill -0 "$fixture_pid" 2>/dev/null || fail "the Phase 5 fixture server stopped"
+    sleep 0.1
+  done
+  [[ -s "$phase5_dir/fixture.json" ]] || fail "the Phase 5 fixture server did not become ready"
+
+  local origin image image_digest tls_root
+  origin="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["origin"])' "$phase5_dir/fixture.json")"
+  image="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["image"])' "$phase5_dir/fixture.json")"
+  image_digest="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["image_digest"])' "$phase5_dir/fixture.json")"
+  tls_root="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tls_root"])' "$phase5_dir/fixture.json")"
+  export SSL_CERT_FILE="$tls_root"
+  export NO_PROXY="phase5.invalid,127.0.0.1,localhost"
+  export no_proxy="$NO_PROXY"
+
+  python3 - "$phase5_dir/cpak.json" "$image" <<'PY'
+import json
+import pathlib
+import sys
+
+manifest = {
+    "manifest_version": "2.0",
+    "name": "Phase 5 binary fixture",
+    "description": "Headless application-trust lifecycle fixture",
+    "image": sys.argv[2],
+    "binaries": ["/usr/bin/phase5-fixture"],
+    "idle_time": 0,
+    "override": {},
+}
+pathlib.Path(sys.argv[1]).write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+PY
+  "$phase5_dir/bin/cpak-sign" state \
+    --manifest "$phase5_dir/cpak.json" \
+    --origin "$origin" \
+    --image-digest "$image_digest" \
+    --generation 1 \
+    --output "$phase5_dir/state-1"
+  "$phase5_dir/bin/cpak-sign" x509-sign \
+    --state "$phase5_dir/state-1" \
+    --certificate "$phase5_dir/pki/publisher.pem" \
+    --chain "$phase5_dir/pki/publisher-chain.pem" \
+    --key "$phase5_dir/pki/publisher-key.pem" \
+    --key-passphrase-file "$phase5_dir/passphrase" \
+    --output "$phase5_dir/state-1.cms"
+  printf '1\n' >"$phase5_dir/generation"
+
+  import_reputation_status 2 caution "$publisher_id"
+  python3 - "$phase5_dir/trust-policy.json" "$publisher_id" <<'PY'
+import json
+import pathlib
+import sys
+
+policy = {
+    "abi": 2,
+    "require_publisher": True,
+    "require_approval": False,
+    "approved_publisher_ids": [sys.argv[2]],
+    "x509": {"revocation": "allow-unknown"},
+    "reputation": {"mode": "warn", "provider_id": "cpak-phase5"},
+}
+pathlib.Path(sys.argv[1]).write_text(json.dumps(policy) + "\n", encoding="utf-8")
+PY
+  "$phase5_dir/bin/cpak" system set-trust "$phase5_dir/trust-policy.json"
+
+  local status
+  set +e
+  timeout 20 "$phase5_dir/bin/cpak" install --branch main --yes --non-interactive --json "$origin" \
+    </dev/null >"$phase5_dir/install-non-interactive.json" 2>"$phase5_dir/install-non-interactive.err"
+  status=$?
+  set -e
+  assert_trust_envelope 23 confirmation-required non-interactive install \
+    "$phase5_dir/install-non-interactive.json" "$status"
+
+  set +e
+  printf 'y\n' | script -qfec \
+    "$phase5_dir/bin/cpak install --branch main --yes $origin" /dev/null \
+    >"$phase5_dir/install-terminal.log" 2>&1
+  status=$?
+  set -e
+  [[ "$status" -eq 0 ]] || fail "interactive terminal enrolment exited $status"
+  grep -F 'confirmation accepted' "$phase5_dir/install-terminal.log" >/dev/null || \
+    fail "interactive terminal result did not record accepted confirmation"
+
+  "$phase5_dir/bin/cpak" system explain "$origin" --json >"$phase5_dir/explain-recorded.json"
+  python3 - "$phase5_dir/explain-recorded.json" <<'PY'
+import json
+import pathlib
+import sys
+
+document = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+trust = document.get("trust", {})
+if document.get("schema_version") != 1 or not document.get("launch", {}).get("enrolled"):
+    raise SystemExit("the accepted install is not enrolled in explain output")
+if trust.get("decision_source") != "recorded" or trust.get("final", {}).get("action") != "warn":
+    raise SystemExit(f"unexpected recorded decision: {trust!r}")
+if trust.get("policy", {}).get("confirmation") != "accepted":
+    raise SystemExit(f"accepted confirmation was not recorded: {trust!r}")
+PY
+
+  "$phase5_dir/bin/cpak-sign" state \
+    --manifest "$phase5_dir/cpak.json" \
+    --origin "$origin" \
+    --image-digest "$image_digest" \
+    --generation 2 \
+    --output "$phase5_dir/state-2"
+  "$phase5_dir/bin/cpak-sign" x509-sign \
+    --state "$phase5_dir/state-2" \
+    --certificate "$phase5_dir/pki/publisher.pem" \
+    --chain "$phase5_dir/pki/publisher-chain.pem" \
+    --key "$phase5_dir/pki/publisher-key.pem" \
+    --key-passphrase-file "$phase5_dir/passphrase" \
+    --output "$phase5_dir/state-2.cms"
+  printf '2\n' >"$phase5_dir/generation"
+  import_reputation_status 3 established "$publisher_id"
+
+  set +e
+  "$phase5_dir/bin/cpak" update --non-interactive --json "$origin" \
+    >"$phase5_dir/update-non-interactive.json" 2>"$phase5_dir/update-non-interactive.err"
+  status=$?
+  set -e
+  assert_trust_envelope 0 allow non-interactive update \
+    "$phase5_dir/update-non-interactive.json" "$status"
+
+  "$phase5_dir/bin/cpak" system reputation-provider-clear \
+    --fingerprint "$provider_key" --yes
+  kill "$fixture_pid"
+  wait "$fixture_pid" 2>/dev/null || true
+  fixture_pid=""
+
+  "$phase5_dir/bin/cpak" system explain "$origin" --json >"$phase5_dir/explain-offline.json"
+  "$phase5_dir/bin/cpak" audit --json >"$phase5_dir/audit-offline.json"
+  python3 - "$phase5_dir/explain-offline.json" "$phase5_dir/audit-offline.json" <<'PY'
+import json
+import pathlib
+import sys
+
+explain = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+audit = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+if explain.get("trust", {}).get("reputation", {}).get("status") != "established":
+    raise SystemExit("offline explain did not retain the recorded established reputation")
+trust = audit.get("trust")
+if not isinstance(trust, list) or len(trust) != 1 or trust[0].get("decision_source") != "recorded":
+    raise SystemExit("offline audit did not emit one recorded trust result")
+if trust[0].get("final", {}).get("exit_code") != 0:
+    raise SystemExit("offline audit and recorded final exit disagree")
+PY
+
+  printf 'phase5: real CLI install, retry, update, explain, audit, and offline lifecycle passed\n'
+}
+
 inside_namespace() {
   phase5_dir="$2"
   cleanup_uid="${3:-}"
   cleanup_gid="${4:-}"
+  unset SUDO_UID SUDO_GID SUDO_USER
+  fixture_pid=""
+  cleanup_namespace() {
+    if [[ -n "$fixture_pid" ]]; then
+      kill "$fixture_pid" 2>/dev/null || true
+      wait "$fixture_pid" 2>/dev/null || true
+    fi
+    if [[ -n "$cleanup_uid" && -n "$cleanup_gid" ]]; then
+      chown -R "$cleanup_uid:$cleanup_gid" "$phase5_dir"
+    fi
+  }
+  trap cleanup_namespace EXIT
   export HOME="$phase5_dir/home"
   export XDG_CONFIG_HOME="$HOME/.config"
   export XDG_DATA_HOME="$HOME/.local/share"
@@ -134,16 +388,17 @@ PY
   "$phase5_dir/bin/cpak" system reputation-import "$phase5_dir/reputation-snapshot.json" \
     --fingerprint "$snapshot_fingerprint" --yes
   "$phase5_dir/bin/cpak" system reputation-check "$publisher_id" | grep -F 'established' >/dev/null
-  "$phase5_dir/bin/cpak" system reputation-provider-clear \
-    --fingerprint "$provider_key" --yes
+  if [[ -n "$cleanup_uid" && -n "$cleanup_gid" ]]; then
+    run_process_lifecycle "$publisher_id"
+  else
+    "$phase5_dir/bin/cpak" system reputation-provider-clear \
+      --fingerprint "$provider_key" --yes
+  fi
 
   "$phase5_dir/bin/cpak" system trust-root-remove "$root_fingerprint" \
     --purpose code-signing --yes
   verify_x509 21 invalid
 
-  if [[ -n "$cleanup_uid" && -n "$cleanup_gid" ]]; then
-    chown -R "$cleanup_uid:$cleanup_gid" "$phase5_dir"
-  fi
   printf 'phase5: isolated direct-root X.509 and reputation lifecycle passed\n'
 }
 
@@ -165,6 +420,10 @@ if [[ "$namespace_mode" == "--sudo-namespace" ]]; then
   require_command sudo
   require_command id
   require_command chown
+  require_command cp
+  require_command script
+  require_command timeout
+  require_command sleep
 fi
 
 temp_root="${TMPDIR:-/tmp}"
@@ -182,6 +441,7 @@ go vet ./...
 CGO_ENABLED=0 go build -tags cpak_ui_builtin -trimpath -o "$phase5_dir/bin/cpak" .
 CGO_ENABLED=0 go build -trimpath -o "$phase5_dir/bin/cpak-sign" ./cmd/cpak-sign
 CGO_ENABLED=0 go build -tags cpak_ui_builtin -trimpath -o "$phase5_dir/bin/cpak-installer" ./cmd/cpak-installer
+CGO_ENABLED=0 go build -trimpath -o "$phase5_dir/bin/cpak-phase5-fixture" ./hack/application-trust-phase5/fixture-server
 
 printf '%s\n' 'phase5-disposable-material' >"$phase5_dir/passphrase"
 chmod 0600 "$phase5_dir/passphrase"
