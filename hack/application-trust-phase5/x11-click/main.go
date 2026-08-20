@@ -60,15 +60,18 @@ func main() {
 		EventY:     int16(y),
 		SameScreen: true,
 	}
+	// A zero event mask sends to the client that created this exact window.
+	// Selecting by mask can choose a different client when a frame helper has
+	// also inspected the window on the disposable display.
 	if err := xproto.SendEventChecked(
-		connection, false, window, xproto.EventMaskButtonPress, string(press.Bytes()),
+		connection, false, window, 0, string(press.Bytes()),
 	).Check(); err != nil {
 		exitf("send button press: %v", err)
 	}
 
 	release := xproto.ButtonReleaseEvent(press)
 	if err := xproto.SendEventChecked(
-		connection, false, window, xproto.EventMaskButtonRelease, string(release.Bytes()),
+		connection, false, window, 0, string(release.Bytes()),
 	).Check(); err != nil {
 		exitf("send button release: %v", err)
 	}
