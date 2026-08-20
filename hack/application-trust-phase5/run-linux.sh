@@ -57,6 +57,8 @@ verify_x509() {
 
 inside_namespace() {
   phase5_dir="$2"
+  cleanup_uid="${3:-}"
+  cleanup_gid="${4:-}"
   export HOME="$phase5_dir/home"
   export XDG_CONFIG_HOME="$HOME/.config"
   export XDG_DATA_HOME="$HOME/.local/share"
@@ -139,6 +141,9 @@ PY
     --purpose code-signing --yes
   verify_x509 21 invalid
 
+  if [[ -n "$cleanup_uid" && -n "$cleanup_gid" ]]; then
+    chown -R "$cleanup_uid:$cleanup_gid" "$phase5_dir"
+  fi
   printf 'phase5: isolated direct-root X.509 and reputation lifecycle passed\n'
 }
 
@@ -158,6 +163,8 @@ for command_name in go python3 unshare mount sha256sum awk grep; do
 done
 if [[ "$namespace_mode" == "--sudo-namespace" ]]; then
   require_command sudo
+  require_command id
+  require_command chown
 fi
 
 temp_root="${TMPDIR:-/tmp}"
@@ -218,8 +225,10 @@ PY
   --output "$phase5_dir/state.cms"
 
 if [[ "$namespace_mode" == "--sudo-namespace" ]]; then
+  owner_uid="$(id -u)"
+  owner_gid="$(id -g)"
   sudo --non-interactive unshare --mount --fork \
-    "$0" --inside-namespace "$phase5_dir"
+    "$0" --inside-namespace "$phase5_dir" "$owner_uid" "$owner_gid"
 else
   unshare --user --map-root-user --mount --fork \
     "$0" --inside-namespace "$phase5_dir"
