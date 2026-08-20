@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/godbus/dbus/v5"
+	"github.com/mirkobrombin/cpak/pkg/reputation"
 	"github.com/mirkobrombin/cpak/pkg/signature"
 	"github.com/mirkobrombin/cpak/pkg/trustpolicy"
 )
@@ -47,6 +48,25 @@ const (
 // the message: a decision that could not say why would be indistinguishable
 // from a machine that is simply broken.
 var ErrTrustRefused = errors.New("the host trust policy refuses this enrolment")
+
+// ErrReputationConfirmationRequired is a policy outcome, not an authority
+// failure. The caller may ask through a dedicated interactive trust prompt and
+// retry the exact enrolment as confirmed; unattended callers must return it.
+var ErrReputationConfirmationRequired = errors.New("publisher reputation requires confirmation")
+
+type ReputationConfirmationRequiredError struct {
+	Result   reputation.Result
+	Decision trustpolicy.ReputationDecision
+	Token    string
+}
+
+func (e *ReputationConfirmationRequiredError) Error() string {
+	return ErrReputationConfirmationRequired.Error()
+}
+
+func (e *ReputationConfirmationRequiredError) Unwrap() error {
+	return ErrReputationConfirmationRequired
+}
 
 // verifyApproval is the counter-signature check, and it is deliberately not
 // implemented here. What it has to prove is that an identity other than the
@@ -184,7 +204,7 @@ func decodeTrustPolicy(document string) (trustpolicy.Policy, error) {
 // An empty policy returns before anything is decided at all. That is not an
 // optimisation: it is the guarantee that a host nobody manages records exactly
 // what it records today.
-func (l AnchorLedger) admitTrust(enrolment *Enrolment) error {
+func (l AnchorLedger) admitTrust(enrolment *Enrolment, reputationConfirmation string) error {
 	policy, err := TrustStore{Directory: l.Directory, OwnerUID: l.OwnerUID}.Policy()
 	if err != nil {
 		return fmt.Errorf("read the host trust policy: %w", err)
@@ -205,7 +225,7 @@ func (l AnchorLedger) admitTrust(enrolment *Enrolment) error {
 	if err := admitApproval(policy, *enrolment); err != nil {
 		return err
 	}
-	return l.admitReputation(policy, enrolment, publisher)
+	return l.admitReputation(policy, enrolment, publisher, reputationConfirmation)
 }
 
 // admitPublisher puts the identity that signed to the list the administrator
@@ -236,7 +256,7 @@ func admitPublisher(policy trustpolicy.Policy, enrolment Enrolment) (*signature.
 	return verified.Publisher, nil
 }
 
-func (l AnchorLedger) admitReputation(policy trustpolicy.Policy, enrolment *Enrolment, publisher *signature.PublisherIdentity) error {
+func (l AnchorLedger) admitReputation(policy trustpolicy.Policy, enrolment *Enrolment, publisher *signature.PublisherIdentity, confirmation string) error {
 	if policy.ABI != trustpolicy.CurrentABIVersion || policy.Reputation == nil || policy.Reputation.Mode == trustpolicy.ReputationOff {
 		return nil
 	}
@@ -247,12 +267,29 @@ func (l AnchorLedger) admitReputation(policy trustpolicy.Policy, enrolment *Enro
 	if l.Now != nil {
 		now = l.Now()
 	}
+	confirmations := l.ReputationConfirmations
+	if confirmations == nil {
+		confirmations = defaultReputationConfirmations
+	}
+	challenge, confirmed := confirmations.Consume(confirmation, *enrolment, now)
 	lookup := DefaultReputationStore().Lookup
 	if l.ReputationLookup != nil {
 		lookup = l.ReputationLookup
 	}
 	result, _ := lookup(publisher.ID, now)
-	decision := policy.DecidesReputation(result, publisher.ID, enrolment.Origin, now, trustpolicy.InvocationInteractiveTerminal)
+	decision := policy.EvaluatesReputation(result, publisher.ID, enrolment.Origin, now)
+	if decision.Action == trustpolicy.ActionWarn {
+		if confirmed && challenge.MatchesWarning(result, decision) {
+			// The token is single-use and bound to both the exact enrolment and
+			// the warning the interactive adapter presented.
+		} else {
+			token, err := confirmations.Issue(*enrolment, result, decision, now)
+			if err != nil {
+				return fmt.Errorf("prepare reputation confirmation: %w", err)
+			}
+			return &ReputationConfirmationRequiredError{Result: result, Decision: decision, Token: token}
+		}
+	}
 	if !decision.Allowed {
 		return fmt.Errorf("%w: %s", ErrTrustRefused, decision.Reason)
 	}

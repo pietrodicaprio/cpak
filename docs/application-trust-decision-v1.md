@@ -99,6 +99,18 @@ The official actor adapter owns prompt collection. The portable decision core
 receives confirmation as a separate typed input; it never infers confirmation
 from a TTY, display, `--yes`, environment variable, timeout, or default value.
 
+For a privileged enrolment, the authority issues an opaque challenge only
+after recomputing a `warn` result. The challenge expires after five minutes, is
+single-use, and is bound to the exact user, origin, generation, launch root,
+signed-state digest, provider snapshot, reputation status, and reason codes.
+After an interactive adapter accepts the warning, the authority consumes the
+challenge and recomputes every fact and policy before recording. A changed
+warning requires a new confirmation; a changed deny remains denied. The
+challenge binds a confirmation to a decision but is not itself evidence that a
+human saw a prompt, so official adapters and their negative tests remain part
+of the confirmation boundary. Challenges are never result, ledger, or log
+fields.
+
 ## 5. Final actions and stable exit codes
 
 `final.action`, `final.class`, and `final.exit_code` are an indivisible mapping:

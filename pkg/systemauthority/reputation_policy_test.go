@@ -155,6 +155,54 @@ func TestAuthorityReputationModesControlEnrolmentAndRecordedEvidence(t *testing.
 	}
 }
 
+func TestAuthorityRecordsAWarningOnlyAfterTheExactSingleUseConfirmation(t *testing.T) {
+	ledger := testAnchorLedger(t)
+	ledger.ReputationConfirmations = &reputationConfirmationStore{}
+	publisher := testNormalizedPublisher(t)
+	testReputationTrustPolicy(t, ledger, trustpolicy.ReputationWarn, publisher.ID)
+	acceptSignaturesOf(t, testAnchor().Origin)
+	ledger.Now = func() time.Time { return reputationNow }
+	status := reputation.Unknown
+	lookups := 0
+	ledger.ReputationLookup = func(publisherID string, _ time.Time) (reputation.Result, error) {
+		lookups++
+		return authorityReputationResult(publisherID, status), nil
+	}
+	enrolment := Enrolment{Anchor: testAnchor(), Signature: testSignedState(1)}
+
+	err := ledger.Record(enrolment)
+	var confirmation *ReputationConfirmationRequiredError
+	if !errors.As(err, &confirmation) || confirmation.Token == "" || confirmation.Decision.Action != trustpolicy.ActionWarn {
+		t.Fatalf("first decision = %v", err)
+	}
+	if _, found, readErr := ledger.Recorded(enrolment.UID, enrolment.Origin); readErr != nil || found {
+		t.Fatalf("warning was recorded before confirmation: found=%v err=%v", found, readErr)
+	}
+
+	status = reputation.Blocked
+	if err := ledger.RecordConfirmed(enrolment, confirmation.Token); !errors.Is(err, ErrTrustRefused) {
+		t.Fatalf("confirmation overrode a changed block: %v", err)
+	}
+	status = reputation.Unknown
+	err = ledger.Record(enrolment)
+	if !errors.As(err, &confirmation) || confirmation.Token == "" {
+		t.Fatalf("fresh warning did not issue a fresh confirmation: %v", err)
+	}
+	if err := ledger.RecordConfirmed(enrolment, confirmation.Token); err != nil {
+		t.Fatalf("exact warning confirmation was refused: %v", err)
+	}
+	if err := ledger.RecordConfirmed(enrolment, confirmation.Token); err == nil || !errors.Is(err, ErrReputationConfirmationRequired) {
+		t.Fatalf("single-use confirmation was replayed: %v", err)
+	}
+	recorded, found, err := ledger.Recorded(enrolment.UID, enrolment.Origin)
+	if err != nil || !found || recorded.ReputationDecision == nil || recorded.ReputationDecision.Action != trustpolicy.ActionWarn {
+		t.Fatalf("recorded warning = %+v found=%v err=%v", recorded, found, err)
+	}
+	if lookups != 5 {
+		t.Fatalf("provider consulted %d times, want 5 fresh decisions", lookups)
+	}
+}
+
 func TestReputationOffDoesNotConsultAProvider(t *testing.T) {
 	ledger := testAnchorLedger(t)
 	publisher := testNormalizedPublisher(t)

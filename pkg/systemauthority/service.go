@@ -6,6 +6,7 @@ package systemauthority
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -13,12 +14,16 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	"github.com/mirkobrombin/cpak/pkg/integrity"
+	"github.com/mirkobrombin/cpak/pkg/reputation"
+	"github.com/mirkobrombin/cpak/pkg/trustpolicy"
 )
 
 const (
 	BusName       = "it.cpak.SystemAuthority1"
 	ObjectPath    = dbus.ObjectPath("/it/cpak/SystemAuthority1")
 	InterfaceName = "it.cpak.SystemAuthority1"
+
+	reputationConfirmationErrorName = "it.cpak.Error.ReputationConfirmationRequired"
 )
 
 type Service struct {
@@ -338,4 +343,24 @@ func denied(err error) *dbus.Error {
 
 func failed(err error) *dbus.Error {
 	return dbus.NewError("it.cpak.Error.Failed", []any{err.Error()})
+}
+
+func enrolmentFailed(err error) *dbus.Error {
+	var confirmation *ReputationConfirmationRequiredError
+	if errors.As(err, &confirmation) {
+		wire, encodeErr := json.Marshal(reputationConfirmationWire{Result: confirmation.Result, Decision: confirmation.Decision})
+		if encodeErr != nil {
+			return failed(errors.New("encode reputation confirmation"))
+		}
+		return dbus.NewError(reputationConfirmationErrorName, []any{
+			confirmation.Token,
+			string(wire),
+		})
+	}
+	return failed(err)
+}
+
+type reputationConfirmationWire struct {
+	Result   reputation.Result              `json:"result"`
+	Decision trustpolicy.ReputationDecision `json:"decision"`
 }

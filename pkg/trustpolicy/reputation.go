@@ -177,6 +177,17 @@ func validateReputationException(exception ReputationException) error {
 // DecidesReputation applies only the reputation stage. Earlier cryptographic,
 // origin, publisher, and administrator decisions must already have allowed.
 func (p Policy) DecidesReputation(result reputation.Result, publisherID, origin string, now time.Time, context InvocationContext) ReputationDecision {
+	decision := p.EvaluatesReputation(result, publisherID, origin, now)
+	if decision.Action == ActionWarn && context != InvocationGraphical && context != InvocationInteractiveTerminal {
+		return ReputationDecision{Action: ActionConfirmationRequired, ReasonCode: "reputation-confirmation-required", Reason: "publisher reputation requires confirmation, and this invocation is non-interactive"}
+	}
+	return decision
+}
+
+// EvaluatesReputation computes only the host policy stage. It never infers
+// presentation consent from a TTY or display; an adapter applies invocation
+// context and a dedicated confirmation afterwards.
+func (p Policy) EvaluatesReputation(result reputation.Result, publisherID, origin string, now time.Time) ReputationDecision {
 	if p.ABI != CurrentABIVersion || p.Reputation == nil || p.Reputation.Mode == ReputationOff {
 		return reputationAllow("reputation-off", "publisher reputation is not enforced on this host")
 	}
@@ -195,9 +206,6 @@ func (p Policy) DecidesReputation(result reputation.Result, publisherID, origin 
 		}
 		if result.Status == reputation.Established {
 			return reputationAllow("publisher-established", "the configured reputation provider reports an established publisher")
-		}
-		if context != InvocationGraphical && context != InvocationInteractiveTerminal {
-			return ReputationDecision{Action: ActionConfirmationRequired, ReasonCode: "reputation-confirmation-required", Reason: "publisher reputation requires confirmation, and this invocation is non-interactive"}
 		}
 		return ReputationDecision{Allowed: true, Action: ActionWarn, ReasonCode: result.ReasonCode, Reason: "publisher reputation requires a warning before continuing"}
 	case ReputationRequireEstablished:
