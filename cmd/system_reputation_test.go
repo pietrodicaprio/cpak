@@ -18,25 +18,27 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mirkobrombin/cpak/pkg/cpak"
+	"github.com/mirkobrombin/cpak/pkg/applicationtrust"
 	"github.com/mirkobrombin/cpak/pkg/reputation"
 	"github.com/mirkobrombin/cpak/pkg/systemauthority"
-	"github.com/mirkobrombin/cpak/pkg/trustpolicy"
 	"github.com/mirkobrombin/go-cli-builder/v3/pkg/cli"
 	clilog "github.com/mirkobrombin/go-cli-builder/v3/pkg/log"
 )
 
 var commandReputationNow = time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
 
-func TestAuditAndExplainReportHistoricalReputationReasonCodes(t *testing.T) {
-	result := &reputation.Result{ProviderID: "cpak-poc", Status: reputation.Caution, ReasonCode: "recent-key-change"}
-	decision := &trustpolicy.ReputationDecision{Allowed: true, Action: trustpolicy.ActionWarn, ReasonCode: "reputation-warning"}
-	recorded := cpak.RecordedSignature{Enrolled: true, Reputation: result, ReputationDecision: decision}
+func TestRecordedTrustReporterIncludesHistoricalReputationReasonCodes(t *testing.T) {
 	var output bytes.Buffer
 	logger := clilog.NewWriter(&output, &output)
-
-	(&SystemCmd{Base: cli.Base{Logger: logger}}).reportRecordedReputation(recorded)
-	(&AuditCmd{Base: cli.Base{Logger: logger}}).reportReputation(recorded)
+	reportApplicationTrustResult(logger, applicationtrust.Result{
+		Subject:      applicationtrust.Subject{Origin: "github.com/user/demo"},
+		Verification: applicationtrust.Verification{Status: applicationtrust.VerificationVerified, EvidenceKind: "sigstore-bundle-v1", ReasonCode: "evidence-verified"},
+		Publisher:    applicationtrust.Publisher{Status: applicationtrust.PublisherVerified, ID: "oidc:demo", ReasonCode: "publisher-verified"},
+		Trust:        applicationtrust.Trust{Chain: "not-applicable", SigningTime: "current", Revocation: "not-applicable", ReasonCode: "not-applicable"},
+		Reputation:   applicationtrust.Reputation{ProviderID: "cpak-poc", Status: "caution", Freshness: "fresh", ReasonCode: "recent-key-change"},
+		Policy:       applicationtrust.Policy{SignatureMode: "optional", ReputationMode: "warn", Action: applicationtrust.PolicyWarn, Confirmation: applicationtrust.ConfirmationAccepted, ReasonCode: "reputation-warning"},
+		Final:        applicationtrust.Final{Action: applicationtrust.FinalWarn, ReasonCode: "reputation-warning"},
+	})
 	text := output.String()
 	for _, expected := range []string{"cpak-poc", "caution", "recent-key-change", "warn", "reputation-warning"} {
 		if !strings.Contains(text, expected) {

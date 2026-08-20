@@ -147,6 +147,9 @@ func TestAuthorityReputationModesControlEnrolmentAndRecordedEvidence(t *testing.
 				t.Fatalf("recorded=%v err=%v", found, readErr)
 			}
 			if test.wantRecord {
+				if recorded.Verification == nil || recorded.Verification.Publisher == nil || recorded.Verification.StateDigest == "" {
+					t.Fatalf("record dropped authority verification: %+v", recorded.Verification)
+				}
 				if recorded.Reputation == nil || recorded.ReputationDecision == nil || recorded.Reputation.Status != test.status {
 					t.Fatalf("record dropped reputation evidence: %+v", recorded)
 				}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/mirkobrombin/cpak/pkg/applicationtrust"
 	"github.com/mirkobrombin/cpak/pkg/cpak"
+	"github.com/mirkobrombin/cpak/pkg/logger"
 	"github.com/mirkobrombin/cpak/pkg/tools"
 	"github.com/mirkobrombin/cpak/pkg/types"
 	"github.com/mirkobrombin/go-cli-builder/v3/pkg/cli"
@@ -31,6 +32,9 @@ type InstallCmd struct {
 }
 
 func (c *InstallCmd) Run() error {
+	if c.JSON {
+		logger.MachineMode()
+	}
 	remote := strings.ToLower(c.Remote)
 
 	cp, err := cpak.NewCpak()

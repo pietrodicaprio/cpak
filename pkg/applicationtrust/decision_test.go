@@ -77,6 +77,18 @@ func TestNonInteractiveInvocationCannotSupplyConfirmation(t *testing.T) {
 	}
 }
 
+func TestNonInteractiveReaderMayReportOnlyRecordedConsent(t *testing.T) {
+	result := validResult(t)
+	result.Context = ContextNonInteractive
+	if err := result.Validate(); err == nil {
+		t.Fatal("an evaluated non-interactive result inferred consent")
+	}
+	result.DecisionSource = SourceRecorded
+	if err := result.Validate(); err != nil {
+		t.Fatalf("a recorded historical confirmation was rejected: %v", err)
+	}
+}
+
 func TestSanitizeTextRemovesControlsAndKeepsAUTF8Boundary(t *testing.T) {
 	got := SanitizeText("publisher\x00\x1b[2J-éé", 15)
 	if got != "publisher[2J-é" {

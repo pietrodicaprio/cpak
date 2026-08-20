@@ -5,11 +5,14 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
+	"github.com/mirkobrombin/cpak/pkg/applicationtrust"
 	"github.com/mirkobrombin/cpak/pkg/cpak"
-	"github.com/mirkobrombin/cpak/pkg/signature"
+	"github.com/mirkobrombin/cpak/pkg/logger"
 	"github.com/mirkobrombin/cpak/pkg/systemauthority"
 	"github.com/mirkobrombin/go-cli-builder/v3/pkg/cli"
 )
@@ -17,17 +20,24 @@ import (
 type AuditCmd struct {
 	Repair           bool `cli:"repair" help:"Attempt to repair inconsistencies found in the store"`
 	BackfillBindings bool `cli:"backfill-bindings" help:"Record a layer binding for every layer of an installed application that has none, trusting the store as it is now"`
+	JSON             bool `cli:"json,j" help:"Print store integrity and recorded application-trust decisions as JSON"`
 
 	cli.Base
 }
 
 func (c *AuditCmd) Run() error {
+	if c.JSON {
+		logger.MachineMode()
+	}
 	cp, err := cpak.NewCpak()
 	if err != nil {
 		return fmt.Errorf("failed to initialize cpak for audit: %w", err)
 	}
 
 	if c.BackfillBindings {
+		if c.JSON {
+			return fmt.Errorf("--json reports audit state and cannot be combined with --backfill-bindings")
+		}
 		if c.Repair {
 			return fmt.Errorf("run --repair and --backfill-bindings one at a time")
 		}
@@ -38,28 +48,37 @@ func (c *AuditCmd) Run() error {
 	// is the only place the records a launch is gated on are ever named, and a
 	// store that just failed its audit is the store whose records matter most.
 	auditErr := cp.Audit(c.Repair)
-	reportErr := c.reportIntegrity(&cp)
+	var trustResults []applicationtrust.Result
+	var reportErr error
+	if c.JSON {
+		trustResults, reportErr = c.reportIntegrityJSON(&cp)
+	} else {
+		trustResults, reportErr = c.reportIntegrity(&cp)
+	}
 	if auditErr != nil {
 		return auditErr
 	}
-	return reportErr
+	if reportErr != nil {
+		return reportErr
+	}
+	return applicationTrustResultExit(trustResults)
 }
 
 // reportIntegrity says what the store records about itself, what it now holds,
 // and what the anchor ledger claims about either. It changes nothing, with or
 // without --repair: writing a record from the store as it stands is a separate
 // act and it has to be asked for.
-func (c *AuditCmd) reportIntegrity(cp *cpak.Cpak) error {
+func (c *AuditCmd) reportIntegrity(cp *cpak.Cpak) ([]applicationtrust.Result, error) {
 	report, err := cp.IntegrityReport()
 	if err != nil {
-		return fmt.Errorf("read what the store records about itself: %w", err)
+		return nil, fmt.Errorf("read what the store records about itself: %w", err)
 	}
 	// The ledger is the one part of this section the store does not own, and it
 	// is read separately for that reason: a store that just failed its audit
 	// has no say in what is recorded about it.
 	anchors, err := cp.AnchorStates()
 	if err != nil {
-		return fmt.Errorf("read what the integrity anchors hold: %w", err)
+		return nil, fmt.Errorf("read what the integrity anchors hold: %w", err)
 	}
 	held := make(map[string]cpak.AnchorState, len(anchors))
 	for _, state := range anchors {
@@ -71,25 +90,78 @@ func (c *AuditCmd) reportIntegrity(cp *cpak.Cpak) error {
 	// believed from the record that holds it.
 	signatures, err := cp.RecordedSignatures()
 	if err != nil {
-		return fmt.Errorf("read what the integrity anchors hold about publishers: %w", err)
+		return nil, fmt.Errorf("read what the integrity anchors hold about publishers: %w", err)
 	}
-	signed := make(map[string]cpak.RecordedSignature, len(signatures))
-	for _, found := range signatures {
-		signed[found.Origin] = found
+	trustResults, err := recordedTrustResults(cp, report, applicationtrust.OperationAudit)
+	if err != nil {
+		return nil, err
+	}
+	trusted := make(map[string]applicationtrust.Result, len(trustResults))
+	for _, result := range trustResults {
+		trusted[result.Subject.Origin] = result
 	}
 	c.Logger.Info("Integrity records")
 	if len(report.Applications) == 0 {
 		c.Logger.Info("  No application is installed.")
-		return nil
+		return trustResults, nil
 	}
 	for _, app := range report.Applications {
-		c.reportApplication(app, held[app.Origin], signed[app.Origin])
+		c.reportApplication(app, held[app.Origin], trusted[app.Origin])
 	}
 	c.summariseIntegrity(report, anchors, signatures)
-	return nil
+	return trustResults, nil
 }
 
-func (c *AuditCmd) reportApplication(app cpak.ApplicationIntegrity, anchor cpak.AnchorState, signed cpak.RecordedSignature) {
+func (c *AuditCmd) reportIntegrityJSON(cp *cpak.Cpak) ([]applicationtrust.Result, error) {
+	report, err := cp.IntegrityReport()
+	if err != nil {
+		return nil, fmt.Errorf("read what the store records about itself: %w", err)
+	}
+	anchors, err := cp.AnchorStates()
+	if err != nil {
+		return nil, fmt.Errorf("read what the integrity anchors hold: %w", err)
+	}
+	trustResults, err := recordedTrustResults(cp, report, applicationtrust.OperationAudit)
+	if err != nil {
+		return nil, err
+	}
+	output := struct {
+		SchemaVersion int                       `json:"schema_version"`
+		Integrity     cpak.StoreIntegrity       `json:"integrity"`
+		Anchors       []cpak.AnchorState        `json:"anchors"`
+		Trust         []applicationtrust.Result `json:"trust"`
+	}{
+		SchemaVersion: applicationtrust.SchemaVersion,
+		Integrity:     report,
+		Anchors:       anchors,
+		Trust:         trustResults,
+	}
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(output); err != nil {
+		return nil, err
+	}
+	return trustResults, nil
+}
+
+func recordedTrustResults(cp *cpak.Cpak, report cpak.StoreIntegrity, operation applicationtrust.Operation) ([]applicationtrust.Result, error) {
+	seen := make(map[string]bool, len(report.Applications))
+	results := make([]applicationtrust.Result, 0, len(report.Applications))
+	for _, app := range report.Applications {
+		if seen[app.Origin] {
+			continue
+		}
+		seen[app.Origin] = true
+		result, err := cp.RecordedApplicationTrustResult(app.Origin, operation, applicationtrust.ContextNonInteractive)
+		if err != nil {
+			return nil, fmt.Errorf("read recorded application trust for %s: %w", app.Origin, err)
+		}
+		results = append(results, result)
+	}
+	return results, nil
+}
+
+func (c *AuditCmd) reportApplication(app cpak.ApplicationIntegrity, anchor cpak.AnchorState, trust applicationtrust.Result) {
 	name := app.Origin
 	if app.Version != "" {
 		name += " " + app.Version
@@ -101,23 +173,13 @@ func (c *AuditCmd) reportApplication(app cpak.ApplicationIntegrity, anchor cpak.
 	c.Logger.Info("  %s: %d of %d layers bound to a store state, %d of %d prepared checkouts described by the state they were made from",
 		name, app.BoundLayers, app.Layers, app.DescribedCheckouts, app.PreparedCheckouts)
 	c.reportEnrolment(anchor)
-	c.reportSignature(signed)
-	c.reportReputation(signed)
+	reportApplicationTrustResult(c.Logger, trust)
 	for _, disagreement := range app.Disagreements {
 		c.Logger.Error("    the store contradicts itself: %s", disagreement)
 	}
 	for _, unmeasured := range app.Unmeasured {
 		c.Logger.Warning("    nothing in the store speaks for it: %s", unmeasured)
 	}
-}
-
-func (c *AuditCmd) reportReputation(signed cpak.RecordedSignature) {
-	if signed.Reputation == nil || signed.ReputationDecision == nil {
-		return
-	}
-	c.Logger.Info("    reputation at enrolment: provider %s, status %s, reason %s, policy action %s (%s)",
-		signed.Reputation.ProviderID, signed.Reputation.Status, signed.Reputation.ReasonCode,
-		signed.ReputationDecision.Action, signed.ReputationDecision.ReasonCode)
 }
 
 // reportEnrolment says what the anchor ledger holds for one application. It is
@@ -136,33 +198,6 @@ func (c *AuditCmd) reportEnrolment(anchor cpak.AnchorState) {
 		c.Logger.Info("    enrolled at generation %d, and a launch derives the root the anchor holds", anchor.Generation)
 	default:
 		c.Logger.Error("    enrolled at generation %d, and a launch derives %s where the anchor holds %s", anchor.Generation, anchor.DerivedRoot, anchor.AnchorRoot)
-	}
-}
-
-// reportSignature says who published one application, or that nobody said. It
-// is printed only for an application the ledger answers for at all, because
-// the line above has already said that nothing does.
-func (c *AuditCmd) reportSignature(signed cpak.RecordedSignature) {
-	switch {
-	case !signed.Enrolled:
-		return
-	case signed.Verified:
-		publisher := signed.Identity.Repo
-		if signed.Publisher != nil {
-			publisher = signed.Publisher.DisplayName
-			if publisher == "" {
-				publisher = signed.Publisher.ID
-			}
-		}
-		if signed.Verification.EvidenceKind == signature.EvidenceX509CMS {
-			c.Logger.Info("    signed by %s at generation %d; X.509 identity %s; root %s; signing time %s; revocation %s", publisher, signed.State.Generation, signed.Publisher.ID, signed.Verification.RootSource, signed.Verification.SigningTime, signed.Verification.Revocation)
-			return
-		}
-		c.Logger.Info("    signed by %s at generation %d, and the signature verifies against the trust root cpak ships with", publisher, signed.State.Generation)
-	case signed.Unsigned():
-		c.Logger.Warning("    unsigned: no publisher signature was recorded when it was enrolled")
-	default:
-		c.Logger.Error("    a publisher signature was recorded for it and no longer verifies: %v", signed.Reason)
 	}
 }
 
@@ -249,7 +284,7 @@ func (c *AuditCmd) summariseSignatures(signatures []cpak.RecordedSignature) {
 	policy := systemauthority.Signatures()
 	c.Logger.Info("Publisher signatures are %s on this host. cpak system signatures says what each policy does.", policy)
 	if failing > 0 {
-		c.Logger.Error("%s recorded with a publisher signature that no longer verifies. Either the trust root moved on under it or the record was changed, and until it is installed again nothing can say who published it.", plural(failing, "application is"))
+		c.Logger.Error("%s whose recorded evidence no longer passes a present-day re-verification. The root-owned decision above remains the historical enrolment result and the runtime anchor is unchanged; the next install or update must satisfy the trust material current at that time.", plural(failing, "application has"))
 	}
 	if unsigned > 0 {
 		c.Logger.Warning("%s enrolled with no publisher signature at all. %s", plural(unsigned, "application is"), signatureConsequence(policy))
@@ -289,6 +324,12 @@ func plural(count int, singular string) string {
 	}
 	if strings.HasSuffix(singular, " is") {
 		return fmt.Sprintf("%d %ss are", count, strings.TrimSuffix(singular, " is"))
+	}
+	if strings.HasSuffix(singular, " has") {
+		if count == 1 {
+			return fmt.Sprintf("%d %s", count, singular)
+		}
+		return fmt.Sprintf("%d %ss have", count, strings.TrimSuffix(singular, " has"))
 	}
 	return fmt.Sprintf("%d %ss", count, singular)
 }

@@ -7,6 +7,7 @@ package cpak
 
 import (
 	"errors"
+	"os"
 	"time"
 
 	"github.com/mirkobrombin/cpak/pkg/applicationtrust"
@@ -19,15 +20,118 @@ import (
 // the portable v1 contract. The authority remains the decision maker; this
 // method only gives every cpak presentation surface one representation.
 func (e ApplicationEnrolment) ApplicationTrustResult(operation applicationtrust.Operation, context applicationtrust.InvocationContext) (applicationtrust.Result, error) {
-	return e.applicationTrustResultAt(operation, context, time.Now())
+	return e.applicationTrustResultAtSource(operation, context, applicationtrust.SourceEvaluated, time.Now())
+}
+
+// RecordedApplicationTrustResult reads the authority record without network
+// access and projects the historical install/update decision. A recorded warn
+// is accepted by construction: the authority writes it only after consuming
+// the exact single-use confirmation challenge.
+func (c *Cpak) RecordedApplicationTrustResult(origin string, operation applicationtrust.Operation, context applicationtrust.InvocationContext) (applicationtrust.Result, error) {
+	enrolment := ApplicationEnrolment{Origin: origin, UID: uint32(os.Getuid())}
+	recorded, held, err := recordedAnchor(enrolment.UID, origin)
+	if err != nil {
+		enrolment.Outcome = EnrolmentUnrecordable
+		enrolment.Reason = err
+		enrolment.Signature.Reason = ErrPackageUnsigned
+		return enrolment.applicationTrustResultAtSource(operation, context, applicationtrust.SourceRecorded, time.Now())
+	}
+	if !held {
+		enrolment.Outcome = EnrolmentUnrecordable
+		enrolment.Reason = systemauthority.ErrNoAuthority
+		enrolment.Signature.Reason = ErrPackageUnsigned
+		return enrolment.applicationTrustResultAtSource(operation, context, applicationtrust.SourceRecorded, time.Now())
+	}
+	enrolment.Outcome = EnrolmentRecorded
+	enrolment.Anchor = recorded.Anchor
+	enrolment.SignatureMode = recorded.SignatureMode
+	enrolment.ReputationMode = recorded.ReputationMode
+	enrolment.Reputation = recorded.Reputation
+	enrolment.ReputationDecision = recorded.ReputationDecision
+	if enrolment.ReputationMode == "" {
+		enrolment.ReputationMode = legacyRecordedReputationMode(recorded.ReputationDecision)
+	}
+	if recorded.Signature == nil {
+		enrolment.Signature.Reason = ErrPackageUnsigned
+	} else if recorded.Verification != nil {
+		enrolment.Signature = EnrolmentSignature{
+			Verified: true, State: recorded.Signature.State,
+			Publisher: recorded.Verification.Publisher, Verification: *recorded.Verification,
+		}
+	} else {
+		// Legacy records predate authority-owned decision snapshots. They remain
+		// readable through the original offline verification path.
+		enrolment.Signature = describeSignature(origin, recorded.Signature)
+	}
+	if recorded.ReputationDecision != nil && recorded.ReputationDecision.Action == trustpolicy.ActionWarn {
+		enrolment.Confirmation = applicationtrust.ConfirmationAccepted
+	}
+	return enrolment.applicationTrustResultAtSource(operation, context, applicationtrust.SourceRecorded, time.Now())
+}
+
+// LaunchApplicationTrustResult combines the recorded publisher decision with
+// the runtime-integrity verdict a launch actually enforces. It performs no
+// network or reputation lookup.
+func (c *Cpak) LaunchApplicationTrustResult(explanation LaunchExplanation, operation applicationtrust.Operation, context applicationtrust.InvocationContext) (applicationtrust.Result, error) {
+	result, err := c.RecordedApplicationTrustResult(explanation.Origin, operation, context)
+	if err != nil {
+		return applicationtrust.Result{}, err
+	}
+	setFinal := func(action applicationtrust.FinalAction, reason string, policyAction applicationtrust.PolicyAction) error {
+		result.Policy.Action = policyAction
+		result.Policy.Confirmation = applicationtrust.ConfirmationNotRequired
+		result.Policy.ReasonCode = reason
+		result.Final, err = applicationtrust.NewFinal(action, reason)
+		return err
+	}
+	switch explanation.Identity.Verdict {
+	case LaunchRecognised:
+	case LaunchTampered, LaunchUnrecognised:
+		err = setFinal(applicationtrust.FinalInvalid, "runtime-integrity-mismatch", applicationtrust.PolicyNotEvaluated)
+	case LaunchUnbound, LaunchUnverifiable:
+		err = setFinal(applicationtrust.FinalUnavailable, "runtime-integrity-unavailable", applicationtrust.PolicyNotEvaluated)
+	case LaunchUnenrolled:
+		if explanation.Enforcement == systemauthority.EnforcementRefuse {
+			err = setFinal(applicationtrust.FinalDeny, "unenrolled-launch-denied", applicationtrust.PolicyDeny)
+		} else {
+			err = setFinal(applicationtrust.FinalAllow, "unenrolled-launch-allowed", applicationtrust.PolicyAllow)
+		}
+	default:
+		err = setFinal(applicationtrust.FinalInvalid, "runtime-verdict-invalid", applicationtrust.PolicyNotEvaluated)
+	}
+	if err != nil {
+		return applicationtrust.Result{}, err
+	}
+	if err := result.Validate(); err != nil {
+		return applicationtrust.Result{}, err
+	}
+	return result, nil
+}
+
+func legacyRecordedReputationMode(decision *trustpolicy.ReputationDecision) trustpolicy.ReputationMode {
+	if decision == nil {
+		return trustpolicy.ReputationOff
+	}
+	if decision.Action == trustpolicy.ActionWarn {
+		return trustpolicy.ReputationWarn
+	}
+	if decision.ReasonCode == "reputation-audited" {
+		return trustpolicy.ReputationAudit
+	}
+	return trustpolicy.ReputationOff
 }
 
 func (e ApplicationEnrolment) applicationTrustResultAt(operation applicationtrust.Operation, context applicationtrust.InvocationContext, now time.Time) (applicationtrust.Result, error) {
+	return e.applicationTrustResultAtSource(operation, context, applicationtrust.SourceEvaluated, now)
+}
+
+func (e ApplicationEnrolment) applicationTrustResultAtSource(operation applicationtrust.Operation, context applicationtrust.InvocationContext, source applicationtrust.DecisionSource, now time.Time) (applicationtrust.Result, error) {
 	result, err := e.signatureTrustResult(operation, context)
 	if err != nil {
 		return applicationtrust.Result{}, err
 	}
 	result.Policy.SignatureMode = string(e.SignatureMode)
+	result.DecisionSource = source
 	if result.Policy.SignatureMode == "" {
 		result.Policy.SignatureMode = string(systemauthority.SignaturesOptional)
 	}

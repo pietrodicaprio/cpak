@@ -40,22 +40,28 @@ func writeApplicationTrustResults(results []applicationtrust.Result) error {
 
 func reportApplicationTrustResults(logger clilog.Logger, results []applicationtrust.Result) {
 	for _, result := range results {
-		publisher := result.Publisher.DisplayName
-		if publisher == "" {
-			publisher = result.Publisher.ID
-		}
-		if publisher == "" {
-			publisher = string(result.Publisher.Status)
-		}
-		logger.Info("Application trust for %s: %s (%s).", tools.SanitizeForDisplay(result.Subject.Origin), result.Final.Action, result.Final.ReasonCode)
-		logger.Info("  Publisher: %s; verification: %s/%s; origin: %s.",
-			tools.SanitizeForDisplay(publisher), result.Verification.Status, result.Verification.EvidenceKind, result.Publisher.OriginAuthorization)
-		logger.Info("  Trust: chain %s, root %s, signing time %s, revocation %s.",
-			result.Trust.Chain, tools.SanitizeForDisplay(result.Trust.RootSource), result.Trust.SigningTime, result.Trust.Revocation)
-		logger.Info("  Reputation: provider %s, status %s, freshness %s; policy: signatures %s, reputation %s, action %s, confirmation %s.",
-			tools.SanitizeForDisplay(result.Reputation.ProviderID), result.Reputation.Status, result.Reputation.Freshness,
-			result.Policy.SignatureMode, result.Policy.ReputationMode, result.Policy.Action, result.Policy.Confirmation)
+		reportApplicationTrustResult(logger, result)
 	}
+}
+
+func reportApplicationTrustResult(logger clilog.Logger, result applicationtrust.Result) {
+	publisher := result.Publisher.DisplayName
+	if publisher == "" {
+		publisher = result.Publisher.ID
+	}
+	if publisher == "" {
+		publisher = string(result.Publisher.Status)
+	}
+	logger.Info("Application trust for %s: %s (%s).", tools.SanitizeForDisplay(result.Subject.Origin), result.Final.Action, result.Final.ReasonCode)
+	logger.Info("  Publisher: %s (%s); verification: %s/%s (%s); origin: %s.",
+		tools.SanitizeForDisplay(publisher), result.Publisher.ReasonCode, result.Verification.Status,
+		result.Verification.EvidenceKind, result.Verification.ReasonCode, result.Publisher.OriginAuthorization)
+	logger.Info("  Trust: chain %s, root %s, signing time %s, revocation %s (%s).",
+		result.Trust.Chain, tools.SanitizeForDisplay(result.Trust.RootSource), result.Trust.SigningTime, result.Trust.Revocation, result.Trust.ReasonCode)
+	logger.Info("  Reputation: provider %s, status %s, freshness %s (%s); policy: signatures %s, reputation %s, action %s, confirmation %s (%s).",
+		tools.SanitizeForDisplay(result.Reputation.ProviderID), result.Reputation.Status, result.Reputation.Freshness,
+		result.Reputation.ReasonCode, result.Policy.SignatureMode, result.Policy.ReputationMode, result.Policy.Action,
+		result.Policy.Confirmation, result.Policy.ReasonCode)
 }
 
 func applicationTrustResultExit(results []applicationtrust.Result) error {

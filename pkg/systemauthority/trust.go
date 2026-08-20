@@ -240,26 +240,22 @@ func (l AnchorLedger) admitTrust(enrolment *Enrolment, reputationConfirmation st
 // came from, and every package can say that of itself; who may publish for
 // this host is a decision only the owner of the host can make.
 func admitPublisher(policy trustpolicy.Policy, enrolment Enrolment) (*signature.PublisherIdentity, error) {
-	verified, err := enrolment.Signer()
-	if errors.Is(err, ErrUnsigned) {
+	if enrolment.Signature == nil {
 		if policy.RequirePublisher {
 			return nil, fmt.Errorf("%w: %s is signed by nobody and this host enrols only what an approved publisher signed",
 				ErrTrustRefused, enrolment.Origin)
 		}
 		return nil, nil
 	}
-	if err != nil {
-		return nil, err
+	if enrolment.Verification == nil || enrolment.Verification.Publisher == nil {
+		return nil, errors.New("verified enrolment has no authority verification result")
 	}
-	publisherID := ""
-	if verified.Publisher != nil {
-		publisherID = verified.Publisher.ID
-	}
-	decision := policy.AllowsNormalizedPublisher(publisherID, verified.Identity.Issuer, verified.Identity.Repo, enrolment.Origin)
+	publisher := enrolment.Verification.Publisher
+	decision := policy.AllowsNormalizedPublisher(publisher.ID, publisher.Issuer, publisher.Repository, enrolment.Origin)
 	if !decision.Allowed {
 		return nil, refusedBy(decision)
 	}
-	return verified.Publisher, nil
+	return publisher, nil
 }
 
 func (l AnchorLedger) admitReputation(policy trustpolicy.Policy, enrolment *Enrolment, publisher *signature.PublisherIdentity, confirmation string) error {

@@ -805,24 +805,26 @@ func useBundleVerifier(t *testing.T, verify func([]byte, signature.State) (signa
 	saved := verifyEvidence
 	t.Cleanup(func() { verifyEvidence = saved })
 	verifyEvidence = func(evidence signature.SignatureEvidence, _ signature.TrustMaterial, _ time.Time) (signature.VerificationResult, error) {
+		digest, _ := evidence.State.Digest()
 		verified, err := verify(evidence.Payload, evidence.State)
 		if err != nil {
 			return signature.VerificationResult{
-				EvidenceKind: evidence.Kind, Cryptographic: signature.CryptographicInvalid,
+				EvidenceKind: evidence.Kind, StateDigest: digest, Cryptographic: signature.CryptographicInvalid,
 				OriginAuthorization: string(signature.OriginUnsupported), ReasonCode: "test-refusal", Diagnostic: err.Error(),
 			}, nil
 		}
 		publisher, _ := signature.NormalizeOIDCIdentity(verified.Identity)
 		if publisher == nil {
 			return signature.VerificationResult{
-				EvidenceKind: evidence.Kind, Cryptographic: signature.CryptographicVerified,
+				EvidenceKind: evidence.Kind, StateDigest: digest, Cryptographic: signature.CryptographicVerified,
 				OriginAuthorization: string(signature.OriginUnsupported), ReasonCode: "test-identity-invalid",
 			}, nil
 		}
 		publisher.Claims["subject"] = verified.Identity.Subject
 		authorization := signature.AuthorizeOIDCOrigin(publisher, evidence.State.Origin)
 		return signature.VerificationResult{
-			EvidenceKind: evidence.Kind, Cryptographic: signature.CryptographicVerified,
+			EvidenceKind: evidence.Kind, StateDigest: digest, Cryptographic: signature.CryptographicVerified,
+			Chain: signature.ChainNotApplicable, SigningTime: signature.SigningTimeCurrent,
 			Publisher: publisher, OriginAuthorization: string(authorization.Status), ReasonCode: authorization.ReasonCode,
 		}, nil
 	}
@@ -834,6 +836,43 @@ func acceptSignaturesOf(t *testing.T, repo string) {
 	useBundleVerifier(t, func(_ []byte, state signature.State) (signature.Verified, error) {
 		return signature.Verified{State: state, Identity: testSignatureIdentity(repo)}, nil
 	})
+}
+
+func TestRecordedAuthorityVerificationDoesNotRequirePKIAtReadTime(t *testing.T) {
+	ledger := testAnchorLedger(t)
+	acceptSignaturesOf(t, testAnchor().Origin)
+	enrolment := Enrolment{Anchor: testAnchor(), Signature: testSignedState(1)}
+	if err := ledger.Record(enrolment); err != nil {
+		t.Fatal(err)
+	}
+
+	useBundleVerifier(t, func([]byte, signature.State) (signature.Verified, error) {
+		return signature.Verified{}, errors.New("trust material changed after enrolment")
+	})
+	recorded, found, err := ledger.Recorded(enrolment.UID, enrolment.Origin)
+	if err != nil || !found || recorded.Verification == nil || recorded.Verification.Publisher == nil {
+		t.Fatalf("recorded=%+v found=%v err=%v", recorded.Verification, found, err)
+	}
+	if _, err := recorded.Signer(); err == nil {
+		t.Fatal("present-day evidence diagnostic ignored the changed trust material")
+	}
+}
+
+func TestRecordedAuthorityVerificationRejectsUnknownRevocationState(t *testing.T) {
+	ledger := testAnchorLedger(t)
+	acceptSignaturesOf(t, testAnchor().Origin)
+	enrolment := Enrolment{Anchor: testAnchor(), Signature: testSignedState(1)}
+	if err := ledger.Record(enrolment); err != nil {
+		t.Fatal(err)
+	}
+	recorded, found, err := ledger.Recorded(enrolment.UID, enrolment.Origin)
+	if err != nil || !found {
+		t.Fatalf("found=%v err=%v", found, err)
+	}
+	recorded.Verification.Revocation = "invented"
+	if err := validateEnrolment(recorded); err == nil {
+		t.Fatal("an authority record with an unknown revocation state was accepted")
+	}
 }
 
 // The test that stops every other test in this file from proving nothing. The

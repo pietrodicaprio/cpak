@@ -14,6 +14,7 @@ import (
 
 	"github.com/mirkobrombin/cpak/pkg/applicationtrust"
 	"github.com/mirkobrombin/cpak/pkg/cpak"
+	"github.com/mirkobrombin/cpak/pkg/logger"
 	"github.com/mirkobrombin/cpak/pkg/tools"
 	"github.com/mirkobrombin/cpak/pkg/types"
 	"github.com/mirkobrombin/go-cli-builder/v3/pkg/cli"
@@ -36,6 +37,9 @@ type updateMachineOutput struct {
 }
 
 func (c *UpdateCmd) Run() error {
+	if c.JSON {
+		logger.MachineMode()
+	}
 	cp, err := cpak.NewCpak()
 	if err != nil {
 		return fmt.Errorf("an error occurred while updating cpak(s): %s", err)

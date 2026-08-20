@@ -142,6 +142,10 @@ type Enrolment struct {
 	// proving it needs no network: an administrator reading this ledger on a
 	// machine with no internet reaches the same answer the authority did.
 	Signature *SignedState `json:"signature,omitempty"`
+	// Verification is the authority's historical result for Signature. Launch
+	// and service-start reporting read it without rerunning PKI; audit may still
+	// reverify the evidence separately as a present-day diagnostic.
+	Verification *signature.VerificationResult `json:"verification,omitempty"`
 
 	// Reputation and ReputationDecision are the authenticated provider result
 	// and policy consequence at enrolment time. They are historical diagnostics,
@@ -256,21 +260,26 @@ func (e Enrolment) Signer() (signature.Verified, error) {
 // The origin is the caller's, never the payload's: a payload can name any
 // origin it likes and only the certificate says who signed.
 func (s SignedState) Signer(origin string) (signature.Verified, error) {
+	_, verified, err := s.VerifyPublisher(origin)
+	return verified, err
+}
+
+func (s SignedState) VerifyPublisher(origin string) (signature.VerificationResult, signature.Verified, error) {
 	if s.State.Origin != origin {
-		return signature.Verified{}, fmt.Errorf("the signature of %s names %q", origin, s.State.Origin)
+		return signature.VerificationResult{}, signature.Verified{}, fmt.Errorf("the signature of %s names %q", origin, s.State.Origin)
 	}
 	result, err := verifyEvidence(s.Evidence(), nil, time.Now())
 	if err != nil {
-		return signature.Verified{}, fmt.Errorf("the signature of %s does not stand: %w", origin, err)
+		return result, signature.Verified{}, fmt.Errorf("the signature of %s does not stand: %w", origin, err)
 	}
 	verified, err := signature.LegacyVerified(result, s.State)
 	if err != nil {
-		return signature.Verified{}, fmt.Errorf("the signature of %s does not stand: %w", origin, err)
+		return result, signature.Verified{}, fmt.Errorf("the signature of %s does not stand: %w", origin, err)
 	}
 	if result.OriginAuthorization != string(signature.OriginAuthorized) {
-		return signature.Verified{}, fmt.Errorf("the signature of %s was made by %q", origin, verified.Identity.Repo)
+		return result, signature.Verified{}, fmt.Errorf("the signature of %s was made by %q", origin, verified.Identity.Repo)
 	}
-	return verified, nil
+	return result, verified, nil
 }
 
 // AnchorLedger is where the enrolled applications are recorded. Every launch
@@ -358,6 +367,7 @@ func (l AnchorLedger) record(enrolment Enrolment, reputationConfirmation string)
 	// arbitrary values on the wire; neither gets to select the new decision.
 	enrolment.Reputation = nil
 	enrolment.ReputationDecision = nil
+	enrolment.Verification = nil
 	enrolment.SignatureMode = ""
 	enrolment.ReputationMode = ""
 	if err := validateEnrolment(enrolment); err != nil {
@@ -632,17 +642,18 @@ func (l AnchorLedger) AsksTheOwner(enrolment Enrolment) (bool, error) {
 // disk, unenrolled, which is the state the enforcement level already answers
 // for, so the two settings compose instead of each inventing a refusal.
 func (l AnchorLedger) admitSignature(enrolment *Enrolment) error {
-	_, err := enrolment.Signer()
 	policy, policyErr := EnforcementStore{Directory: l.Directory, OwnerUID: l.OwnerUID}.SignaturePolicy()
 	if policyErr != nil {
 		return fmt.Errorf("read the host signature policy: %w", policyErr)
 	}
 	enrolment.SignatureMode = policy
-	if err == nil {
+	if enrolment.Signature != nil {
+		result, _, err := enrolment.Signature.VerifyPublisher(enrolment.Origin)
+		if err != nil {
+			return err
+		}
+		enrolment.Verification = &result
 		return nil
-	}
-	if !errors.Is(err, ErrUnsigned) {
-		return err
 	}
 	if policy == SignaturesRequired {
 		return fmt.Errorf("%w: %s", ErrSignatureRequired, enrolment.Origin)
@@ -815,6 +826,9 @@ func validateEnrolment(enrolment Enrolment) error {
 	if err := validateSignedState(enrolment); err != nil {
 		return err
 	}
+	if err := validateRecordedVerification(enrolment); err != nil {
+		return err
+	}
 	if (enrolment.Reputation == nil) != (enrolment.ReputationDecision == nil) {
 		return errors.New("enrolment reputation result and decision must appear together")
 	}
@@ -848,6 +862,41 @@ func validateEnrolment(enrolment Enrolment) error {
 	}
 	if root != enrolment.PolicyRoot {
 		return errors.New("enrolment policy does not hash to its policy root")
+	}
+	return nil
+}
+
+func validateRecordedVerification(enrolment Enrolment) error {
+	if enrolment.Verification == nil {
+		if enrolment.SignatureMode != "" && enrolment.Signature != nil {
+			return errors.New("authority-recorded signed enrolment has no verification result")
+		}
+		return nil
+	}
+	if enrolment.Signature == nil {
+		return errors.New("unsigned enrolment carries a verification result")
+	}
+	result := enrolment.Verification
+	digest, err := enrolment.Signature.State.Digest()
+	if err != nil || result.StateDigest != digest || result.EvidenceKind != enrolment.Signature.Kind {
+		return errors.New("recorded verification does not describe the signed state")
+	}
+	if result.Cryptographic != signature.CryptographicVerified || result.Publisher == nil || result.Publisher.ID == "" ||
+		result.OriginAuthorization != string(signature.OriginAuthorized) {
+		return errors.New("recorded verification is not an authorized verified publisher")
+	}
+	if result.Chain != signature.ChainNotApplicable && result.Chain != signature.ChainTrustedPublic && result.Chain != signature.ChainTrustedLocal {
+		return errors.New("recorded verification has no trusted chain")
+	}
+	if result.SigningTime != signature.SigningTimeCurrent && result.SigningTime != signature.SigningTimeTimestamped {
+		return errors.New("recorded verification has an invalid signing time")
+	}
+	switch result.Revocation {
+	case "", signature.RevocationGood, signature.RevocationUnknown:
+	case signature.RevocationRevoked, signature.RevocationStale:
+		return errors.New("recorded verification carries blocked revocation state")
+	default:
+		return errors.New("recorded verification has an invalid revocation state")
 	}
 	return nil
 }
