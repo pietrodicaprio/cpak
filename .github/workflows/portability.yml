@@ -107,3 +107,12 @@ jobs:
           if (status == 0) != ready:
               raise SystemExit("doctor exit status does not match its readiness report")
           PY
+
+  application-trust-phase5:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417
+        with:
+          go-version-file: go.mod
+      - run: ./hack/application-trust-phase5/run-linux.sh
