@@ -161,6 +161,7 @@ run_process_lifecycle() {
   mount --bind "$phase5_dir/hosts" /etc/hosts
 
   "$phase5_bin_dir/cpak-phase5-fixture" --directory "$phase5_dir" \
+    --payload "$phase5_bin_dir/phase5-payload" \
     >"$phase5_dir/fixture-server.log" 2>&1 &
   fixture_pid=$!
   for _ in {1..100}; do
@@ -292,6 +293,23 @@ PY
   kill "$fixture_pid"
   wait "$fixture_pid" 2>/dev/null || true
   fixture_pid=""
+
+  set +e
+  timeout 30 "$phase5_bin_dir/cpak" run --branch main "$origin" phase5-fixture \
+    </dev/null >"$phase5_dir/run-offline.out" 2>"$phase5_dir/run-offline.err"
+  status=$?
+  set -e
+  if [[ "$status" -ne 0 ]]; then
+    python3 - "$phase5_dir/run-offline.err" <<'PY'
+import pathlib
+import sys
+print(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")[-4000:], file=sys.stderr)
+PY
+    fail "offline binary execution exited $status"
+  fi
+  grep -Fx 'phase5 fixture executed' "$phase5_dir/run-offline.out" >/dev/null || \
+    fail "offline binary execution did not return the fixture output"
+  "$phase5_bin_dir/cpak" stop --branch main "$origin"
 
   "$phase5_bin_dir/cpak" system explain "$origin" --json >"$phase5_dir/explain-offline.json"
   "$phase5_bin_dir/cpak" audit --json >"$phase5_dir/audit-offline.json"
@@ -466,6 +484,7 @@ CGO_ENABLED=0 go build -trimpath -o "$phase5_bin_dir/cpak-sign" ./cmd/cpak-sign
 CGO_ENABLED=0 go build -tags cpak_ui_builtin -trimpath -o "$phase5_bin_dir/cpak-installer" ./cmd/cpak-installer
 CGO_ENABLED=0 go build -trimpath -o "$phase5_bin_dir/cpak-storaged" ./cmd/cpak-storaged
 CGO_ENABLED=0 go build -trimpath -o "$phase5_bin_dir/cpak-phase5-fixture" ./hack/application-trust-phase5/fixture-server
+CGO_ENABLED=0 go build -trimpath -o "$phase5_bin_dir/phase5-payload" ./hack/application-trust-phase5/payload
 
 printf '%s\n' 'phase5-disposable-material' >"$phase5_dir/passphrase"
 chmod 0600 "$phase5_dir/passphrase"
@@ -511,10 +530,10 @@ PY
 if [[ "$namespace_mode" == "--sudo-namespace" ]]; then
   owner_uid="$(id -u)"
   owner_gid="$(id -g)"
-  sudo --non-interactive unshare --mount --fork \
+  sudo --non-interactive unshare --mount --pid --fork --mount-proc \
     "$0" --inside-namespace "$phase5_dir" "$phase5_bin_dir" "$owner_uid" "$owner_gid"
 else
-  unshare --user --map-root-user --mount --fork \
+  unshare --user --map-root-user --mount --pid --fork --mount-proc \
     "$0" --inside-namespace "$phase5_dir" "$phase5_bin_dir"
 fi
 

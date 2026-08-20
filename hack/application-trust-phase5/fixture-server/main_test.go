@@ -19,7 +19,8 @@ import (
 )
 
 func TestFixtureLayerContainsExecutableHeadlessCommand(t *testing.T) {
-	layer, diffID, err := fixtureLayer()
+	payload := []byte("static fixture payload")
+	layer, diffID, err := fixtureLayer(payload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,8 +50,29 @@ func TestFixtureLayerContainsExecutableHeadlessCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(content, []byte("phase5 fixture executed")) {
+	if !bytes.Equal(content, payload) {
 		t.Fatalf("unexpected fixture command: %q", content)
+	}
+}
+
+func TestReadPayloadRequiresABoundedExecutableELF(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "payload")
+	if err := os.WriteFile(path, append([]byte{0x7f, 'E', 'L', 'F'}, []byte("fixture")...), 0755); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := readPayload(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(payload, append([]byte{0x7f, 'E', 'L', 'F'}, []byte("fixture")...)) {
+		t.Fatalf("payload = %q", payload)
+	}
+	if err = os.WriteFile(path, []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = readPayload(path); err == nil {
+		t.Fatal("a script payload was accepted")
 	}
 }
 
@@ -60,7 +82,7 @@ func TestManifestEndpointServesOnlyTheFixtureManifest(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(directory, "cpak.json"), want, 0600); err != nil {
 		t.Fatal(err)
 	}
-	server, err := newFixture(directory)
+	server, err := newFixture(directory, []byte("fixture executable"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +111,7 @@ func TestRegistryPublishesImageAndCurrentEvidence(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(directory, "state-7.cms"), evidence, 0600); err != nil {
 		t.Fatal(err)
 	}
-	server, err := newFixture(directory)
+	server, err := newFixture(directory, []byte("fixture executable"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +156,7 @@ func TestRegistryPublishesImageAndCurrentEvidence(t *testing.T) {
 
 func TestEvidenceRejectsInvalidGenerationAndOversizedPayload(t *testing.T) {
 	directory := t.TempDir()
-	server, err := newFixture(directory)
+	server, err := newFixture(directory, []byte("fixture executable"))
 	if err != nil {
 		t.Fatal(err)
 	}
