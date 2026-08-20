@@ -360,6 +360,8 @@ inside_namespace() {
   mount --make-rprivate /
   mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /var/lib
   mkdir -p /var/lib/cpak
+  # Keep cpak's nested rootless OverlayFS off Docker's overlay-backed root.
+  mount -t tmpfs -o mode=0700,nosuid,nodev tmpfs "$XDG_DATA_HOME"
   [[ -d "$phase5_bin_source" ]] || fail "executable staging directory is unavailable"
   mkdir -p "$phase5_bin_dir"
   mount -t tmpfs -o mode=0755,nosuid,nodev,exec tmpfs "$phase5_bin_dir"
