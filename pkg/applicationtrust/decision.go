@@ -238,7 +238,7 @@ func (r Result) Validate() error {
 	if err := r.Reputation.validate(); err != nil {
 		return fmt.Errorf("application trust reputation: %w", err)
 	}
-	if err := r.Policy.validate(r.Context); err != nil {
+	if err := r.Policy.validate(r.Context, r.DecisionSource); err != nil {
 		return fmt.Errorf("application trust policy: %w", err)
 	}
 	if err := r.Final.validate(); err != nil {
@@ -341,7 +341,7 @@ func (r Reputation) validate() error {
 	return reasonCode(r.ReasonCode)
 }
 
-func (p Policy) validate(context InvocationContext) error {
+func (p Policy) validate(context InvocationContext, source DecisionSource) error {
 	if !oneOf(p.SignatureMode, "optional", "required", "not-applicable") {
 		return errors.New("invalid signature mode")
 	}
@@ -359,7 +359,7 @@ func (p Policy) validate(context InvocationContext) error {
 		default:
 			return errors.New("warning has an invalid confirmation state")
 		}
-		if context == ContextNonInteractive && p.Confirmation != ConfirmationNotAvailable {
+		if context == ContextNonInteractive && p.Confirmation != ConfirmationNotAvailable && source != SourceRecorded {
 			return errors.New("non-interactive warning inferred confirmation")
 		}
 		if context != ContextNonInteractive && p.Confirmation == ConfirmationNotAvailable {
@@ -393,7 +393,8 @@ func validateResolution(result Result) error {
 			return errors.New("application trust resolution allows a non-allow policy")
 		}
 	case FinalWarn:
-		if policy.Action != PolicyWarn || policy.Confirmation != ConfirmationAccepted || context == ContextNonInteractive {
+		if policy.Action != PolicyWarn || policy.Confirmation != ConfirmationAccepted ||
+			(context == ContextNonInteractive && result.DecisionSource != SourceRecorded) {
 			return errors.New("application trust resolution warns without interactive confirmation")
 		}
 	case FinalDeny:

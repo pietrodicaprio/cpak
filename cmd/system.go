@@ -14,8 +14,10 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mirkobrombin/cpak/pkg/applicationtrust"
 	"github.com/mirkobrombin/cpak/pkg/cpak"
-	"github.com/mirkobrombin/cpak/pkg/signature"
+	"github.com/mirkobrombin/cpak/pkg/integrity"
+	"github.com/mirkobrombin/cpak/pkg/logger"
 	"github.com/mirkobrombin/cpak/pkg/systemauthority"
 	"github.com/mirkobrombin/cpak/pkg/tools"
 	"github.com/mirkobrombin/cpak/pkg/trustpolicy"
@@ -34,12 +36,19 @@ type SystemCmd struct {
 	Purpose     string `cli:"purpose" help:"Trust-root purpose: code-signing or timestamping"`
 	Fingerprint string `cli:"fingerprint" help:"Confirmed lowercase SHA-256 fingerprint or provider key id"`
 	Yes         bool   `cli:"yes,y" help:"Skip an interactive administration confirmation; requires the exact fingerprint"`
+	JSON        bool   `cli:"json,j" help:"Print a versioned decision for system explain"`
 
 	cli.Base
 }
 
 func (c *SystemCmd) Run() error {
 	action := strings.ToLower(c.Action)
+	if c.JSON {
+		if action != "explain" {
+			return errors.New("--json is supported only by system explain")
+		}
+		logger.MachineMode()
+	}
 	switch action {
 	case "status":
 		if systemauthority.Installed() {
@@ -399,11 +408,74 @@ func (c *SystemCmd) explain() error {
 	if err != nil {
 		return err
 	}
-	c.reportExplanation(explanation)
-	return nil
+	trust, err := cp.LaunchApplicationTrustResult(explanation, applicationtrust.OperationExplain, applicationtrust.ContextNonInteractive)
+	if err != nil {
+		return err
+	}
+	if c.JSON {
+		if err := writeExplainJSON(explanation, trust); err != nil {
+			return err
+		}
+	} else {
+		c.reportExplanation(explanation, trust)
+	}
+	return applicationTrustResultExit([]applicationtrust.Result{trust})
 }
 
-func (c *SystemCmd) reportExplanation(explanation cpak.LaunchExplanation) {
+type explainMachineOutput struct {
+	SchemaVersion int                       `json:"schema_version"`
+	Launch        explainLaunchMachineState `json:"launch"`
+	Trust         applicationtrust.Result   `json:"trust"`
+}
+
+type explainLaunchMachineState struct {
+	Origin        string                           `json:"origin"`
+	Version       string                           `json:"version,omitempty"`
+	Enforcement   systemauthority.EnforcementLevel `json:"enforcement"`
+	Enrolled      bool                             `json:"enrolled"`
+	Anchor        integrity.Anchor                 `json:"anchor"`
+	AnchorReason  string                           `json:"anchor_reason,omitempty"`
+	Verdict       string                           `json:"verdict"`
+	PackageRoot   string                           `json:"package_root,omitempty"`
+	PolicyRoot    string                           `json:"policy_root,omitempty"`
+	LaunchRoot    string                           `json:"launch_root,omitempty"`
+	Refusal       string                           `json:"refusal,omitempty"`
+	Disagreements []string                         `json:"disagreements,omitempty"`
+	Unmeasured    []string                         `json:"unmeasured,omitempty"`
+}
+
+func writeExplainJSON(explanation cpak.LaunchExplanation, trust applicationtrust.Result) error {
+	state := explainLaunchMachineState{
+		Origin: explanation.Origin, Version: explanation.Version, Enforcement: explanation.Enforcement,
+		Enrolled: explanation.Enrolled, Anchor: explanation.Anchor, Verdict: explanation.Identity.Verdict.String(),
+		PackageRoot: explanation.Identity.PackageRoot, PolicyRoot: explanation.Identity.PolicyRoot,
+		LaunchRoot:    explanation.Identity.LaunchRoot,
+		Disagreements: boundedDecisionDiagnostics(explanation.Identity.Disagreements),
+		Unmeasured:    boundedDecisionDiagnostics(explanation.Identity.Unmeasured),
+	}
+	if explanation.AnchorReason != nil {
+		state.AnchorReason = applicationtrust.SanitizeText(explanation.AnchorReason.Error(), 512)
+	}
+	if explanation.Refusal != nil {
+		state.Refusal = applicationtrust.SanitizeText(explanation.Refusal.Error(), 512)
+	}
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(explainMachineOutput{SchemaVersion: applicationtrust.SchemaVersion, Launch: state, Trust: trust})
+}
+
+func boundedDecisionDiagnostics(values []string) []string {
+	if len(values) > 32 {
+		values = values[:32]
+	}
+	bounded := make([]string, 0, len(values))
+	for _, value := range values {
+		bounded = append(bounded, applicationtrust.SanitizeText(value, 512))
+	}
+	return bounded
+}
+
+func (c *SystemCmd) reportExplanation(explanation cpak.LaunchExplanation, trust applicationtrust.Result) {
 	name := explanation.Origin
 	if explanation.Version != "" {
 		name += " " + explanation.Version
@@ -411,7 +483,7 @@ func (c *SystemCmd) reportExplanation(explanation cpak.LaunchExplanation) {
 	c.Logger.Info("%s", name)
 	c.Logger.Info("  Enforcement: %s", explanation.Enforcement)
 	c.reportLedgerSide(explanation)
-	c.reportPublisher(explanation.Origin)
+	reportApplicationTrustResult(c.Logger, trust)
 	c.Logger.Info("  What a launch derives from the store now")
 	c.reportRoots(explanation.Identity.LaunchRoot, explanation.Identity.PackageRoot, explanation.Identity.PolicyRoot)
 	c.Logger.Info("  Verdict: %s", explanation.Identity.Verdict)
@@ -428,49 +500,6 @@ func (c *SystemCmd) reportExplanation(explanation cpak.LaunchExplanation) {
 	}
 	c.Logger.Info("An anchor records the installation as it stood when it was written: it says the application has not changed since, and it does not say the store holds what the publisher shipped.")
 	c.Logger.Info("A publisher signature is the other half and a different claim: the manifest and the image that were installed came from the CI of the repository the package is published under. An application enrolled without one was taken on trust at the moment it was installed.")
-}
-
-// reportPublisher says who signed the installation the ledger holds, proven
-// again here and not read off the record.
-func (c *SystemCmd) reportPublisher(origin string) {
-	cp, err := cpak.NewCpak()
-	if err != nil {
-		c.Logger.Error("  Who published it could not be read: %v", err)
-		return
-	}
-	found := cp.RecordedSignatureOf(origin)
-	switch {
-	case !found.Enrolled:
-		return
-	case found.Verified:
-		publisher := found.Identity.Repo
-		if found.Publisher != nil {
-			publisher = found.Publisher.DisplayName
-			if publisher == "" {
-				publisher = found.Publisher.ID
-			}
-		}
-		c.Logger.Info("  Signed by %s, at the publisher generation %d", publisher, found.State.Generation)
-		if found.Verification.EvidenceKind == signature.EvidenceX509CMS {
-			c.Logger.Info("    X.509 identity: %s", found.Publisher.ID)
-			c.Logger.Info("    Trust root: %s", found.Verification.RootSource)
-			c.Logger.Info("    Signing time: %s; revocation: %s", found.Verification.SigningTime, found.Verification.Revocation)
-		}
-	case found.Unsigned():
-		c.Logger.Warning("  Unsigned: no publisher signature was recorded when it was enrolled")
-	default:
-		c.Logger.Error("  A publisher signature was recorded for it and no longer verifies: %v", found.Reason)
-	}
-	c.reportRecordedReputation(found)
-}
-
-func (c *SystemCmd) reportRecordedReputation(found cpak.RecordedSignature) {
-	if found.Reputation == nil || found.ReputationDecision == nil {
-		return
-	}
-	c.Logger.Info("    Reputation at enrolment: provider %s, status %s, reason %s, policy action %s (%s)",
-		found.Reputation.ProviderID, found.Reputation.Status, found.Reputation.ReasonCode,
-		found.ReputationDecision.Action, found.ReputationDecision.ReasonCode)
 }
 
 func (c *SystemCmd) reportLedgerSide(explanation cpak.LaunchExplanation) {

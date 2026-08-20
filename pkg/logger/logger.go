@@ -71,5 +71,12 @@ func Printf(format string, args ...interface{}) {
 // caller cannot tell which of cpak's lines are safe to receive and the answer
 // is none of them.
 func ProxyMode() {
+	MachineMode()
+}
+
+// MachineMode reserves stdout for one structured document. Progress and
+// diagnostics remain visible on stderr and therefore cannot corrupt JSON a
+// caller is parsing.
+func MachineMode() {
 	l = clilog.NewWriter(os.Stderr, os.Stderr)
 }

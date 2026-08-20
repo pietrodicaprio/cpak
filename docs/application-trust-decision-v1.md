@@ -99,6 +99,12 @@ The official actor adapter owns prompt collection. The portable decision core
 receives confirmation as a separate typed input; it never infers confirmation
 from a TTY, display, `--yes`, environment variable, timeout, or default value.
 
+A result with `decision_source=recorded` may report an accepted warning while
+the reader itself is non-interactive. That state is historical authority output:
+the record exists only because an earlier dedicated confirmation completed.
+It never authorizes a new install or update, and an evaluated non-interactive
+result remains unable to report `accepted`.
+
 For a privileged enrolment, the authority issues an opaque challenge only
 after recomputing a `warn` result. The challenge expires after five minutes, is
 single-use, and is bound to the exact user, origin, generation, launch root,
@@ -174,3 +180,19 @@ This is an intentional experimental-branch migration from the previous bare
 update array; consumers must select the envelope version before reading either
 member. JSON mode is non-interactive and never displays or answers a trust
 prompt.
+
+`audit --json` emits `schema_version`, the store-integrity report, anchor
+states, and one recorded trust result per origin. `system explain --json`
+emits `schema_version`, the bounded runtime-integrity explanation, and one
+recorded trust result combined with the current launch verdict. Machine mode
+reserves stdout for exactly one JSON document and routes progress and
+diagnostics to stderr.
+
+New authority records keep the verification result that the privileged
+verifier produced at enrolment. A launch, service start, audit decision, or
+explain decision can therefore consume the root-owned historical result and
+the runtime anchor without consulting the network or rerunning full PKI.
+The evidence remains in the record for an explicit present-day diagnostic;
+that diagnostic does not retroactively change the recorded launch decision.
+Legacy records without a historical verification result remain readable via
+the previous offline re-verification path.
