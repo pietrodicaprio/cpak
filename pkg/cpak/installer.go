@@ -168,6 +168,7 @@ func (c *Cpak) InstallCpakWithOptions(origin string, manifest *types.CpakManifes
 		// nobody but its own policy. Nothing here widens the other direction,
 		// since a dependency install of a package the user named leaves the
 		// record exactly as it found it.
+		promoted := false
 		if existingApp.PulledIn && !options.PulledIn {
 			existingApp.PulledIn = false
 			existingApp.PulledInBy = ""
@@ -180,9 +181,16 @@ func (c *Cpak) InstallCpakWithOptions(origin string, manifest *types.CpakManifes
 				}
 			}
 			logger.Printf("%s was already here as a dependency of another package and is now installed in its own right", manifest.Name)
-			return
+			promoted = true
 		}
-		logger.Printf("%s is already installed from %s; run an audit if it is not working as expected", manifest.Name, origin)
+		retried := c.retryExistingPublishedEnrolment(existingApp, manifest, options)
+		if !promoted {
+			if retried {
+				logger.Printf("%s is already installed from %s; its publisher enrolment was evaluated again", manifest.Name, origin)
+			} else {
+				logger.Printf("%s is already installed from %s; run an audit if it is not working as expected", manifest.Name, origin)
+			}
+		}
 		return
 	}
 
@@ -287,6 +295,30 @@ func (c *Cpak) InstallCpakWithOptions(origin string, manifest *types.CpakManifes
 	}
 
 	return nil
+}
+
+// retryExistingPublishedEnrolment is the recovery path for an installation
+// that reached the store but not the root-owned ledger. It accepts published
+// evidence only when the fetched manifest is byte-for-byte the identity that
+// was recorded for the installed application; a branch that moved since the
+// install cannot lend its new signature to the old bytes on disk.
+func (c *Cpak) retryExistingPublishedEnrolment(app types.Application, manifest *types.CpakManifest, options InstallOptions) bool {
+	_, held, _ := recordedAnchor(uint32(os.Getuid()), app.Origin)
+	if held {
+		return false
+	}
+	digest, err := manifestIdentityDigest(manifest)
+	if err != nil || app.ManifestDigest == "" || digest != app.ManifestDigest {
+		return false
+	}
+	enrolment := c.EnrolPublishedApplicationWithOptions(app, PublishedPackage{
+		Manifest: manifest,
+		Lock:     signedLock(app.Origin, options.ManifestLock),
+	}, options.Enrolment)
+	if options.OnEnrolment != nil {
+		options.OnEnrolment(enrolment)
+	}
+	return true
 }
 
 // refuseCpakStateGrants keeps an installation out of cpak's own tree. It runs

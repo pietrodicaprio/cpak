@@ -113,6 +113,15 @@ acceptance, cpak displays the new evidence and asks again. The previous answer
 is never carried across the changed authority challenge. Repeated changes are
 bounded and finish as `confirmation-required` rather than looping forever.
 
+An install that reached the store but not the authority ledger can be retried
+by repeating the same install command after trust roots, provider state, or
+authority availability are corrected. cpak reuses the fetched publisher
+evidence only when its validated manifest identity exactly matches the manifest
+identity recorded for the installed bytes. A branch or manifest that changed
+after installation cannot lend new evidence to the old installation, and an
+already-enrolled no-op install does not refresh reputation under the guise of
+recovery.
+
 A result with `decision_source=recorded` may report an accepted warning while
 the reader itself is non-interactive. That state is historical authority output:
 the record exists only because an earlier dedicated confirmation completed.

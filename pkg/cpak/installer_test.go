@@ -848,6 +848,76 @@ func TestInstallingADependencyByNameMakesItThePackageTheUserNamed(t *testing.T) 
 	}
 }
 
+func TestRepeatedInstallRetriesOnlyTheExactPublishedEnrolment(t *testing.T) {
+	cp := newSignatureCpak(t)
+	authority := useEnrolmentAuthority(t)
+	registry := newSignatureRegistry()
+	ref := registry.start(t)
+	publishImage(t, registry, "main")
+	manifest := newTestManifest()
+	manifest.Image = ref.ContextName() + ":main"
+
+	authority.refusal = errors.New("authority unavailable during the first install")
+	first := []ApplicationEnrolment{}
+	options := InstallOptions{CreateExports: true, ResolveImageRef: true, OnEnrolment: func(result ApplicationEnrolment) {
+		first = append(first, result)
+	}}
+	if err := cp.InstallCpakWithOptions(testOrigin, manifest, "main", "", "", options); err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 1 || first[0].Outcome != EnrolmentUnrecordable {
+		t.Fatalf("first enrolment = %+v", first)
+	}
+
+	authority.refusal = nil
+	retried := []ApplicationEnrolment{}
+	options.OnEnrolment = func(result ApplicationEnrolment) { retried = append(retried, result) }
+	if err := cp.InstallCpakWithOptions(testOrigin, manifest, "main", "", "", options); err != nil {
+		t.Fatal(err)
+	}
+	if len(retried) != 1 || retried[0].Outcome != EnrolmentRecorded {
+		t.Fatalf("retried enrolment = %+v", retried)
+	}
+
+	// Once an anchor exists, a no-op install does not refresh policy or
+	// reputation under the guise of recovery.
+	retried = nil
+	if err := cp.InstallCpakWithOptions(testOrigin, manifest, "main", "", "", options); err != nil {
+		t.Fatal(err)
+	}
+	if len(retried) != 0 {
+		t.Fatalf("recorded installation was re-enrolled: %+v", retried)
+	}
+}
+
+func TestRepeatedInstallCannotEnrolOldBytesWithAChangedManifest(t *testing.T) {
+	cp := newSignatureCpak(t)
+	authority := useEnrolmentAuthority(t)
+	registry := newSignatureRegistry()
+	ref := registry.start(t)
+	publishImage(t, registry, "main")
+	manifest := newTestManifest()
+	manifest.Image = ref.ContextName() + ":main"
+	authority.refusal = errors.New("authority unavailable during the first install")
+	if err := cp.InstallCpakWithOptions(testOrigin, manifest, "main", "", "", InstallOptions{CreateExports: true, ResolveImageRef: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	changed := *manifest
+	changed.Description = "publisher changed the manifest after the install"
+	authority.refusal = nil
+	results := []ApplicationEnrolment{}
+	if err := cp.InstallCpakWithOptions(testOrigin, &changed, "main", "", "", InstallOptions{
+		CreateExports: true, ResolveImageRef: true,
+		OnEnrolment: func(result ApplicationEnrolment) { results = append(results, result) },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 || authority.recorded != 1 {
+		t.Fatalf("changed published state was offered for recovery: results=%+v record attempts=%d", results, authority.recorded)
+	}
+}
+
 // An installation writes two answers about a dependency one line apart in the
 // same record, and either of them can be lost while the other still passes: the
 // grants of a v1 package are stored in the form the rest of cpak reads, and
