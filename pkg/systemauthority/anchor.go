@@ -878,7 +878,10 @@ func validateRecordedVerification(enrolment Enrolment) error {
 	}
 	result := enrolment.Verification
 	digest, err := enrolment.Signature.State.Digest()
-	if err != nil || result.StateDigest != digest || result.EvidenceKind != enrolment.Signature.Kind {
+	// Legacy SignedState records leave Kind empty and normalize to Sigstore in
+	// Evidence(). Compare the verifier result with that normalized envelope,
+	// not with the compatibility field as it happened to be stored.
+	if err != nil || result.StateDigest != digest || result.EvidenceKind != enrolment.Signature.Evidence().Kind {
 		return errors.New("recorded verification does not describe the signed state")
 	}
 	if result.Cryptographic != signature.CryptographicVerified || result.Publisher == nil || result.Publisher.ID == "" ||

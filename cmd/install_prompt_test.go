@@ -41,10 +41,14 @@ func TestInstallTrustOutcomeUsesStableExitCodes(t *testing.T) {
 		"declined":              {cpak.EnrolmentDeclined, applicationtrust.ContextInteractiveTerminal, applicationtrust.ExitDenied},
 	} {
 		t.Run(name, func(t *testing.T) {
-			results, resultErr := applicationTrustResults(applicationtrust.OperationInstall, test.context, []cpak.ApplicationEnrolment{{
+			enrolment := cpak.ApplicationEnrolment{
 				Origin: "github.com/user/demo", Outcome: test.outcome,
 				Signature: cpak.EnrolmentSignature{Reason: cpak.ErrPackageUnsigned},
-			}})
+			}
+			if test.outcome == cpak.EnrolmentDeclined {
+				enrolment.Confirmation = applicationtrust.ConfirmationDeclined
+			}
+			results, resultErr := applicationTrustResults(applicationtrust.OperationInstall, test.context, []cpak.ApplicationEnrolment{enrolment})
 			if resultErr != nil {
 				t.Fatal(resultErr)
 			}
