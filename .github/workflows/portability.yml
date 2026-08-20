@@ -126,6 +126,6 @@ jobs:
               install -d -o phase5 -g phase5 /opt/cpak-phase5-build
               printf "phase5 ALL=(root) NOPASSWD: /usr/bin/unshare *\n" >/etc/sudoers.d/phase5
               chmod 0440 /etc/sudoers.d/phase5
-              runuser -u phase5 -- env CPAK_PHASE5_EXEC_ROOT=/opt/cpak-phase5-build \
+              runuser -u phase5 -- env GOFLAGS=-buildvcs=false CPAK_PHASE5_EXEC_ROOT=/opt/cpak-phase5-build \
                 ./hack/application-trust-phase5/run-linux.sh --sudo-namespace
             '
