@@ -338,6 +338,7 @@ inside_namespace() {
   phase5_bin_dir="/opt/cpak-phase5"
   cleanup_uid="${4:-}"
   cleanup_gid="${5:-}"
+  local phase5_data_root="${6:-$phase5_dir/home/.local/share}"
   unset SUDO_UID SUDO_GID SUDO_USER
   fixture_pid=""
   cleanup_namespace() {
@@ -352,7 +353,7 @@ inside_namespace() {
   trap cleanup_namespace EXIT
   export HOME="$phase5_dir/home"
   export XDG_CONFIG_HOME="$HOME/.config"
-  export XDG_DATA_HOME="$HOME/.local/share"
+  export XDG_DATA_HOME="$phase5_data_root"
   export XDG_STATE_HOME="$HOME/.local/state"
   unset DISPLAY WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS
 
@@ -360,8 +361,6 @@ inside_namespace() {
   mount --make-rprivate /
   mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /var/lib
   mkdir -p /var/lib/cpak
-  # Keep cpak's nested rootless OverlayFS off Docker's overlay-backed root.
-  mount -t tmpfs -o mode=0700,nosuid,nodev tmpfs "$XDG_DATA_HOME"
   [[ -d "$phase5_bin_source" ]] || fail "executable staging directory is unavailable"
   mkdir -p "$phase5_bin_dir"
   mount -t tmpfs -o mode=0755,nosuid,nodev,exec tmpfs "$phase5_bin_dir"
@@ -479,9 +478,12 @@ exec_root="${exec_root%/}"
 [[ "$exec_root" == /* ]] || fail "CPAK_PHASE5_EXEC_ROOT must be absolute"
 phase5_bin_dir="$(mktemp -d "$exec_root/.cpak-phase5-bin.XXXXXXXX")"
 [[ "$phase5_bin_dir" == "$exec_root/.cpak-phase5-bin."* ]] || fail "unsafe executable directory"
+phase5_data_root="${CPAK_PHASE5_DATA_ROOT:-$phase5_dir/home/.local/share}"
+[[ "$phase5_data_root" == /* ]] || fail "CPAK_PHASE5_DATA_ROOT must be absolute"
 trap 'rm -rf -- "$phase5_dir" "$phase5_bin_dir"' EXIT
 chmod 0700 "$phase5_dir"
 chmod 0755 "$phase5_bin_dir"
+mkdir -p "$phase5_data_root"
 
 cd "$repo_dir"
 go test -race ./...
@@ -539,14 +541,14 @@ if [[ "$namespace_mode" == "--sudo-namespace" ]]; then
   owner_uid="$(id -u)"
   owner_gid="$(id -g)"
   sudo --non-interactive unshare --mount --pid --fork --mount-proc \
-    "$0" --inside-namespace "$phase5_dir" "$phase5_bin_dir" "$owner_uid" "$owner_gid"
+    "$0" --inside-namespace "$phase5_dir" "$phase5_bin_dir" "$owner_uid" "$owner_gid" "$phase5_data_root"
 elif [[ "$namespace_mode" == "--root-namespace" ]]; then
   [[ "$(id -u)" -eq 0 ]] || fail "--root-namespace requires an already-root disposable environment"
   unshare --mount --pid --fork --mount-proc \
-    "$0" --inside-namespace "$phase5_dir" "$phase5_bin_dir" 0 0
+    "$0" --inside-namespace "$phase5_dir" "$phase5_bin_dir" 0 0 "$phase5_data_root"
 else
   unshare --user --map-root-user --mount --pid --fork --mount-proc \
-    "$0" --inside-namespace "$phase5_dir" "$phase5_bin_dir"
+    "$0" --inside-namespace "$phase5_dir" "$phase5_bin_dir" "" "" "$phase5_data_root"
 fi
 
 printf 'phase5: Linux core and isolated administrator harness passed\n'
