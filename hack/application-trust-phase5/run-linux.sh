@@ -59,7 +59,15 @@ expected_status = int(sys.argv[1])
 expected_action = sys.argv[2]
 expected_context = sys.argv[3]
 expected_operation = sys.argv[4]
-document = json.loads(pathlib.Path(sys.argv[5]).read_text(encoding="utf-8"))
+output = pathlib.Path(sys.argv[5])
+try:
+    document = json.loads(output.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError) as error:
+    stderr = output.with_suffix(".err")
+    detail = stderr.read_text(encoding="utf-8", errors="replace")[-4000:] if stderr.exists() else ""
+    raise SystemExit(
+        f"trust envelope unavailable: process={sys.argv[6]}, error={error}; stderr tail={detail!r}"
+    ) from error
 actual_status = int(sys.argv[6])
 
 if document.get("schema_version") != 1:
