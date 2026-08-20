@@ -709,7 +709,21 @@ ASN.1 and JSON parsers reject trailing values. JSON authority formats reject
 unknown fields and duplicate keys. Private keys, passphrases, PINs, tokens, and
 credentials are never ledger fields, CLI arguments, logs, or fixtures.
 
-## 15. References and provenance
+## 15. Portable decision result
+
+Phase 5 uses the normative portable result in
+`docs/application-trust-decision-v1.md` and its machine-readable JSON Schema at
+`schema/application-trust-decision-v1.json`. cpak storage, manifest, policy,
+logger, and privilege-transport types are not part of that contract.
+
+The result keeps verification, publisher identity, trust-root provenance,
+reputation, policy, confirmation, and final action in separate required stages.
+Only the final stage selects the stable exit code. Invocation context may
+complete an interactive warning but cannot create trust, convert `--yes` into
+consent, or override invalid, revoked, blocked, unavailable, or administrator-
+denied input.
+
+## 16. References and provenance
 
 - RFC 5280, Internet X.509 PKI Certificate and CRL Profile:
   <https://datatracker.ietf.org/doc/html/rfc5280>
