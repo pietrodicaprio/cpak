@@ -213,13 +213,20 @@ func TestAuthorityRecordsAWarningOnlyAfterTheExactSingleUseConfirmation(t *testi
 
 func TestPublisherChangeCannotBorrowThePreviousIdentityOrReputation(t *testing.T) {
 	origin := testAnchor().Origin
-	firstIdentity := testSignatureIdentity(origin)
-	secondIdentity := firstIdentity
-	secondIdentity.Subject = "https://" + origin + "/.github/workflows/rotated-release.yml@refs/heads/main"
-	firstPublisher, _ := signature.NormalizeOIDCIdentity(firstIdentity)
-	secondPublisher, _ := signature.NormalizeOIDCIdentity(secondIdentity)
-	if firstPublisher == nil || secondPublisher == nil || firstPublisher.ID == secondPublisher.ID {
-		t.Fatalf("test publisher identities did not produce a visible change: first=%+v second=%+v", firstPublisher, secondPublisher)
+	firstPublisher := &signature.PublisherIdentity{
+		Kind: "x509-spki-v1", ID: "x509-spki-sha256:1111111111111111111111111111111111111111111111111111111111111111",
+		DisplayName: "Publisher before rotation", Assurance: "certificate-chain",
+	}
+	secondPublisher := &signature.PublisherIdentity{
+		Kind: "x509-spki-v1", ID: "x509-spki-sha256:2222222222222222222222222222222222222222222222222222222222222222",
+		DisplayName: "Publisher after rotation", Assurance: "certificate-chain",
+	}
+	x509State := func(generation uint64) *SignedState {
+		signed := testSignedState(generation)
+		signed.ABI = signature.EvidenceABIVersion
+		signed.Kind = signature.EvidenceX509CMS
+		signed.MediaType = signature.X509CMSMediaType
+		return signed
 	}
 
 	for _, test := range []struct {
@@ -243,13 +250,24 @@ func TestPublisherChangeCannotBorrowThePreviousIdentityOrReputation(t *testing.T
 			if err := (TrustStore{Directory: ledger.Directory, OwnerUID: ledger.OwnerUID}).Set(policy); err != nil {
 				t.Fatal(err)
 			}
-			useBundleVerifier(t, func(_ []byte, state signature.State) (signature.Verified, error) {
-				identity := firstIdentity
-				if state.Generation == 2 {
-					identity = secondIdentity
+			savedVerifier := verifyEvidence
+			t.Cleanup(func() { verifyEvidence = savedVerifier })
+			verifyEvidence = func(evidence signature.SignatureEvidence, _ signature.TrustMaterial, _ time.Time) (signature.VerificationResult, error) {
+				publisher := firstPublisher
+				if evidence.State.Generation == 2 {
+					publisher = secondPublisher
 				}
-				return signature.Verified{State: state, Identity: identity}, nil
-			})
+				digest, err := evidence.State.Digest()
+				if err != nil {
+					return signature.VerificationResult{}, err
+				}
+				return signature.VerificationResult{
+					EvidenceKind: evidence.Kind, StateDigest: digest, Cryptographic: signature.CryptographicVerified,
+					Chain: signature.ChainTrustedLocal, RootSource: "local:phase5-rotation",
+					SigningTime: signature.SigningTimeCurrent, Revocation: signature.RevocationGood,
+					Publisher: publisher, OriginAuthorization: string(signature.OriginAuthorized), ReasonCode: "evidence-verified",
+				}, nil
+			}
 			ledger.Now = func() time.Time { return reputationNow }
 			lookups := []string{}
 			ledger.ReputationLookup = func(publisherID string, _ time.Time) (reputation.Result, error) {
@@ -261,13 +279,13 @@ func TestPublisherChangeCannotBorrowThePreviousIdentityOrReputation(t *testing.T
 				return authorityReputationResult(publisherID, status), nil
 			}
 
-			first := Enrolment{Anchor: testAnchor(), Signature: testSignedState(1)}
+			first := Enrolment{Anchor: testAnchor(), Signature: x509State(1)}
 			if err := ledger.Record(first); err != nil {
 				t.Fatalf("first publisher enrolment failed: %v", err)
 			}
 			second := first
 			second.Generation++
-			second.Signature = testSignedState(2)
+			second.Signature = x509State(2)
 			err := ledger.Record(second)
 
 			if !test.wantReputationHit {
