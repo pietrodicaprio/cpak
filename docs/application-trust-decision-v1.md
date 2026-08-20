@@ -122,6 +122,13 @@ after installation cannot lend new evidence to the old installation, and an
 already-enrolled no-op install does not refresh reputation under the guise of
 recovery.
 
+Install and update records persist the validated manifest identity beside the
+resolved image identity. Even an update whose runtime composition is otherwise
+unchanged refreshes that manifest identity before enrolment. Evidence attached
+to changed bytes but describing the previous manifest is invalid; the update
+may remain installed, but it is not enrolled and the previous anchor cannot
+authorize its launch.
+
 A result with `decision_source=recorded` may report an accepted warning while
 the reader itself is non-interactive. That state is historical authority output:
 the record exists only because an earlier dedicated confirmation completed.

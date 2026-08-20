@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/mirkobrombin/cpak/pkg/signature"
 	"github.com/mirkobrombin/cpak/pkg/systemauthority"
 	"github.com/mirkobrombin/cpak/pkg/types"
 )
@@ -219,6 +220,13 @@ func TestUpdateBranchInstallRefreshesRecord(t *testing.T) {
 	if apps[0].ImageDigest != "sha256:1111111111111111111111111111111111111111111111111111111111111111" {
 		t.Fatalf("expected the resolved image digest, got %q", apps[0].ImageDigest)
 	}
+	wantManifestDigest, err := manifestIdentityDigest(stub.manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if apps[0].ManifestDigest != wantManifestDigest {
+		t.Fatalf("stored manifest digest = %q, want %q", apps[0].ManifestDigest, wantManifestDigest)
+	}
 }
 
 func TestUpdateBranchInstallUpToDate(t *testing.T) {
@@ -245,6 +253,88 @@ func TestUpdateBranchInstallUpToDate(t *testing.T) {
 	}
 	if stub.exported != 1 || stub.stopped != 0 {
 		t.Fatalf("expected refreshed exports without a restart, got %d exports and %d stops", stub.exported, stub.stopped)
+	}
+	apps := storedApplications(t, c)
+	wantManifestDigest, err := manifestIdentityDigest(stub.manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(apps) != 1 || apps[0].ManifestDigest != wantManifestDigest {
+		t.Fatalf("up-to-date update did not persist manifest identity: %+v", apps)
+	}
+}
+
+func TestUpdateWithStaleEvidenceCannotInheritTheOldTrustedState(t *testing.T) {
+	cp := newSignatureCpak(t)
+	useEnrolmentAuthority(t)
+	useEnforcement(t, systemauthority.EnforcementRefuse)
+	registry := newSignatureRegistry()
+	ref := registry.start(t)
+	oldDigest := contentDigest([]byte("old installed image"))
+	newDigest := contentDigest([]byte("new updated image"))
+	oldBundle := []byte(`{"bundle":"old state"}`)
+	staleBundle := []byte(`{"bundle":"stale state attached to the update"}`)
+	attachSigned(t, registry, oldDigest, 1, oldBundle)
+	attachSigned(t, registry, newDigest, 2, staleBundle)
+
+	oldManifest := newTestManifest()
+	oldManifest.Image = ref.ContextName() + ":main"
+	if err := cp.ValidateManifest(oldManifest); err != nil {
+		t.Fatal(err)
+	}
+	oldState, err := PackageState(testOrigin, oldManifest, oldDigest, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldState.Generation = 1
+	useSignatureVerifier(t, func(bundle []byte, state signature.State) (signature.Verified, error) {
+		if string(bundle) != string(oldBundle) || state != oldState {
+			return signature.Verified{}, errors.New("evidence describes the state before the update")
+		}
+		return signature.Verified{State: state, Identity: publisherIdentity(testOrigin)}, nil
+	})
+
+	app := enrolledApplication(t, cp)
+	app.CpakId = testCpakId("branch", "main")
+	app.Version = "main"
+	app.Branch = "main"
+	app.Image = oldManifest.Image
+	app.ImageDigest = oldDigest
+	app.ManifestDigest, err = manifestIdentityDigest(oldManifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedApplication(t, cp, app)
+	first := cp.EnrolPublishedApplicationWithOptions(app, PublishedPackage{Manifest: oldManifest}, EnrolmentOptions{})
+	if first.Outcome != EnrolmentRecorded {
+		t.Fatalf("old state was not enrolled: %+v", first)
+	}
+
+	updatedManifest := *oldManifest
+	updatedManifest.Description = "the publisher changed the manifest"
+	stub := &updateStub{
+		manifest: &updatedManifest, layers: app.ParsedLayers, config: app.Config,
+		imageDigest: newDigest,
+	}
+	enrolments := []ApplicationEnrolment{}
+	results, err := cp.updateWithOptions(testOrigin, stub.deps(), UpdateOptions{
+		OnEnrolment: func(result ApplicationEnrolment) { enrolments = append(enrolments, result) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Status != types.UpdateStatusUpdated {
+		t.Fatalf("update results = %+v", results)
+	}
+	if len(enrolments) != 1 || enrolments[0].Outcome != EnrolmentUnrecordable || !errors.Is(enrolments[0].Signature.Reason, ErrSignatureUnverified) {
+		t.Fatalf("stale evidence enrolment = %+v", enrolments)
+	}
+	stored := storedApplications(t, cp)
+	if len(stored) != 1 || stored[0].ImageDigest != newDigest {
+		t.Fatalf("updated installation = %+v", stored)
+	}
+	if _, gateErr := cp.gateLaunch(stored[0], resolvedOverride(stored[0]), nil, nil); !errors.Is(gateErr, errLaunchUnrecognised) {
+		t.Fatalf("updated bytes inherited the old anchor: %v", gateErr)
 	}
 }
 
