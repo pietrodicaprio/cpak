@@ -115,4 +115,4 @@ jobs:
       - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417
         with:
           go-version-file: go.mod
-      - run: ./hack/application-trust-phase5/run-linux.sh
+      - run: ./hack/application-trust-phase5/run-linux.sh --sudo-namespace
