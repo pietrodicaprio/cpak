@@ -16,17 +16,33 @@ func HumanLines(result Result) []string {
 	publisherID := presentationText(result.Publisher.ID, "not-provided", 512)
 	return []string{
 		fmt.Sprintf("Application trust for %s: %s (%s).",
-			presentationText(result.Subject.Origin, "unknown-origin", 512), result.Final.Action, result.Final.ReasonCode),
-		fmt.Sprintf("  Publisher: %s; identity: %s (%s); verification: %s/%s (%s); origin: %s.",
-			publisher, publisherID, result.Publisher.ReasonCode, result.Verification.Status,
-			result.Verification.EvidenceKind, result.Verification.ReasonCode, result.Publisher.OriginAuthorization),
+			presentationText(result.Subject.Origin, "unknown-origin", 512),
+			presentationToken(string(result.Final.Action), "invalid-action"),
+			presentationToken(result.Final.ReasonCode, "missing-reason")),
+		fmt.Sprintf("  Publisher: %s; identity: %s (%s); origin: %s.",
+			publisher, publisherID, presentationToken(result.Publisher.ReasonCode, "missing-reason"),
+			presentationToken(result.Publisher.OriginAuthorization, "not-evaluated")),
+		fmt.Sprintf("  Evidence: %s/%s (%s).",
+			presentationToken(string(result.Verification.Status), "invalid-status"),
+			presentationToken(result.Verification.EvidenceKind, "unknown"),
+			presentationToken(result.Verification.ReasonCode, "missing-reason")),
 		fmt.Sprintf("  Trust: chain %s, root %s, signing time %s, revocation %s (%s).",
-			result.Trust.Chain, presentationText(result.Trust.RootSource, "not-applicable", 512),
-			result.Trust.SigningTime, result.Trust.Revocation, result.Trust.ReasonCode),
-		fmt.Sprintf("  Reputation: provider %s, status %s, freshness %s (%s); policy: signatures %s, reputation %s, action %s, confirmation %s (%s).",
-			presentationText(result.Reputation.ProviderID, "not-consulted", 512), result.Reputation.Status,
-			result.Reputation.Freshness, result.Reputation.ReasonCode, result.Policy.SignatureMode,
-			result.Policy.ReputationMode, result.Policy.Action, result.Policy.Confirmation, result.Policy.ReasonCode),
+			presentationToken(result.Trust.Chain, "not-evaluated"),
+			presentationText(result.Trust.RootSource, "not-applicable", 512),
+			presentationToken(result.Trust.SigningTime, "not-evaluated"),
+			presentationToken(result.Trust.Revocation, "not-evaluated"),
+			presentationToken(result.Trust.ReasonCode, "missing-reason")),
+		fmt.Sprintf("  Reputation: provider %s, status %s, freshness %s (%s).",
+			presentationText(result.Reputation.ProviderID, "not-consulted", 128),
+			presentationToken(result.Reputation.Status, "not-consulted"),
+			presentationToken(result.Reputation.Freshness, "not-applicable"),
+			presentationToken(result.Reputation.ReasonCode, "missing-reason")),
+		fmt.Sprintf("  Policy: signatures %s, reputation %s, action %s, confirmation %s (%s).",
+			presentationToken(result.Policy.SignatureMode, "not-evaluated"),
+			presentationToken(result.Policy.ReputationMode, "not-evaluated"),
+			presentationToken(string(result.Policy.Action), "not-evaluated"),
+			presentationToken(string(result.Policy.Confirmation), "not-evaluated"),
+			presentationToken(result.Policy.ReasonCode, "missing-reason")),
 	}
 }
 
@@ -36,4 +52,8 @@ func presentationText(value, fallback string, limit int) string {
 		return fallback
 	}
 	return value
+}
+
+func presentationToken(value, fallback string) string {
+	return presentationText(value, fallback, 64)
 }

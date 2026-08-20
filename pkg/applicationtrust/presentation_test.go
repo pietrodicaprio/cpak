@@ -39,8 +39,28 @@ func TestHumanLinesBoundAndRemoveControlsFromPresentationFields(t *testing.T) {
 	tainted := strings.Repeat("publisher", 100) + "\x00\x1b[2J"
 	result.Subject.Origin = tainted
 	result.Publisher.DisplayName = tainted
+	result.Publisher.ID = tainted
+	result.Publisher.ReasonCode = tainted
+	result.Publisher.OriginAuthorization = tainted
+	result.Verification.Status = VerificationStatus(tainted)
+	result.Verification.EvidenceKind = tainted
+	result.Verification.ReasonCode = tainted
+	result.Trust.Chain = tainted
 	result.Trust.RootSource = tainted
+	result.Trust.SigningTime = tainted
+	result.Trust.Revocation = tainted
+	result.Trust.ReasonCode = tainted
 	result.Reputation.ProviderID = tainted
+	result.Reputation.Status = tainted
+	result.Reputation.Freshness = tainted
+	result.Reputation.ReasonCode = tainted
+	result.Policy.SignatureMode = tainted
+	result.Policy.ReputationMode = tainted
+	result.Policy.Action = PolicyAction(tainted)
+	result.Policy.Confirmation = ConfirmationState(tainted)
+	result.Policy.ReasonCode = tainted
+	result.Final.Action = FinalAction(tainted)
+	result.Final.ReasonCode = tainted
 	output := strings.Join(HumanLines(result), "\n")
 	if strings.ContainsAny(output, "\x00\x1b") {
 		t.Fatalf("human decision contains terminal controls: %q", output)
@@ -49,6 +69,21 @@ func TestHumanLinesBoundAndRemoveControlsFromPresentationFields(t *testing.T) {
 		if len([]byte(line)) > 900 {
 			t.Fatalf("human decision line is unbounded: %d bytes", len([]byte(line)))
 		}
+	}
+}
+
+func TestHumanLinesHaveAStableCompleteProjection(t *testing.T) {
+	result := validResult(t)
+	want := strings.Join([]string{
+		"Application trust for registry.example/org/application: warn (publisher-unknown).",
+		"  Publisher: Example Publisher; identity: x509-spki-v1:sha256:0123456789abcdef (publisher-verified); origin: authorized.",
+		"  Evidence: verified/x509-cms-v1 (verified).",
+		"  Trust: chain trusted-local, root local:sha256:0123456789abcdef, signing time timestamped, revocation good (chain-trusted).",
+		"  Reputation: provider poc-provider, status unknown, freshness fresh (publisher-not-listed).",
+		"  Policy: signatures required, reputation warn, action warn, confirmation accepted (publisher-unknown).",
+	}, "\n")
+	if got := strings.Join(HumanLines(result), "\n"); got != want {
+		t.Fatalf("human projection changed:\n--- got ---\n%s\n--- want ---\n%s", got, want)
 	}
 }
 
