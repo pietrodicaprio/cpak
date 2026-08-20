@@ -100,7 +100,7 @@ func TestSignedEnrolmentAlsoRetriesPastAStaleAuthority(t *testing.T) {
 		}
 		return nil
 	}
-	if err := dispatchSignedEnrolment(Enrolment{}); err != nil {
+	if err := dispatchSignedEnrolment(Enrolment{}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if attempts != 2 {
@@ -132,7 +132,7 @@ func TestNothingElseIsRetried(t *testing.T) {
 func TestEveryServedMethodChecksForStaleness(t *testing.T) {
 	guarded := map[string]bool{
 		"RegisterSession": true, "RemoveSession": true, "EnrolAnchor": true,
-		"EnrolSignedAnchor": true, "SetEnforcement": true, "ForgetAnchor": true,
+		"EnrolSignedAnchor": true, "EnrolSignedAnchorConfirmed": true, "SetEnforcement": true, "ForgetAnchor": true,
 		"ClearForgottenAnchor": true,
 		"SetTrustPolicy":       true, "SetSignaturePolicy": true,
 	}

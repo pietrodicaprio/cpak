@@ -92,6 +92,7 @@ const (
 var anchorRootPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 var enrolSignedOverBus = signedEnrolmentOverBus
+var enrolSignedConfirmedOverBus = signedConfirmedEnrolmentOverBus
 
 // ErrAnchorDowngrade reports an enrolment that would put an application back to
 // a generation it already left. The caller has to tell it from a failure,
@@ -274,16 +275,17 @@ func (s SignedState) Signer(origin string) (signature.Verified, error) {
 // reads it and only the authority writes it, so a reader proves the file was
 // produced by the owner before it believes a single field of it.
 type AnchorLedger struct {
-	Directory        string
-	OwnerUID         uint32
-	ReputationLookup func(string, time.Time) (reputation.Result, error)
-	Now              func() time.Time
+	Directory               string
+	OwnerUID                uint32
+	ReputationLookup        func(string, time.Time) (reputation.Result, error)
+	ReputationConfirmations *reputationConfirmationStore
+	Now                     func() time.Time
 }
 
 var _ integrity.AnchorWriter = AnchorLedger{}
 
 func DefaultAnchorLedger() AnchorLedger {
-	return AnchorLedger{Directory: DefaultAnchorDirectory, OwnerUID: 0}
+	return AnchorLedger{Directory: DefaultAnchorDirectory, OwnerUID: 0, ReputationConfirmations: defaultReputationConfirmations}
 }
 
 func (l AnchorLedger) Load(uid uint32, origin string) (integrity.Anchor, bool, error) {
@@ -339,6 +341,17 @@ func (l AnchorLedger) Store(anchor integrity.Anchor) error {
 // next enrolment can be ordered against this one instead of being put to the
 // owner because two hashes differ.
 func (l AnchorLedger) Record(enrolment Enrolment) error {
+	return l.record(enrolment, "")
+}
+
+// RecordConfirmed retries an enrolment after a dedicated interactive trust
+// prompt accepted a reputation warning. Every fact and policy is evaluated
+// again here; confirmation cannot carry or replace a prior verdict.
+func (l AnchorLedger) RecordConfirmed(enrolment Enrolment, confirmation string) error {
+	return l.record(enrolment, confirmation)
+}
+
+func (l AnchorLedger) record(enrolment Enrolment, reputationConfirmation string) error {
 	// Reputation is authority output. A caller may carry an old record or put
 	// arbitrary values on the wire; neither gets to select the new decision.
 	enrolment.Reputation = nil
@@ -349,7 +362,7 @@ func (l AnchorLedger) Record(enrolment Enrolment) error {
 	if err := l.admitSignature(enrolment); err != nil {
 		return err
 	}
-	if err := l.admitTrust(&enrolment); err != nil {
+	if err := l.admitTrust(&enrolment, reputationConfirmation); err != nil {
 		return err
 	}
 	if err := validateEnrolment(enrolment); err != nil {
@@ -949,7 +962,24 @@ func EnrolAnchorWithSignature(anchor integrity.Anchor, policy *types.Override, s
 		// no second copy of the origin that could disagree with it.
 		return dispatchIntegrity(socketRequest{Action: anchorEnrolAction, Anchor: &anchor, Policy: policy})
 	}
-	return dispatchSignedEnrolment(enrolment)
+	return dispatchSignedEnrolment(enrolment, "")
+}
+
+// EnrolAnchorWithSignatureConfirmed retries the exact signed enrolment with a
+// single-use challenge issued by the authority after a reputation warning.
+// The authority consumes the challenge and recomputes every trust fact.
+func EnrolAnchorWithSignatureConfirmed(anchor integrity.Anchor, policy *types.Override, signed *SignedState, confirmation string) error {
+	if signed == nil {
+		return errors.New("reputation confirmation requires signed evidence")
+	}
+	enrolment := Enrolment{Anchor: anchor, Policy: policy, Signature: signed}
+	if err := validateEnrolment(enrolment); err != nil {
+		return err
+	}
+	if confirmation == "" || len(confirmation) > 64 {
+		return errors.New("invalid reputation confirmation")
+	}
+	return dispatchSignedEnrolment(enrolment, confirmation)
 }
 
 // dispatchSignedEnrolment walks the transports a signature can travel. There
@@ -961,11 +991,19 @@ func EnrolAnchorWithSignature(anchor integrity.Anchor, policy *types.Override, s
 // as unsigned, which is the one downgrade this whole design exists to make
 // impossible. A host with no system bus is a host where this is recorded by
 // root, and the caller is told so.
-func dispatchSignedEnrolment(enrolment Enrolment) error {
+func dispatchSignedEnrolment(enrolment Enrolment, confirmation string) error {
 	if os.Geteuid() == 0 {
-		return asRefusal(DefaultAnchorLedger().Record(enrolment))
+		ledger := DefaultAnchorLedger()
+		if confirmation != "" {
+			return asRefusal(ledger.RecordConfirmed(enrolment, confirmation))
+		}
+		return asRefusal(ledger.Record(enrolment))
 	}
-	err := retryPastStale(func() error { return enrolSignedOverBus(enrolment) })
+	request := enrolSignedOverBus
+	if confirmation != "" {
+		request = func(enrolment Enrolment) error { return enrolSignedConfirmedOverBus(enrolment, confirmation) }
+	}
+	err := retryPastStale(func() error { return request(enrolment) })
 	if errors.Is(err, errTransportUnavailable) {
 		return ErrNoAuthority
 	}
@@ -973,6 +1011,14 @@ func dispatchSignedEnrolment(enrolment Enrolment) error {
 }
 
 func signedEnrolmentOverBus(enrolment Enrolment) error {
+	return signedEnrolmentRequestOverBus(enrolment, "")
+}
+
+func signedConfirmedEnrolmentOverBus(enrolment Enrolment, confirmation string) error {
+	return signedEnrolmentRequestOverBus(enrolment, confirmation)
+}
+
+func signedEnrolmentRequestOverBus(enrolment Enrolment, confirmation string) error {
 	connection, err := dbus.ConnectSystemBus()
 	if err != nil {
 		return errTransportUnavailable
@@ -987,18 +1033,59 @@ func signedEnrolmentOverBus(enrolment Enrolment) error {
 		return err
 	}
 	anchor := enrolment.Anchor
-	call := connection.Object(BusName, ObjectPath).Call(InterfaceName+".EnrolSignedAnchor", 0,
+	method := InterfaceName + ".EnrolSignedAnchor"
+	arguments := []any{
 		int32(anchor.ABI), anchor.UID, anchor.Origin, anchor.Generation,
 		anchor.ImageDigest, anchor.ManifestDigest,
 		anchor.PackageRoot, anchor.PolicyRoot, anchor.LaunchRoot, policy,
-		state, bundle)
+		state, bundle,
+	}
+	if confirmation != "" {
+		method = InterfaceName + ".EnrolSignedAnchorConfirmed"
+		arguments = append(arguments, confirmation)
+	}
+	call := connection.Object(BusName, ObjectPath).Call(method, 0, arguments...)
 	if call.Err == nil {
 		return nil
+	}
+	if confirmationErr := decodeReputationConfirmationError(call.Err); confirmationErr != nil {
+		return confirmationErr
 	}
 	if unreachableOnBus(call.Err) {
 		return errTransportUnavailable
 	}
 	return fmt.Errorf("%s: %w", integritySubject(anchorEnrolAction), call.Err)
+}
+
+func decodeReputationConfirmationError(err error) error {
+	var busErr *dbus.Error
+	if !errors.As(err, &busErr) || busErr.Name != reputationConfirmationErrorName || len(busErr.Body) != 2 {
+		return nil
+	}
+	token, tokenOK := busErr.Body[0].(string)
+	document, documentOK := busErr.Body[1].(string)
+	if !tokenOK || !documentOK || token == "" || len(token) > 64 || len(document) > 4096 {
+		return errors.New("system authority returned an invalid reputation confirmation")
+	}
+	if err := signature.RejectDuplicateJSONKeys([]byte(document)); err != nil {
+		return errors.New("system authority returned an invalid reputation confirmation")
+	}
+	decoder := json.NewDecoder(strings.NewReader(document))
+	decoder.DisallowUnknownFields()
+	wire := reputationConfirmationWire{}
+	if err := decoder.Decode(&wire); err != nil {
+		return errors.New("system authority returned an invalid reputation confirmation")
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return errors.New("system authority returned an invalid reputation confirmation")
+	}
+	if err := wire.Result.Validate(); err != nil {
+		return errors.New("system authority returned an invalid reputation confirmation")
+	}
+	if err := wire.Decision.Validate(); err != nil || wire.Decision.Action != trustpolicy.ActionWarn {
+		return errors.New("system authority returned an invalid reputation confirmation")
+	}
+	return &ReputationConfirmationRequiredError{Result: wire.Result, Decision: wire.Decision, Token: token}
 }
 
 type signedStateWire struct {
@@ -1053,12 +1140,47 @@ func (s *Service) EnrolSignedAnchor(sender dbus.Sender, abi int32, uid uint32, o
 		},
 		Policy:    decoded,
 		Signature: signed,
-	})
+	}, "")
+}
+
+// EnrolSignedAnchorConfirmed is the retry half of EnrolSignedAnchor. A new
+// method preserves the existing D-Bus ABI and keeps confirmation outside the
+// signed evidence envelope.
+func (s *Service) EnrolSignedAnchorConfirmed(sender dbus.Sender, abi int32, uid uint32, origin string, generation uint64, imageDigest, manifestDigest, packageRoot, policyRoot, launchRoot, policy, state, bundle, confirmation string) *dbus.Error {
+	if stale := refuseIfStale(); stale != nil {
+		return stale
+	}
+	if confirmation == "" || len(confirmation) > 64 {
+		return invalidRequest(errors.New("invalid reputation confirmation"))
+	}
+	decoded, err := decodePolicy(policy)
+	if err != nil {
+		return invalidRequest(err)
+	}
+	signed, err := decodeSignedState(state, bundle)
+	if err != nil {
+		return invalidRequest(err)
+	}
+	return s.enrolThrough(sender, Enrolment{
+		Anchor: integrity.Anchor{
+			ABI:            int(abi),
+			UID:            uid,
+			Origin:         origin,
+			Generation:     generation,
+			ImageDigest:    imageDigest,
+			ManifestDigest: manifestDigest,
+			PackageRoot:    packageRoot,
+			PolicyRoot:     policyRoot,
+			LaunchRoot:     launchRoot,
+		},
+		Policy:    decoded,
+		Signature: signed,
+	}, confirmation)
 }
 
 // enrolThrough is the enrolment flow once the wire values are back together:
 // prove the request, decide how hard to ask, ask, record.
-func (s *Service) enrolThrough(sender dbus.Sender, enrolment Enrolment) *dbus.Error {
+func (s *Service) enrolThrough(sender dbus.Sender, enrolment Enrolment, confirmation string) *dbus.Error {
 	if err := validateEnrolment(enrolment); err != nil {
 		return invalidRequest(err)
 	}
@@ -1082,8 +1204,14 @@ func (s *Service) enrolThrough(sender dbus.Sender, enrolment Enrolment) *dbus.Er
 	}); err != nil {
 		return denied(err)
 	}
-	if err := s.Anchors.Record(enrolment); err != nil {
-		return failed(err)
+	var recordErr error
+	if confirmation != "" {
+		recordErr = s.Anchors.RecordConfirmed(enrolment, confirmation)
+	} else {
+		recordErr = s.Anchors.Record(enrolment)
+	}
+	if recordErr != nil {
+		return enrolmentFailed(recordErr)
 	}
 	return nil
 }

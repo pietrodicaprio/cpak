@@ -1155,9 +1155,10 @@ func TestTheSignedEnrolmentIsCarriedByTheBusInterface(t *testing.T) {
 		arguments[method.Name] = taken
 	}
 	for name, want := range map[string]string{
-		"EnrolSignedAnchor":  "iustssssssss",
-		"SetSignaturePolicy": "s",
-		"EnrolAnchor":        "iustssssss",
+		"EnrolSignedAnchor":          "iustssssssss",
+		"EnrolSignedAnchorConfirmed": "iustsssssssss",
+		"SetSignaturePolicy":         "s",
+		"EnrolAnchor":                "iustssssss",
 	} {
 		if arguments[name] != want {
 			t.Fatalf("%s takes %q on the bus, want %q", name, arguments[name], want)

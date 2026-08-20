@@ -92,6 +92,14 @@ func TestWarnRequiresConfirmationWithoutAnInteractiveCaller(t *testing.T) {
 	}
 }
 
+func TestReputationEvaluationDoesNotInferPresentationConsent(t *testing.T) {
+	policy := reputationPolicy(ReputationWarn)
+	decision := policy.EvaluatesReputation(reputationResult(reputation.Unknown), reputationPublisherID, testOrigin, policyNow)
+	if !decision.Allowed || decision.Action != ActionWarn || decision.ReasonCode != "provider-result" {
+		t.Fatalf("policy-stage decision = %+v", decision)
+	}
+}
+
 func TestReputationExceptionIsExactScopedAndNeverOverridesBlocked(t *testing.T) {
 	policy := reputationPolicy(ReputationRequireEstablished)
 	policy.Reputation.Exceptions = []ReputationException{{
