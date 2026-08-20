@@ -7,6 +7,7 @@ package systemauthority
 
 import (
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -207,6 +208,90 @@ func TestAuthorityRecordsAWarningOnlyAfterTheExactSingleUseConfirmation(t *testi
 	}
 	if lookups != 5 {
 		t.Fatalf("provider consulted %d times, want 5 fresh decisions", lookups)
+	}
+}
+
+func TestPublisherChangeCannotBorrowThePreviousIdentityOrReputation(t *testing.T) {
+	origin := testAnchor().Origin
+	firstIdentity := testSignatureIdentity(origin)
+	secondIdentity := firstIdentity
+	secondIdentity.Subject = "https://" + origin + "/.github/workflows/rotated-release.yml@refs/heads/main"
+	firstPublisher, _ := signature.NormalizeOIDCIdentity(firstIdentity)
+	secondPublisher, _ := signature.NormalizeOIDCIdentity(secondIdentity)
+	if firstPublisher == nil || secondPublisher == nil || firstPublisher.ID == secondPublisher.ID {
+		t.Fatalf("test publisher identities did not produce a visible change: first=%+v second=%+v", firstPublisher, secondPublisher)
+	}
+
+	for _, test := range []struct {
+		name              string
+		approved          []string
+		wantReputationHit bool
+	}{
+		{name: "new identity is not administratively approved", approved: []string{firstPublisher.ID}},
+		{name: "approved new identity starts with its own reputation", approved: []string{firstPublisher.ID, secondPublisher.ID}, wantReputationHit: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ledger := testAnchorLedger(t)
+			approved := append([]string(nil), test.approved...)
+			slices.Sort(approved)
+			policy := trustpolicy.Policy{
+				ABI: trustpolicy.CurrentABIVersion, X509: &trustpolicy.X509Policy{Revocation: "allow-unknown"},
+				Reputation:           &trustpolicy.ReputationPolicy{Mode: trustpolicy.ReputationWarn, ProviderID: "cpak-poc"},
+				RequirePublisher:     true,
+				ApprovedPublisherIDs: approved,
+			}
+			if err := (TrustStore{Directory: ledger.Directory, OwnerUID: ledger.OwnerUID}).Set(policy); err != nil {
+				t.Fatal(err)
+			}
+			useBundleVerifier(t, func(_ []byte, state signature.State) (signature.Verified, error) {
+				identity := firstIdentity
+				if state.Generation == 2 {
+					identity = secondIdentity
+				}
+				return signature.Verified{State: state, Identity: identity}, nil
+			})
+			ledger.Now = func() time.Time { return reputationNow }
+			lookups := []string{}
+			ledger.ReputationLookup = func(publisherID string, _ time.Time) (reputation.Result, error) {
+				lookups = append(lookups, publisherID)
+				status := reputation.Unknown
+				if publisherID == firstPublisher.ID {
+					status = reputation.Established
+				}
+				return authorityReputationResult(publisherID, status), nil
+			}
+
+			first := Enrolment{Anchor: testAnchor(), Signature: testSignedState(1)}
+			if err := ledger.Record(first); err != nil {
+				t.Fatalf("first publisher enrolment failed: %v", err)
+			}
+			second := first
+			second.Generation++
+			second.Signature = testSignedState(2)
+			err := ledger.Record(second)
+
+			if !test.wantReputationHit {
+				if !errors.Is(err, ErrTrustRefused) {
+					t.Fatalf("unapproved publisher change returned %v, want administrator refusal", err)
+				}
+				if len(lookups) != 1 || lookups[0] != firstPublisher.ID {
+					t.Fatalf("reputation was consulted before administrator approval: %v", lookups)
+				}
+				return
+			}
+
+			var warning *ReputationConfirmationRequiredError
+			if !errors.As(err, &warning) || warning.Result.PublisherID != secondPublisher.ID || warning.Result.Status != reputation.Unknown {
+				t.Fatalf("approved publisher change did not receive its own warning: %v", err)
+			}
+			if len(lookups) != 2 || lookups[0] != firstPublisher.ID || lookups[1] != secondPublisher.ID {
+				t.Fatalf("publisher reputation continuity used the wrong identities: %v", lookups)
+			}
+			recorded, found, readErr := ledger.Recorded(first.UID, origin)
+			if readErr != nil || !found || recorded.Verification == nil || recorded.Verification.Publisher == nil || recorded.Verification.Publisher.ID != firstPublisher.ID {
+				t.Fatalf("warning changed the recorded publisher before confirmation: recorded=%+v found=%v err=%v", recorded.Verification, found, readErr)
+			}
+		})
 	}
 }
 

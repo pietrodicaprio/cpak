@@ -180,7 +180,7 @@ behaviour require the real integration path described in the Evidence column.
 | AT-LIFE-001 | Fresh signed install succeeds for Sigstore and POC X.509 | Real OCI end-to-end matrix | 5 | Planned |
 | AT-LIFE-002 | Signed update succeeds for the same publisher and next generation | Real OCI end-to-end matrix | 5 | Planned |
 | AT-LIFE-003 | Replayed or downgraded generation fails | Existing ledger downgrade tests plus X.509 path | 1, 5 | Existing/Planned |
-| AT-LIFE-004 | Publisher key change is visible and policy-controlled | Update integration test | 5 | Planned |
+| AT-LIFE-004 | Publisher key change is visible and policy-controlled | Update integration test | 5 | Authority continuity test proves an unapproved new normalized identity is denied before reputation and an approved new identity receives its own reputation result instead of borrowing the old publisher's; executed Linux update remains Phase 5 |
 | AT-LIFE-005 | Signed-to-unsigned transition remains visible and follows policy | Existing enrolment tests plus common evidence path | 1, 5 | Existing/Planned |
 | AT-LIFE-006 | Invalid attached evidence never falls back to unsigned | Existing tests plus both evidence kinds | 1-2, 5 | Implemented common fail-closed enrolment path; executed Linux fixtures for both evidence kinds remain Phase 5 |
 | AT-LIFE-007 | Changed package with stale evidence is not enrolled under old state | Update integration test | 5 | Update integration fixture now proves stale evidence is invalid, the new bytes remain unenrolled, and the old anchor cannot authorize their launch; executed Linux test remains Phase 5 |
