@@ -160,6 +160,7 @@ func newTestManifest() *types.CpakManifest {
 
 func TestUpdateBranchInstallRefreshesRecord(t *testing.T) {
 	c := newTestCpak(t)
+	useEnrolmentAuthority(t)
 	seedApplication(t, c, types.Application{
 		CpakId:         testCpakId("branch", "main"),
 		Name:           "demo",
@@ -172,8 +173,12 @@ func TestUpdateBranchInstallRefreshesRecord(t *testing.T) {
 	})
 
 	stub := &updateStub{manifest: newTestManifest(), layers: []string{"newlayer"}, config: "{}", imageDigest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"}
+	var enrolments []ApplicationEnrolment
 	results, err := c.updateWithOptions(testOrigin, stub.deps(), UpdateOptions{
 		ConfirmPermissions: func([]types.UpdateResult) bool { return true },
+		OnEnrolment: func(enrolment ApplicationEnrolment) {
+			enrolments = append(enrolments, enrolment)
+		},
 	})
 	if err != nil {
 		t.Fatalf("update returned an error: %v", err)
@@ -187,6 +192,9 @@ func TestUpdateBranchInstallRefreshesRecord(t *testing.T) {
 	}
 	if results[0].SourceType != "branch" || results[0].NewVersion != "main" {
 		t.Fatalf("unexpected result: %+v", results[0])
+	}
+	if len(enrolments) != 1 || enrolments[0].Origin != testOrigin || enrolments[0].Outcome == 0 {
+		t.Fatalf("update enrolments = %+v, want one explicit application-trust outcome", enrolments)
 	}
 	if stub.lastBranch != "main" || stub.lastRelease != "" {
 		t.Fatalf("expected the recorded branch to be refreshed, got branch %q release %q", stub.lastBranch, stub.lastRelease)

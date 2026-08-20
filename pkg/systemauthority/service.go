@@ -348,7 +348,10 @@ func failed(err error) *dbus.Error {
 func enrolmentFailed(err error) *dbus.Error {
 	var confirmation *ReputationConfirmationRequiredError
 	if errors.As(err, &confirmation) {
-		wire, encodeErr := json.Marshal(reputationConfirmationWire{Result: confirmation.Result, Decision: confirmation.Decision})
+		wire, encodeErr := json.Marshal(reputationConfirmationWire{
+			Result: confirmation.Result, Decision: confirmation.Decision,
+			SignatureMode: confirmation.SignatureMode, ReputationMode: confirmation.ReputationMode,
+		})
 		if encodeErr != nil {
 			return failed(errors.New("encode reputation confirmation"))
 		}
@@ -361,6 +364,8 @@ func enrolmentFailed(err error) *dbus.Error {
 }
 
 type reputationConfirmationWire struct {
-	Result   reputation.Result              `json:"result"`
-	Decision trustpolicy.ReputationDecision `json:"decision"`
+	Result         reputation.Result              `json:"result"`
+	Decision       trustpolicy.ReputationDecision `json:"decision"`
+	SignatureMode  SignaturePolicy                `json:"signature_mode"`
+	ReputationMode trustpolicy.ReputationMode     `json:"reputation_mode"`
 }

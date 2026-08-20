@@ -6,98 +6,17 @@ package cmd
 
 import (
 	"bytes"
+	"errors"
 	"runtime"
 	"strings"
 	"testing"
 
-	"github.com/mirkobrombin/cpak/pkg/bootstrap"
+	"github.com/mirkobrombin/cpak/pkg/applicationtrust"
 	"github.com/mirkobrombin/cpak/pkg/cpak"
 	"github.com/mirkobrombin/cpak/pkg/types"
 	"github.com/mirkobrombin/go-cli-builder/v3/pkg/cli"
 	clilog "github.com/mirkobrombin/go-cli-builder/v3/pkg/log"
 )
-
-func TestVerifySignedInstallerMetadataRejectsPermissionChanges(t *testing.T) {
-	manifest := &types.CpakManifest{
-		ManifestVersion: "2.0",
-		Name:            "Demo",
-		Description:     "Demo application",
-		Image:           "ghcr.io/containerpak/demo@sha256:" + strings.Repeat("a", 64),
-		Binaries:        []string{"/usr/bin/demo"},
-		Override:        types.Override{Network: true},
-	}
-	digest, err := cpak.ManifestIdentityDigest(manifest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	metadata := bootstrap.Metadata{
-		Origin:         "github.com/containerpak/demo",
-		RefType:        "commit",
-		Ref:            strings.Repeat("b", 40),
-		ManifestDigest: digest,
-		Permissions:    bootstrap.SummarizePermissions(manifest.Override),
-	}
-	if err = verifySignedInstallerMetadata(metadata, metadata.Origin, metadata.Ref, manifest); err != nil {
-		t.Fatal(err)
-	}
-	metadata.Permissions = []bootstrap.Permission{{Name: "Network", Detail: "cosmetic only"}}
-	if err = verifySignedInstallerMetadata(metadata, metadata.Origin, metadata.Ref, manifest); err == nil {
-		t.Fatal("a cosmetic permission list was accepted")
-	}
-	metadata.Permissions = bootstrap.SummarizePermissions(manifest.Override)
-	manifest.Override.Filesystem = []types.FilesystemPermission{{Path: "host", Access: "read-write"}}
-	if err = verifySignedInstallerMetadata(metadata, metadata.Origin, metadata.Ref, manifest); err == nil {
-		t.Fatal("a broader fetched manifest matched the signed installer")
-	}
-}
-
-func TestVerifySignedInstallerMetadataRequiresPinnedStandalonePackage(t *testing.T) {
-	manifest := &types.CpakManifest{
-		ManifestVersion: "2.0",
-		Name:            "Demo",
-		Description:     "Demo application",
-		Image:           "ghcr.io/containerpak/demo:latest",
-		Binaries:        []string{"/usr/bin/demo"},
-	}
-	metadata := bootstrap.Metadata{
-		Origin:      "github.com/containerpak/demo",
-		RefType:     "commit",
-		Ref:         strings.Repeat("b", 40),
-		Permissions: bootstrap.SummarizePermissions(manifest.Override),
-	}
-	digest, err := cpak.ManifestIdentityDigest(manifest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	metadata.ManifestDigest = digest
-	if err = verifySignedInstallerMetadata(metadata, metadata.Origin, metadata.Ref, manifest); err == nil {
-		t.Fatal("a mutable image tag was accepted")
-	}
-
-	manifest.Image = "ghcr.io/containerpak/demo@sha256:" + strings.Repeat("a", 64)
-	manifest.Dependencies = []types.Dependency{{Origin: "github.com/containerpak/runtime"}}
-	digest, err = cpak.ManifestIdentityDigest(manifest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	metadata.ManifestDigest = digest
-	if err = verifySignedInstallerMetadata(metadata, metadata.Origin, metadata.Ref, manifest); err == nil {
-		t.Fatal("an unbound dependency graph was accepted")
-	}
-}
-
-func TestSignedInstallerConsentRejectsAnOrdinaryParentProcess(t *testing.T) {
-	manifest := &types.CpakManifest{
-		ManifestVersion: "2.0",
-		Name:            "Demo",
-		Description:     "Demo application",
-		Image:           "ghcr.io/containerpak/demo@sha256:" + strings.Repeat("a", 64),
-		Binaries:        []string{"/usr/bin/demo"},
-	}
-	if err := verifySignedInstaller("github.com/containerpak/demo", strings.Repeat("b", 40), manifest); err == nil {
-		t.Fatal("an ordinary parent process supplied signed installer consent")
-	}
-}
 
 // carriesTerminalControl spells the rule out here rather than asking the code
 // under test what a control character is. A test that borrows the definition it
@@ -109,6 +28,39 @@ func carriesTerminalControl(value string) bool {
 		}
 	}
 	return false
+}
+
+func TestInstallTrustOutcomeUsesStableExitCodes(t *testing.T) {
+	for name, test := range map[string]struct {
+		outcome cpak.EnrolmentOutcome
+		context applicationtrust.InvocationContext
+		code    int
+	}{
+		"recorded":              {cpak.EnrolmentRecorded, applicationtrust.ContextNonInteractive, 0},
+		"confirmation required": {cpak.EnrolmentConfirmationRequired, applicationtrust.ContextNonInteractive, applicationtrust.ExitConfirmationRequired},
+		"declined":              {cpak.EnrolmentDeclined, applicationtrust.ContextInteractiveTerminal, applicationtrust.ExitDenied},
+	} {
+		t.Run(name, func(t *testing.T) {
+			results, resultErr := applicationTrustResults(applicationtrust.OperationInstall, test.context, []cpak.ApplicationEnrolment{{
+				Origin: "github.com/user/demo", Outcome: test.outcome,
+				Signature: cpak.EnrolmentSignature{Reason: cpak.ErrPackageUnsigned},
+			}})
+			if resultErr != nil {
+				t.Fatal(resultErr)
+			}
+			err := applicationTrustResultExit(results)
+			if test.code == 0 {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			var exitErr *types.ExitError
+			if !errors.As(err, &exitErr) || exitErr.Code != test.code {
+				t.Fatalf("exit = %v, want %d", err, test.code)
+			}
+		})
+	}
 }
 
 func TestTheInstallPromptOnlyShowsRuntimeSourcesForThisArchitecture(t *testing.T) {
@@ -187,5 +139,18 @@ func TestTheInstallPromptLetsNoPublisherValueMoveTheCursor(t *testing.T) {
 	}
 	if got := strings.Count(printed, `\u009b`); got != 18 {
 		t.Fatalf("the single character control sequences were spelled out %d times, want twice per printed value: %q", got, printed)
+	}
+}
+
+func TestUpdateRowsLetNoExternalReasonMoveTheCursor(t *testing.T) {
+	tainted := "registry failure\x1b[1A\x1b[2K\u009b1A"
+	rows := attentionUpdateRows([]types.UpdateResult{{
+		Origin: "github.com/user/demo", Name: "demo", Status: types.UpdateStatusFailed, Reason: tainted,
+	}})
+	if len(rows) != 1 || len(rows[0]) != 4 {
+		t.Fatalf("rows = %#v", rows)
+	}
+	if carriesTerminalControl(rows[0][3]) || !strings.Contains(rows[0][3], `\x1b[1A`) || !strings.Contains(rows[0][3], `\u009b`) {
+		t.Fatalf("unsafe update reason = %q", rows[0][3])
 	}
 }

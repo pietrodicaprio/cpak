@@ -6,31 +6,32 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"runtime"
+	"strings"
 
-	"github.com/mirkobrombin/cpak/pkg/bootstrap"
+	"github.com/mirkobrombin/cpak/pkg/applicationtrust"
 	"github.com/mirkobrombin/cpak/pkg/cpak"
 	"github.com/mirkobrombin/cpak/pkg/tools"
 	"github.com/mirkobrombin/cpak/pkg/types"
 	"github.com/mirkobrombin/go-cli-builder/v3/pkg/cli"
+	"golang.org/x/term"
 )
 
 type InstallCmd struct {
-	Remote          string `arg:"remote" help:"Remote Git repository"`
-	Branch          string `cli:"branch,b" help:"Specify a branch"`
-	Release         string `cli:"release,r" help:"Install a specific release"`
-	Commit          string `cli:"commit,c" help:"Specify a commit"`
-	Yes             bool   `cli:"yes,y" help:"Skip the confirmation prompt"`
-	SignedInstaller bool   `cli:"signed-installer" help:"Verify consent from the parent application installer"`
+	Remote         string `arg:"remote" help:"Remote Git repository"`
+	Branch         string `cli:"branch,b" help:"Specify a branch"`
+	Release        string `cli:"release,r" help:"Install a specific release"`
+	Commit         string `cli:"commit,c" help:"Specify a commit"`
+	Yes            bool   `cli:"yes,y" help:"Acknowledge the installation without the operation prompt; never accepts trust warnings"`
+	NonInteractive bool   `cli:"non-interactive,n" help:"Never wait for an operation or trust confirmation"`
+	JSON           bool   `cli:"json,j" help:"Print versioned application-trust decisions as JSON"`
 
 	cli.Base
 }
 
 func (c *InstallCmd) Run() error {
-	remote, err := cpak.NormalizeRepositoryOrigin(c.Remote)
-	if err != nil {
-		return err
-	}
+	remote := strings.ToLower(c.Remote)
 
 	cp, err := cpak.NewCpak()
 	if err != nil {
@@ -47,9 +48,6 @@ func (c *InstallCmd) Run() error {
 	if versionParamsCount > 1 {
 		return fmt.Errorf("more than one version parameter specified")
 	}
-	if c.SignedInstaller && c.Commit == "" {
-		return fmt.Errorf("a signed installer requires an immutable commit")
-	}
 
 	branch := c.Branch
 	if versionParamsCount == 0 {
@@ -59,23 +57,19 @@ func (c *InstallCmd) Run() error {
 		}
 		// The branch name is whatever the remote repository calls its default,
 		// so it is somebody else's text like everything printed below it.
-		c.Logger.Info("No version specified, using the default branch: %s", tools.SanitizeForDisplay(branch))
+		if !c.JSON {
+			c.Logger.Info("No version specified, using the default branch: %s", tools.SanitizeForDisplay(branch))
+		}
 	}
 
 	manifest, err := cp.FetchManifest(remote, branch, c.Release, c.Commit)
 	if err != nil {
 		return err
 	}
-	if err = cp.ValidateManifest(manifest); err != nil {
-		return err
-	}
-	if c.SignedInstaller {
-		if err = verifySignedInstaller(remote, c.Commit, manifest); err != nil {
-			return err
-		}
-	}
 
-	c.describeRootPackage(manifest)
+	if !c.JSON {
+		c.describeRootPackage(manifest)
+	}
 
 	// Every dependency is a package of its own, installed with the permissions
 	// its own publisher asked for, so the user is agreeing to those too and
@@ -89,18 +83,68 @@ func (c *InstallCmd) Run() error {
 		return err
 	}
 
-	c.describeDependencies(dependencies)
-	c.describeRuntimeSourcesAndPermissions(manifest)
-
-	if !c.Yes && !c.SignedInstaller && !tools.ConfirmOperation("Do you want to continue?") {
-		return nil
+	if !c.JSON {
+		c.describeDependencies(dependencies)
+		c.describeRuntimeSourcesAndPermissions(manifest)
 	}
 
-	return cp.InstallCpakWithOptions(remote, manifest, branch, c.Commit, c.Release, cpak.InstallOptions{
+	context := c.invocationContext()
+	if !c.Yes {
+		if context == applicationtrust.ContextNonInteractive {
+			return fmt.Errorf("a non-interactive install requires --yes to acknowledge the operation")
+		}
+		if !tools.ConfirmOperation("Do you want to continue?") {
+			return nil
+		}
+	}
+
+	enrolments := []cpak.ApplicationEnrolment{}
+	options := cpak.InstallOptions{
 		CreateExports:        true,
 		ResolveImageRef:      true,
 		ResolvedDependencies: dependencies,
-	})
+		OnEnrolment: func(result cpak.ApplicationEnrolment) {
+			enrolments = append(enrolments, result)
+		},
+	}
+	if context == applicationtrust.ContextInteractiveTerminal {
+		options.Enrolment.ConfirmReputation = c.confirmReputation
+	}
+	if err := cp.InstallCpakWithOptions(remote, manifest, branch, c.Commit, c.Release, options); err != nil {
+		return err
+	}
+	trustResults, err := applicationTrustResults(applicationtrust.OperationInstall, context, enrolments)
+	if err != nil {
+		return err
+	}
+	if c.JSON {
+		if err := writeApplicationTrustResults(trustResults); err != nil {
+			return err
+		}
+	} else {
+		reportApplicationTrustResults(c.Logger, trustResults)
+	}
+	return applicationTrustResultExit(trustResults)
+}
+
+func (c *InstallCmd) invocationContext() applicationtrust.InvocationContext {
+	if c.NonInteractive || c.JSON || !term.IsTerminal(int(os.Stdin.Fd())) {
+		return applicationtrust.ContextNonInteractive
+	}
+	return applicationtrust.ContextInteractiveTerminal
+}
+
+func (c *InstallCmd) confirmReputation(warning cpak.ReputationWarning) applicationtrust.ConfirmationResponse {
+	publisher := warning.PublisherName
+	if publisher == "" {
+		publisher = warning.PublisherID
+	}
+	c.Logger.Warning("Publisher reputation requires confirmation: publisher %s, provider %s, status %s, reason %s.",
+		tools.SanitizeForDisplay(publisher), tools.SanitizeForDisplay(warning.ProviderID), warning.Status, tools.SanitizeForDisplay(warning.ProviderReason))
+	if tools.ConfirmOperation("Continue and enrol this publisher for this installation?") {
+		return applicationtrust.Confirm
+	}
+	return applicationtrust.Decline
 }
 
 // The prompt is the whole of what a user is given to decide on, and every
@@ -123,7 +167,7 @@ func (c *InstallCmd) describeRootPackage(manifest *types.CpakManifest) {
 	}
 	for _, session := range manifest.Sessions {
 		c.Logger.Info("  - (%s session) %s", tools.SanitizeForDisplay(session.Kind), tools.SanitizeForDisplay(session.Name))
-		c.describePermissions(session.Override)
+		tools.PrintStructKeyVal(session.Override)
 	}
 	if provider := manifest.AddonProvider; provider != nil {
 		c.Logger.Info("  - (addon provider) %s for %s (%s)", tools.SanitizeForDisplay(provider.ID), tools.SanitizeForDisplay(provider.Slot), tools.SanitizeForDisplay(provider.Mode))
@@ -139,7 +183,7 @@ func (c *InstallCmd) describeDependencies(dependencies []cpak.ResolvedDependency
 		// the permissions below them.
 		c.Logger.Info("  - %s: %s", tools.SanitizeForDisplay(dependency.Origin), tools.SanitizeForDisplay(dependency.Manifest.Description))
 		c.Logger.Info("    with the following permissions:")
-		c.describePermissions(dependency.Manifest.Override)
+		tools.PrintStructKeyVal(dependency.Manifest.Override)
 	}
 	c.Logger.Info("")
 }
@@ -155,17 +199,6 @@ func (c *InstallCmd) describeRuntimeSourcesAndPermissions(manifest *types.CpakMa
 	}
 
 	c.Logger.Info("The following permissions will be granted:")
-	c.describePermissions(manifest.Override)
+	tools.PrintStructKeyVal(manifest.Override)
 	c.Logger.Info("")
-}
-
-func (c *InstallCmd) describePermissions(override types.Override) {
-	permissions := bootstrap.SummarizePermissions(override)
-	if len(permissions) == 0 {
-		c.Logger.Info("  - None")
-		return
-	}
-	for _, permission := range permissions {
-		c.Logger.Info("  - %s: %s", tools.SanitizeForDisplay(permission.Name), tools.SanitizeForDisplay(permission.Detail))
-	}
 }

@@ -182,12 +182,12 @@ behaviour require the real integration path described in the Evidence column.
 | AT-LIFE-003 | Replayed or downgraded generation fails | Existing ledger downgrade tests plus X.509 path | 1, 5 | Existing/Planned |
 | AT-LIFE-004 | Publisher key change is visible and policy-controlled | Update integration test | 5 | Planned |
 | AT-LIFE-005 | Signed-to-unsigned transition remains visible and follows policy | Existing enrolment tests plus common evidence path | 1, 5 | Existing/Planned |
-| AT-LIFE-006 | Invalid attached evidence never falls back to unsigned | Existing tests plus both evidence kinds | 1-2, 5 | Existing/Planned |
+| AT-LIFE-006 | Invalid attached evidence never falls back to unsigned | Existing tests plus both evidence kinds | 1-2, 5 | Implemented common fail-closed enrolment path; executed Linux fixtures for both evidence kinds remain Phase 5 |
 | AT-LIFE-007 | Changed package with stale evidence is not enrolled under old state | Update integration test | 5 | Planned |
-| AT-LIFE-008 | Reputation is evaluated at install/update, not every launch | Provider call-count lifecycle test | 5 | Planned |
+| AT-LIFE-008 | Reputation is evaluated at install/update, not every launch | Provider call-count lifecycle test | 5 | Implemented published-state refresh even when the image is unchanged; executed Linux lifecycle remains Phase 5 |
 | AT-LIFE-009 | Launch after provider outage uses anchored runtime integrity without PKI/network work | Network-deny launch test | 5 | Planned |
 | AT-LIFE-010 | Trust-root or snapshot correction permits clean retry without corrupt state | Recovery scenarios | 5 | Planned |
-| AT-LIFE-011 | CLI separates evidence, publisher, root source, reputation, policy, and final action | Structured and human-output golden tests | 5 | Planned |
+| AT-LIFE-011 | CLI separates evidence, publisher, root source, reputation, policy, and final action | Structured and human-output golden tests | 5 | Implemented shared install/update human and versioned JSON projection; audit/explain and Linux golden tests remain Phase 5 |
 | AT-LIFE-012 | CLI never describes signed or established software as safe | Forbidden-vocabulary assertion over all outputs | 5-6 | Planned |
 | AT-LIFE-013 | Empty, long, malformed, stale, and unavailable data remain readable and safe | CLI matrix and terminal escape tests | 5 | Planned |
 | AT-LIFE-014 | Existing unmanaged-host defaults remain backward compatible | Existing install/enrol/launch suite | 1-5 | Existing/Planned |
@@ -196,13 +196,13 @@ behaviour require the real integration path described in the Evidence column.
 
 | ID | Requirement | Evidence | Phase | State |
 | --- | --- | --- | --- | --- |
-| AT-HDL-001 | Graphical, interactive-terminal, and non-interactive callers consume the same versioned decision result | Shared decision-core table plus frontend adapter tests | 4-5 | Planned |
+| AT-HDL-001 | Graphical, interactive-terminal, and non-interactive callers consume the same versioned decision result | Shared decision-core table plus frontend adapter tests | 4-5 | Implemented core and verify adapter; install/update/audit/explain lifecycle remains Phase 5 |
 | AT-HDL-002 | A binary-only package with no desktop entry uses the normal install, update, enrolment, audit, explain, and run paths | Real OCI lifecycle fixture with `binaries` and no `desktop_entries` | 5 | Planned |
 | AT-HDL-003 | Missing display, session bus, portal, Secret Service, and graphical privilege agent cannot weaken policy or prevent safe headless operation | Environment-cleared Linux integration test | 5 | Planned |
-| AT-HDL-004 | Non-interactive `warn` returns confirmation-required and does not block, launch a helper, or assume consent | Detached-stdio timeout test plus decision and exit-code assertions | 4-5 | Planned |
-| AT-HDL-005 | `--yes` acknowledges an operation but cannot accept unknown/caution reputation or override invalid, revoked, or denied evidence | CLI negative table across every protected result | 4-5 | Planned |
+| AT-HDL-004 | Non-interactive `warn` returns confirmation-required and does not block, launch a helper, or assume consent | Detached-stdio timeout test plus decision and exit-code assertions | 4-5 | Implemented decision core, authority challenge, and CLI exit mapping; detached Linux lifecycle remains Phase 5 |
+| AT-HDL-005 | `--yes` acknowledges an operation but cannot accept unknown/caution reputation or override invalid, revoked, or denied evidence | CLI negative table across every protected result | 4-5 | Implemented separate typed confirmation path; complete CLI negative lifecycle remains Phase 5 |
 | AT-HDL-006 | Trust-root and reputation administration work through direct root, `sudo`, and `doas` without `pkexec` or `run0` | Linux privilege-frontend matrix with exact fingerprint assertions | 5 | Planned |
-| AT-HDL-007 | Human output, machine output, audit record, reason code, final action, and exit code agree | Golden-output and structured-result consistency test | 5 | Planned |
+| AT-HDL-007 | Human output, machine output, audit record, reason code, final action, and exit code agree | Golden-output and structured-result consistency test | 5 | Install/update share one validated result and exit projection; audit/explain consistency and Linux golden tests remain Phase 5 |
 | AT-HDL-008 | Offline or unavailable reputation follows configured policy without desktop or launch-time network access | Network-deny lifecycle table for all policy modes | 4-5 | Planned |
 | AT-HDL-009 | Service start/restart verifies enrolled state, while a later policy/reputation change does not claim to terminate an already running process | systemd-equivalent lifecycle fixture and documented non-goal assertion | 5 | Planned |
 | AT-HDL-010 | cpak and the AppImage actor emit conforming results for shared valid, unknown, invalid, and blocked headless fixtures | Cross-actor schema and reason-code conformance harness | 6 | Planned |

@@ -18,11 +18,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mirkobrombin/cpak/pkg/filegrant"
 	"github.com/mirkobrombin/cpak/pkg/integrity"
 	"github.com/mirkobrombin/cpak/pkg/logger"
 	"github.com/mirkobrombin/cpak/pkg/oci"
 	"github.com/mirkobrombin/cpak/pkg/systemauthority"
+	"github.com/mirkobrombin/cpak/pkg/tools"
 	"github.com/mirkobrombin/cpak/pkg/types"
 )
 
@@ -63,26 +63,19 @@ type InstallOptions struct {
 	// wins over them: it is the stronger statement about the same graph.
 	ResolvedDependencies []ResolvedDependency
 
-	dependencyState *dependencyInstallState
-	dependencyDepth int
-}
+	// Enrolment controls only the dedicated application-trust confirmation.
+	// It is separate from every operation acknowledgement such as --yes.
+	Enrolment EnrolmentOptions
 
-const (
-	maxDependencyDepth = 32
-	maxDependencyCount = 256
-)
-
-type dependencyInstallState struct {
-	active map[string]bool
-	total  int
+	// OnEnrolment receives the result for the root and every dependency after
+	// the installation is already on disk. A missing callback preserves the
+	// existing API behavior.
+	OnEnrolment func(ApplicationEnrolment)
 }
 
 // InstallWithOptions installs a remote package with explicit options.
 func (c *Cpak) InstallWithOptions(origin, branch, release, commit string, options InstallOptions) (err error) {
-	origin, err = normalizeRepositoryOrigin(origin)
-	if err != nil {
-		return err
-	}
+	origin = strings.ToLower(origin)
 	options.ResolveImageRef = true
 
 	versionParams := []string{branch, release, commit}
@@ -192,22 +185,6 @@ func (c *Cpak) InstallCpakWithOptions(origin string, manifest *types.CpakManifes
 		logger.Printf("%s is already installed from %s; run an audit if it is not working as expected", manifest.Name, origin)
 		return
 	}
-	if options.dependencyState == nil {
-		options.dependencyState = &dependencyInstallState{active: make(map[string]bool)}
-	}
-	if options.dependencyDepth >= maxDependencyDepth {
-		return fmt.Errorf("dependency graph exceeds the maximum depth of %d", maxDependencyDepth)
-	}
-	dependencyKey := lockedPackageKey(origin, branch, release, commit)
-	if options.dependencyState.active[dependencyKey] {
-		return fmt.Errorf("dependency cycle at %s", origin)
-	}
-	if options.dependencyState.total >= maxDependencyCount {
-		return fmt.Errorf("dependency graph exceeds the maximum of %d packages", maxDependencyCount)
-	}
-	options.dependencyState.active[dependencyKey] = true
-	options.dependencyState.total++
-	defer delete(options.dependencyState.active, dependencyKey)
 
 	image := manifest.Image
 	if options.ResolveImageRef {
@@ -246,7 +223,7 @@ func (c *Cpak) InstallCpakWithOptions(origin string, manifest *types.CpakManifes
 		return
 	}
 
-	manifestDigest, err := ManifestIdentityDigest(manifest)
+	manifestDigest, err := manifestIdentityDigest(manifest)
 	if err != nil {
 		return
 	}
@@ -301,10 +278,13 @@ func (c *Cpak) InstallCpakWithOptions(origin string, manifest *types.CpakManifes
 	// resolved to, and nothing the store keeps can name that pair afterwards,
 	// so an enrolment that did not get it here can never ask the registry who
 	// published this.
-	c.EnrolPublishedApplication(app, PublishedPackage{
+	enrolment := c.EnrolPublishedApplicationWithOptions(app, PublishedPackage{
 		Manifest: manifest,
 		Lock:     signedLock(origin, options.ManifestLock),
-	})
+	}, options.Enrolment)
+	if options.OnEnrolment != nil {
+		options.OnEnrolment(enrolment)
+	}
 
 	return nil
 }
@@ -328,14 +308,14 @@ func (c *Cpak) refuseCpakStateGrants(override types.Override, sessions []types.S
 	return nil
 }
 
-// ManifestIdentityDigest names the manifest an installation was made from, as
+// manifestIdentityDigest names the manifest an installation was made from, as
 // the publisher wrote it: validation fills the defaults in and changes nothing
 // else, and what an installation applies on top of it is decided afterwards.
 // The lock and the publisher's signature both hash the manifest at this same
 // point, so all three name one thing. The decoded manifest is hashed rather
 // than the bytes that were fetched, because an installation resolved from a
 // lock never sees those bytes and both paths must name the same manifest.
-func ManifestIdentityDigest(manifest *types.CpakManifest) (string, error) {
+func manifestIdentityDigest(manifest *types.CpakManifest) (string, error) {
 	encoded, err := json.Marshal(manifest)
 	if err != nil {
 		return "", fmt.Errorf("encode the manifest of %s: %w", manifest.Name, err)
@@ -374,23 +354,6 @@ func (c *Cpak) ResolveDependencies(origin string, manifest *types.CpakManifest) 
 }
 
 func (c *Cpak) resolveDependencies(origin string, manifest *types.CpakManifest, fetchManifest func(string, string, string, string) (*types.CpakManifest, error), seen map[string]bool) ([]ResolvedDependency, error) {
-	state := dependencyResolutionState{
-		active: map[string]bool{origin: true},
-		seen:   seen,
-	}
-	return c.resolveDependencyGraph(origin, manifest, fetchManifest, &state, 0)
-}
-
-type dependencyResolutionState struct {
-	active map[string]bool
-	seen   map[string]bool
-	total  int
-}
-
-func (c *Cpak) resolveDependencyGraph(origin string, manifest *types.CpakManifest, fetchManifest func(string, string, string, string) (*types.CpakManifest, error), state *dependencyResolutionState, depth int) ([]ResolvedDependency, error) {
-	if depth >= maxDependencyDepth {
-		return nil, fmt.Errorf("dependency graph exceeds the maximum depth of %d", maxDependencyDepth)
-	}
 	resolved := []ResolvedDependency{}
 	for _, declared := range manifest.Dependencies {
 		dependencyOrigin, err := resolveDependencyOrigin(origin, declared.Origin)
@@ -399,19 +362,13 @@ func (c *Cpak) resolveDependencyGraph(origin string, manifest *types.CpakManifes
 		}
 		branch, release, commit := dependencySelectors(declared)
 
-		if state.active[dependencyOrigin] {
-			return nil, fmt.Errorf("dependency cycle at %s", dependencyOrigin)
-		}
+		// A package already in the answer is not fetched again, which is also
+		// what keeps a dependency loop from being followed forever.
 		key := lockedPackageKey(dependencyOrigin, branch, release, commit)
-		if state.seen[key] {
+		if seen[key] {
 			continue
 		}
-		if state.total >= maxDependencyCount {
-			return nil, fmt.Errorf("dependency graph exceeds the maximum of %d packages", maxDependencyCount)
-		}
-		state.seen[key] = true
-		state.total++
-		state.active[dependencyOrigin] = true
+		seen[key] = true
 
 		dependencyManifest, err := fetchManifest(dependencyOrigin, branch, release, commit)
 		if err != nil {
@@ -437,8 +394,7 @@ func (c *Cpak) resolveDependencyGraph(origin string, manifest *types.CpakManifes
 			Manifest: dependencyManifest,
 		})
 
-		nested, err := c.resolveDependencyGraph(dependencyOrigin, dependencyManifest, fetchManifest, state, depth+1)
-		delete(state.active, dependencyOrigin)
+		nested, err := c.resolveDependencies(dependencyOrigin, dependencyManifest, fetchManifest, seen)
 		if err != nil {
 			return nil, err
 		}
@@ -490,7 +446,6 @@ func (c *Cpak) installDependenciesWithOptions(origin string, manifest *types.Cpa
 		// came here behind.
 		dependencyOptions.PulledIn = true
 		dependencyOptions.PulledInBy = origin
-		dependencyOptions.dependencyDepth = options.dependencyDepth + 1
 		if depManifest.IsLayer() {
 			dependencyOptions.CreateExports = false
 		}
@@ -619,9 +574,6 @@ func (c *Cpak) createExports(app types.Application) (err error) {
 			return
 		}
 	}
-	if refreshErr := refreshDesktopDatabase(); refreshErr != nil {
-		logger.Printf("Warning: could not refresh the desktop database: %v", refreshErr)
-	}
 	return
 }
 
@@ -641,7 +593,7 @@ func (c *Cpak) exportFVSDesktopEntry(entries map[string]fvsViewEntry, app types.
 		}
 		entryName = names[0]
 	}
-	data, err := fvsViewFileData(c.Ctx, entries, entryName, desktopEntrySizeLimit)
+	data, err := fvsViewFileData(c.Ctx, entries, entryName)
 	if err != nil {
 		return err
 	}
@@ -659,7 +611,7 @@ func (c *Cpak) writeDesktopExport(entries map[string]fvsViewEntry, app types.App
 	iconName := desktopEntryValue([]byte(content), "Icon")
 	if iconName != "" {
 		if iconEntry := findFVSIcon(entries, iconName); iconEntry != "" {
-			iconData, err := fvsViewFileData(c.Ctx, entries, iconEntry, iconSizeLimit)
+			iconData, err := fvsViewFileData(c.Ctx, entries, iconEntry)
 			if err != nil {
 				return err
 			}
@@ -740,6 +692,107 @@ func findFVSIcon(entries map[string]fvsViewEntry, iconName string) string {
 		}
 	}
 	return iconPath
+}
+
+// exportDesktopEntry exports a desktop entry to the user's home directory
+// it also exports the icon defined in the desktop entry. If the icon is not
+// an absolute path, it looks for it in the common directories, preferring the
+// one with the highest resolution.
+func (c *Cpak) exportDesktopEntry(rootFs string, app types.Application, desktopEntry string) error {
+	home := os.Getenv("HOME")
+
+	var originalPath string
+	entryBase := filepath.Base(desktopEntry)
+	direct := filepath.Join(rootFs, strings.TrimLeft(desktopEntry, "/"))
+	if _, err := os.Stat(direct); err == nil {
+		originalPath = direct
+	} else {
+		_ = filepath.Walk(rootFs, func(path string, info os.FileInfo, err error) error {
+			if err != nil || info.IsDir() {
+				return nil
+			}
+			if filepath.Base(path) == entryBase {
+				originalPath = path
+				return filepath.SkipDir
+			}
+			return nil
+		})
+	}
+	if originalPath == "" {
+		return fmt.Errorf("desktop entry %s not found under %s", entryBase, rootFs)
+	}
+
+	desktopDir := filepath.Join(home, ".local", "share", "applications")
+	if err := os.MkdirAll(desktopDir, 0755); err != nil {
+		return err
+	}
+	desktopDest := desktopEntryExportPath(app, entryBase)
+
+	data, err := os.ReadFile(originalPath)
+	if err != nil {
+		return err
+	}
+	content := string(data)
+
+	var iconName string
+	for _, line := range strings.Split(content, "\n") {
+		if key, value, ok := desktopEntryKey(line); ok && key == "Icon" {
+			iconName = value
+			break
+		}
+	}
+	var absIconPath string
+	if iconName != "" {
+		absIconPath = findIcon(rootFs, iconName)
+
+		if absIconPath == "" && filepath.IsAbs(iconName) {
+			if _, err := os.Stat(iconName); err == nil {
+				absIconPath = iconName
+			}
+		}
+	}
+
+	if absIconPath != "" {
+		ext := filepath.Ext(absIconPath)
+		iconDest := filepath.Join(os.Getenv("HOME"), ".local", "share", "icons", applicationExportID(app)+ext)
+		if err := os.MkdirAll(filepath.Dir(iconDest), 0755); err != nil {
+			return err
+		}
+		if err := tools.CopyFile(absIconPath, iconDest); err != nil {
+			return err
+		}
+		logger.Printf("Exported icon to %s", iconDest)
+		iconName = iconDest
+	} else {
+		logger.Printf("Warning: icon %s not found for app %s", iconName, app.Name)
+	}
+
+	lines := strings.Split(content, "\n")
+	launcher, err := desktopLauncherPath()
+	if err != nil {
+		return err
+	}
+	for i, line := range lines {
+		key, value, ok := desktopEntryKey(line)
+		if !ok {
+			continue
+		}
+		switch key {
+		case "Exec":
+			lines[i] = rewriteDesktopExec(launcher, app.Origin, value)
+		case "TryExec":
+			lines[i] = "TryExec=" + launcher
+		case "Icon":
+			if iconName != "" {
+				lines[i] = "Icon=" + iconName
+			}
+		}
+	}
+	newContent := strings.Join(lines, "\n")
+	if err := os.WriteFile(desktopDest, []byte(newContent), 0755); err != nil {
+		return err
+	}
+	return exportDesktopAlias(app, entryBase, newContent)
 }
 
 func exportDesktopAlias(app types.Application, name, content string) error {
@@ -943,23 +996,61 @@ func removeLegacyDesktopExports(app types.Application) error {
 	return nil
 }
 
+func findIcon(layerDir, iconName string) string {
+	if filepath.IsAbs(iconName) {
+		candidate := filepath.Join(layerDir, iconName)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+		return ""
+	}
+
+	var iconPath string
+	iconScore := -1
+	_ = filepath.Walk(layerDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+
+		name := info.Name()
+		extension := strings.ToLower(filepath.Ext(name))
+		if extension != ".png" && extension != ".svg" && extension != ".xpm" {
+			return nil
+		}
+		if name != iconName && strings.TrimSuffix(name, filepath.Ext(name)) != iconName {
+			return nil
+		}
+
+		score := 0
+		if extension == ".svg" {
+			score = 1000000
+		}
+		resolution := filepath.Base(filepath.Dir(filepath.Dir(path)))
+		var width, height int
+		if _, err := fmt.Sscanf(resolution, "%dx%d", &width, &height); err == nil {
+			score += min(width, height)
+		}
+		if score > iconScore {
+			iconPath = path
+			iconScore = score
+		}
+		return nil
+	})
+	return iconPath
+}
+
 // shellLiteral renders a value as a single word for /bin/sh.
 func shellLiteral(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
 func (c *Cpak) exportBinary(app types.Application, binary string) error {
-	origin, err := normalizeRepositoryOrigin(app.Origin)
-	if err != nil {
-		return err
-	}
-	relative := filepath.Join(filepath.FromSlash(origin), filepath.Base(binary))
-	destinationPath, err := containedPath(c.Options.ExportsPath, relative)
-	if err != nil {
-		return err
-	}
+	destinationItems := []string{c.Options.ExportsPath}
+	destinationItems = append(destinationItems, strings.Split(app.Origin, "/")...)
+	destinationItems = append(destinationItems, filepath.Base(binary))
+	destinationPath := filepath.Join(destinationItems...)
 
-	err = os.MkdirAll(filepath.Dir(destinationPath), 0755)
+	err := os.MkdirAll(filepath.Dir(destinationPath), 0755)
 	if err != nil {
 		return err
 	}
@@ -982,45 +1073,13 @@ func (c *Cpak) exportBinary(app types.Application, binary string) error {
 	return nil
 }
 
-// Remove removes a package from the local store, including all the containers,
-// exports and unshared layers associated with it. Persistent application data
-// is retained.
-func (c *Cpak) Remove(origin string, branch string, commit string, release string) error {
-	return c.remove(origin, branch, commit, release, false)
-}
-
-// Purge removes a package and its persistent application data.
-func (c *Cpak) Purge(origin string, branch string, commit string, release string) error {
-	return c.remove(origin, branch, commit, release, true)
-}
-
-func (c *Cpak) remove(origin string, branch string, commit string, release string, purge bool) (err error) {
+// Remove removes a package from the local store, including all the containers
+// and exports associated with it. It also removes the application and
+// container files from the cpak data directory.
+func (c *Cpak) Remove(origin string, branch string, commit string, release string) (err error) {
 	store, err := NewStore(c.Options.StorePath)
 	if err != nil {
 		return
-	}
-
-	installedVersions, err := store.GetApplicationsByOrigin(origin, "", "", "", "")
-	if err != nil {
-		_ = store.Close()
-		return err
-	}
-	if branch == "" && commit == "" && release == "" {
-		if len(installedVersions) == 0 {
-			_ = store.Close()
-			return fmt.Errorf("application %s not found for removal", origin)
-		}
-		if len(installedVersions) > 1 {
-			_ = store.Close()
-			return fmt.Errorf("multiple installations of %s found; specify a branch, commit or release", origin)
-		}
-		branch = installedVersions[0].Branch
-		commit = installedVersions[0].Commit
-		release = installedVersions[0].Release
-		if branch == "" && commit == "" && release == "" {
-			_ = store.Close()
-			return fmt.Errorf("installed application %s has no source selector", origin)
-		}
 	}
 
 	appToRemove, err := store.GetApplicationByOrigin(origin, "", branch, commit, release)
@@ -1028,7 +1087,12 @@ func (c *Cpak) remove(origin string, branch string, commit string, release strin
 		_ = store.Close()
 		return fmt.Errorf("application %s not found for specified criteria: %w", origin, err)
 	}
-	removedSessions, remainingVersions := sessionsRemovedByVersionSelection(installedVersions, branch, commit, release)
+	installedVersions, err := store.GetApplicationsByOrigin(origin, "", "", "", "")
+	if err != nil {
+		_ = store.Close()
+		return err
+	}
+	removedSessions, _ := sessionsRemovedByVersionSelection(installedVersions, branch, commit, release)
 	if err = store.Close(); err != nil {
 		return
 	}
@@ -1103,36 +1167,11 @@ func (c *Cpak) remove(origin string, branch string, commit string, release strin
 	if err = c.removeApplicationLayers(appToRemove); err != nil {
 		return err
 	}
-	if purge {
-		if err = c.purgeApplicationData(appToRemove, remainingVersions == 0); err != nil {
-			return fmt.Errorf("purge application data for %s: %w", appToRemove.Name, err)
-		}
-	}
 
 	// The layers are gone, so nothing the anchor names is still on disk.
 	c.forgetEnrolment(appToRemove)
 
 	return nil
-}
-
-func (c *Cpak) purgeApplicationData(app types.Application, clearOriginState bool) error {
-	if path, err := c.applicationDataPath(app.CpakId); err == nil {
-		if err = os.RemoveAll(path); err != nil {
-			return err
-		}
-	}
-	identity, err := c.applicationIdentityPath(app.CpakId)
-	if err != nil {
-		return err
-	}
-	if err = os.Remove(identity); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	if !clearOriginState {
-		return nil
-	}
-	grants := filegrant.Store{Directory: filepath.Join(c.Options.StorePath, "grants")}
-	return grants.Clear(app.Origin)
 }
 
 func sessionsRemovedByVersionSelection(apps []types.Application, branch, commit, release string) ([]types.Session, int) {
@@ -1218,9 +1257,6 @@ func (c *Cpak) removeExports(app types.Application) error {
 		if err := c.removeBinaryExport(app.Origin, filepath.Base(binary)); err != nil {
 			logger.Printf("Warning: could not remove binary export %s: %v", binary, err)
 		}
-	}
-	if refreshErr := refreshDesktopDatabase(); refreshErr != nil {
-		logger.Printf("Warning: could not refresh the desktop database: %v", refreshErr)
 	}
 
 	return nil
@@ -1317,9 +1353,6 @@ func (c *Cpak) removeStaleExports(old types.Application, updated types.Applicati
 		if err := c.removeBinaryExport(old.Origin, name); err != nil {
 			return err
 		}
-	}
-	if refreshErr := refreshDesktopDatabase(); refreshErr != nil {
-		logger.Printf("Warning: could not refresh the desktop database: %v", refreshErr)
 	}
 
 	return nil

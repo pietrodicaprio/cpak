@@ -165,3 +165,12 @@ Producers validate a result before printing or recording it. Consumers reject:
 New optional presentation fields require a new schema version because v1
 rejects unknown fields. New reason codes do not require a schema version when
 they preserve the documented stage and final-action semantics.
+
+The cpak actor wraps one or more v1 decisions in a command envelope. `install
+--json` emits `{"schema_version":1,"trust":[...]}`. `update --json` emits the
+same fields plus `updates`, which preserves the pre-POC per-application update
+records under a named member instead of mixing operational and trust fields.
+This is an intentional experimental-branch migration from the previous bare
+update array; consumers must select the envelope version before reading either
+member. JSON mode is non-interactive and never displays or answers a trust
+prompt.

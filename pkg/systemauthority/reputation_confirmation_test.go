@@ -46,10 +46,14 @@ func TestReputationConfirmationIsSingleUseAndBoundToTheExactWarning(t *testing.T
 func TestReputationConfirmationCrossesDBusAsValidatedStructuredData(t *testing.T) {
 	result := authorityReputationResult(testNormalizedPublisher(t).ID, reputation.Unknown)
 	decision := trustpolicy.ReputationDecision{Allowed: true, Action: trustpolicy.ActionWarn, ReasonCode: "provider-result", Reason: "publisher reputation requires a warning before continuing"}
-	local := &ReputationConfirmationRequiredError{Result: result, Decision: decision, Token: "confirmation-token"}
+	local := &ReputationConfirmationRequiredError{
+		Result: result, Decision: decision, SignatureMode: SignaturesRequired,
+		ReputationMode: trustpolicy.ReputationWarn, Token: "confirmation-token",
+	}
 	decoded := decodeReputationConfirmationError(enrolmentFailed(local))
 	var remote *ReputationConfirmationRequiredError
-	if !errors.As(decoded, &remote) || remote.Token != local.Token || remote.Result.Status != result.Status || remote.Decision.Action != trustpolicy.ActionWarn {
+	if !errors.As(decoded, &remote) || remote.Token != local.Token || remote.Result.Status != result.Status ||
+		remote.Decision.Action != trustpolicy.ActionWarn || remote.SignatureMode != local.SignatureMode || remote.ReputationMode != local.ReputationMode {
 		t.Fatalf("decoded confirmation = %#v", decoded)
 	}
 	if remote.Error() != ErrReputationConfirmationRequired.Error() || remote.Error() == remote.Token {
