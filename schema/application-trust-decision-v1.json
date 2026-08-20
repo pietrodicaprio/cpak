@@ -1,0 +1,666 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cpak.io/schema/application-trust-decision-v1.json",
+  "title": "Application Trust Decision Result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "actor",
+    "operation",
+    "context",
+    "decision_source",
+    "subject",
+    "verification",
+    "publisher",
+    "trust",
+    "reputation",
+    "policy",
+    "final"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "actor": {
+      "$ref": "#/$defs/name"
+    },
+    "operation": {
+      "enum": [
+        "verify",
+        "install",
+        "update",
+        "audit",
+        "explain",
+        "launch",
+        "service-start"
+      ]
+    },
+    "context": {
+      "enum": [
+        "graphical",
+        "interactive-terminal",
+        "non-interactive"
+      ]
+    },
+    "decision_source": {
+      "enum": [
+        "evaluated",
+        "recorded"
+      ]
+    },
+    "subject": {
+      "$ref": "#/$defs/subject"
+    },
+    "verification": {
+      "$ref": "#/$defs/verification"
+    },
+    "publisher": {
+      "$ref": "#/$defs/publisher"
+    },
+    "trust": {
+      "$ref": "#/$defs/trust"
+    },
+    "reputation": {
+      "$ref": "#/$defs/reputation"
+    },
+    "policy": {
+      "$ref": "#/$defs/policy"
+    },
+    "final": {
+      "$ref": "#/$defs/final"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "context": {
+            "const": "non-interactive"
+          },
+          "policy": {
+            "properties": {
+              "action": {
+                "const": "warn"
+              }
+            },
+            "required": [
+              "action"
+            ]
+          }
+        },
+        "required": [
+          "context",
+          "policy"
+        ]
+      },
+      "then": {
+        "properties": {
+          "policy": {
+            "properties": {
+              "confirmation": {
+                "const": "not-available"
+              }
+            }
+          },
+          "final": {
+            "properties": {
+              "action": {
+                "const": "confirmation-required"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "final": {
+            "properties": {
+              "action": {
+                "const": "warn"
+              }
+            },
+            "required": [
+              "action"
+            ]
+          }
+        },
+        "required": [
+          "final"
+        ]
+      },
+      "then": {
+        "properties": {
+          "context": {
+            "enum": [
+              "graphical",
+              "interactive-terminal"
+            ]
+          },
+          "policy": {
+            "properties": {
+              "action": {
+                "const": "warn"
+              },
+              "confirmation": {
+                "const": "accepted"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "final": {
+            "properties": {
+              "action": {
+                "const": "confirmation-required"
+              }
+            },
+            "required": [
+              "action"
+            ]
+          }
+        },
+        "required": [
+          "final"
+        ]
+      },
+      "then": {
+        "properties": {
+          "policy": {
+            "properties": {
+              "action": {
+                "const": "warn"
+              },
+              "confirmation": {
+                "enum": [
+                  "required",
+                  "not-available"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "reason_code": {
+      "$ref": "#/$defs/name"
+    },
+    "safe_text": {
+      "type": "string",
+      "pattern": "^[^\\x00-\\x1f\\x7f]*$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "maxLength": 35
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "origin"
+      ],
+      "properties": {
+        "origin": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/safe_text"
+            },
+            {
+              "minLength": 1,
+              "maxLength": 512
+            }
+          ]
+        },
+        "artifact_digest": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9+._-]{0,31}:[0-9a-f]{32,128}$",
+          "maxLength": 161
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "evidence_kind",
+        "reason_code"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "verified",
+            "unsigned",
+            "invalid",
+            "unavailable",
+            "not-evaluated"
+          ]
+        },
+        "evidence_kind": {
+          "enum": [
+            "sigstore-bundle-v1",
+            "x509-cms-v1",
+            "none",
+            "unknown"
+          ]
+        },
+        "reason_code": {
+          "$ref": "#/$defs/reason_code"
+        },
+        "diagnostic": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/safe_text"
+            },
+            {
+              "maxLength": 512
+            }
+          ]
+        }
+      }
+    },
+    "publisher": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "reason_code"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "verified",
+            "absent",
+            "invalid",
+            "unavailable",
+            "not-evaluated"
+          ]
+        },
+        "id": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/safe_text"
+            },
+            {
+              "minLength": 1,
+              "maxLength": 512
+            }
+          ]
+        },
+        "display_name": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/safe_text"
+            },
+            {
+              "maxLength": 200
+            }
+          ]
+        },
+        "reason_code": {
+          "$ref": "#/$defs/reason_code"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "verified"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "id"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "id"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "trust": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "chain",
+        "signing_time",
+        "revocation",
+        "reason_code"
+      ],
+      "properties": {
+        "chain": {
+          "enum": [
+            "trusted-public",
+            "trusted-local",
+            "not-applicable",
+            "untrusted",
+            "invalid",
+            "not-evaluated"
+          ]
+        },
+        "root_source": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/safe_text"
+            },
+            {
+              "maxLength": 512
+            }
+          ]
+        },
+        "signing_time": {
+          "enum": [
+            "current",
+            "timestamped",
+            "missing",
+            "expired",
+            "not-yet-valid",
+            "invalid",
+            "not-applicable",
+            "not-evaluated"
+          ]
+        },
+        "revocation": {
+          "enum": [
+            "good",
+            "revoked",
+            "unknown",
+            "stale",
+            "not-applicable",
+            "not-evaluated"
+          ]
+        },
+        "reason_code": {
+          "$ref": "#/$defs/reason_code"
+        }
+      }
+    },
+    "reputation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "freshness",
+        "reason_code"
+      ],
+      "properties": {
+        "provider_id": {
+          "$ref": "#/$defs/name"
+        },
+        "status": {
+          "enum": [
+            "established",
+            "unknown",
+            "caution",
+            "blocked",
+            "unavailable",
+            "not-consulted"
+          ]
+        },
+        "freshness": {
+          "enum": [
+            "fresh",
+            "stale",
+            "unavailable",
+            "not-applicable"
+          ]
+        },
+        "issued_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "expires_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "reason_code": {
+          "$ref": "#/$defs/reason_code"
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "signature_mode",
+        "reputation_mode",
+        "action",
+        "confirmation",
+        "exception",
+        "reason_code"
+      ],
+      "properties": {
+        "signature_mode": {
+          "enum": [
+            "optional",
+            "required",
+            "not-applicable"
+          ]
+        },
+        "reputation_mode": {
+          "enum": [
+            "off",
+            "audit",
+            "warn",
+            "require-established",
+            "not-applicable"
+          ]
+        },
+        "action": {
+          "enum": [
+            "allow",
+            "warn",
+            "deny",
+            "not-evaluated"
+          ]
+        },
+        "confirmation": {
+          "enum": [
+            "not-required",
+            "required",
+            "accepted",
+            "declined",
+            "not-available"
+          ]
+        },
+        "exception": {
+          "type": "boolean"
+        },
+        "reason_code": {
+          "$ref": "#/$defs/reason_code"
+        }
+      }
+    },
+    "final": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/final_allow"
+        },
+        {
+          "$ref": "#/$defs/final_warn"
+        },
+        {
+          "$ref": "#/$defs/final_deny"
+        },
+        {
+          "$ref": "#/$defs/final_invalid"
+        },
+        {
+          "$ref": "#/$defs/final_unavailable"
+        },
+        {
+          "$ref": "#/$defs/final_confirmation"
+        }
+      ]
+    },
+    "final_allow": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/final_base"
+        },
+        {
+          "properties": {
+            "action": {
+              "const": "allow"
+            },
+            "class": {
+              "const": "allowed"
+            },
+            "exit_code": {
+              "const": 0
+            }
+          }
+        }
+      ]
+    },
+    "final_warn": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/final_base"
+        },
+        {
+          "properties": {
+            "action": {
+              "const": "warn"
+            },
+            "class": {
+              "const": "allowed"
+            },
+            "exit_code": {
+              "const": 0
+            }
+          }
+        }
+      ]
+    },
+    "final_deny": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/final_base"
+        },
+        {
+          "properties": {
+            "action": {
+              "const": "deny"
+            },
+            "class": {
+              "const": "denied"
+            },
+            "exit_code": {
+              "const": 20
+            }
+          }
+        }
+      ]
+    },
+    "final_invalid": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/final_base"
+        },
+        {
+          "properties": {
+            "action": {
+              "const": "invalid"
+            },
+            "class": {
+              "const": "invalid"
+            },
+            "exit_code": {
+              "const": 21
+            }
+          }
+        }
+      ]
+    },
+    "final_unavailable": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/final_base"
+        },
+        {
+          "properties": {
+            "action": {
+              "const": "unavailable"
+            },
+            "class": {
+              "const": "unavailable"
+            },
+            "exit_code": {
+              "const": 22
+            }
+          }
+        }
+      ]
+    },
+    "final_confirmation": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/final_base"
+        },
+        {
+          "properties": {
+            "action": {
+              "const": "confirmation-required"
+            },
+            "class": {
+              "const": "confirmation-required"
+            },
+            "exit_code": {
+              "const": 23
+            }
+          }
+        }
+      ]
+    },
+    "final_base": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "class",
+        "reason_code",
+        "exit_code"
+      ],
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "class": {
+          "type": "string"
+        },
+        "reason_code": {
+          "$ref": "#/$defs/reason_code"
+        },
+        "exit_code": {
+          "type": "integer"
+        }
+      }
+    }
+  }
+}
