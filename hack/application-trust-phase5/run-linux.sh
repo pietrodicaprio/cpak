@@ -260,8 +260,11 @@ run_graphical_enrolment() {
     fail "the publisher reputation window did not appear"
   fi
 
+  sleep 1
   DISPLAY="$display_number" xdotool windowfocus "$window_id" \
-    mousemove --window "$window_id" 429 479 mousedown 1 mouseup 1
+    mousemove --sync --window "$window_id" 429 479
+  sleep 0.2
+  DISPLAY="$display_number" xdotool click 1
   for _ in {1..300}; do
     kill -0 "$install_pid" 2>/dev/null || break
     sleep 0.1
