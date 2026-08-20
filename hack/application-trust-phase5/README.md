@@ -38,12 +38,16 @@ volume so cpak's nested rootless OverlayFS uses a host-native backing store
 rather than Docker's overlay-backed root. The volume holds disposable cpak test
 state, is removed with the container, and is not a redirected developer cache.
 
-Those modes still run cpak directly as root inside the private namespace. They
-are not evidence for cpak's own `sudo` reinvocation path. Because binding the
-fixture repository to HTTPS port 443 requires a privileged network port, the
-process-level package lifecycle currently runs only in these disposable-runner
-modes. The default user-namespace mode still executes the core X.509 and
-reputation administration lifecycle.
+Those modes support direct-root administration inside the private namespace.
+When `CPAK_PHASE5_FRONTEND_USER` names the disposable unprivileged account, the
+harness also exercises cpak's real `sudo` and `doas` re-entry. It installs
+exact-command policies only in the disposable container, gives each invocation
+a `PATH` containing only the frontend under test, and keeps the re-entered cpak
+binary root-owned. Because binding the fixture repository to HTTPS port 443
+requires a privileged network port, the process-level package lifecycle
+currently runs only in these disposable-runner modes. The default user-
+namespace mode still executes the core X.509 and reputation administration
+lifecycle.
 
 The current harness proves:
 
@@ -68,17 +72,20 @@ The current harness proves:
   returns the exact expected output, and is stopped through the normal CLI;
 - all direct-root administration works without a display or session bus while
   host state remains untouched.
+- real unprivileged cpak invocations add and remove the X.509 root and set,
+  import, query, and clear reputation data through both `sudo` and `doas`, with
+  exact argument and fingerprint policies and no graphical fallback.
 
 The first install/update milestone is
 [Portability run 32411499077](https://github.com/pietrodicaprio/cpak/actions/runs/32411499077)
 at commit `5689688`. The expanded headless lifecycle, including the installed
 binary's offline execution, is
 [Portability run 32415553153](https://github.com/pietrodicaprio/cpak/actions/runs/32415553153)
-at commit `2c78445`.
+at commit `2c78445`. The real privilege-frontend matrix is
+[Portability run 32417008322](https://github.com/pietrodicaprio/cpak/actions/runs/32417008322)
+at commit `c251200`.
 
 It does **not** prove the complete Phase 5 gate. Separate disposable-machine
-runs must still record real `sudo` and `doas` reinvocation, graphical
-confirmation, Sigstore install/update, service restart enforcement, and the
-remaining negative/recovery matrix. The pseudo-terminal row proves terminal
-confirmation for X.509 only. A wrapper named `sudo` or `doas` is not acceptable
-evidence for those frontend rows.
+runs must still record graphical confirmation, Sigstore install/update, service
+restart enforcement, and the remaining negative/recovery matrix. The pseudo-
+terminal row proves terminal confirmation for X.509 only.

@@ -667,9 +667,10 @@ tests.
 - Root import/removal and reputation snapshot administration work when run
   directly as root and through `sudo` or `doas`, without `pkexec` or `run0`.
   Headless privilege discovery is now limited to `sudo` and `doas`; direct
-  root execution needs no frontend. The isolated Linux harness covers the
-  real direct-root CLI without touching host policy; real `sudo` and `doas`
-  frontend execution remain Phase 5 runtime gates.
+  root execution needs no frontend. The isolated Linux harness covers the real
+  direct-root CLI and real unprivileged cpak re-entry through both frontends.
+  The frontend rows use exact-command policies and frontend-exclusive `PATH`
+  values inside the disposable CI container.
 - Human-readable output, machine-readable output, exit codes, and audit records
   agree on the final action and stable reason code.
 - Provider outage and offline cached evidence follow configured policy without
@@ -695,8 +696,11 @@ private Linux namespace. The expanded headless lifecycle is executed at commit
 after provider removal and fixture shutdown, the binary installed from the OCI
 layer executes with its exact expected output, stops normally, and remains
 explainable and auditable from the recorded established decision. This does not
-close Phase 5: Sigstore, graphical, real `sudo`/`doas` frontend, service, and
-the remaining negative/recovery rows are still required.
+close Phase 5. The privilege-frontend gate is executed at commit `c251200` by
+[Portability run 32417008322](https://github.com/pietrodicaprio/cpak/actions/runs/32417008322):
+real unprivileged cpak invocations complete exact-fingerprint trust-root and
+reputation lifecycles through both `sudo` and `doas`. Sigstore, graphical,
+service, and the remaining negative/recovery rows are still required.
 
 ### Phase 6: Publication package and final certification
 
