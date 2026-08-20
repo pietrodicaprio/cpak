@@ -666,6 +666,9 @@ tests.
   revoked, or administratively denied evidence.
 - Root import/removal and reputation snapshot administration work when run
   directly as root and through `sudo` or `doas`, without `pkexec` or `run0`.
+  Headless privilege discovery is now limited to `sudo` and `doas`; direct
+  root execution needs no frontend. Real Linux frontend execution remains a
+  Phase 5 runtime gate.
 - Human-readable output, machine-readable output, exit codes, and audit records
   agree on the final action and stable reason code.
 - Provider outage and offline cached evidence follow configured policy without

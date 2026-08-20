@@ -25,7 +25,12 @@ func escalationTools() []string {
 	if os.Getenv("WAYLAND_DISPLAY") != "" || os.Getenv("DISPLAY") != "" {
 		return append(append([]string{}, graphicalEscalation...), terminalEscalation...)
 	}
-	return append(append([]string{}, terminalEscalation...), graphicalEscalation...)
+	// A server or service must never discover a graphical authentication
+	// agent as an accidental fallback. Besides hanging unattended commands,
+	// pkexec and run0 can require session infrastructure that is intentionally
+	// absent on a headless host. Direct root remains available without a
+	// frontend; an unprivileged terminal uses sudo or doas.
+	return append([]string{}, terminalEscalation...)
 }
 
 func escalationTool() (string, error) {
