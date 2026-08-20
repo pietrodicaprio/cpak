@@ -351,6 +351,10 @@ func (c *Cpak) updateApplication(app types.Application, deps updateDeps, approve
 	if err = c.bindBuiltLayers(pulled, layers); err != nil {
 		return failedUpdate(result, err)
 	}
+	manifestDigest, err := manifestIdentityDigest(manifest)
+	if err != nil {
+		return failedUpdate(result, err)
+	}
 
 	updated := types.Application{
 		CpakId:               cpakImageId,
@@ -374,6 +378,7 @@ func (c *Cpak) updateApplication(app types.Application, deps updateDeps, approve
 		Config:               config,
 		Image:                image,
 		ImageDigest:          imageDigest,
+		ManifestDigest:       manifestDigest,
 		ParsedOverride:       override,
 		// An update refreshes what a package is, never who asked for it, so
 		// how the installation came to be here travels with it. Losing it
@@ -391,7 +396,7 @@ func (c *Cpak) updateApplication(app types.Application, deps updateDeps, approve
 		if err = deps.createExports(updated); err != nil {
 			return failedUpdate(result, err)
 		}
-		if app.ImageDigest == "" {
+		if app.ImageDigest == "" || app.ManifestDigest != updated.ManifestDigest {
 			if err = c.replaceApplication(app, updated); err != nil {
 				return failedUpdate(result, err)
 			}
