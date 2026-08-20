@@ -9,6 +9,9 @@
 package main
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -42,6 +45,7 @@ const (
 	imageManifestMediaType       = "application/vnd.oci.image.manifest.v1+json"
 	imageIndexMediaType          = "application/vnd.oci.image.index.v1+json"
 	emptyConfigMediaType         = "application/vnd.oci.empty.v1+json"
+	imageLayerMediaType          = "application/vnd.oci.image.layer.v1.tar+gzip"
 	x509ArtifactType             = "application/vnd.cpak.signature.x509.v1"
 	x509CMSMediaType             = "application/pkcs7-signature"
 	generationAnnotation         = "dev.cpak.signature.generation"
@@ -67,6 +71,8 @@ type fixture struct {
 	directory       string
 	config          []byte
 	configDigest    string
+	layer           []byte
+	layerDigest     string
 	imageManifest   []byte
 	imageDigest     string
 	emptyConfig     []byte
@@ -133,13 +139,24 @@ func main() {
 }
 
 func newFixture(directory string) (*fixture, error) {
-	config := []byte(`{"architecture":"amd64","os":"linux","config":{}}`)
+	layer, diffID, err := fixtureLayer()
+	if err != nil {
+		return nil, err
+	}
+	config, err := json.Marshal(map[string]any{
+		"architecture": "amd64", "os": "linux", "config": map[string]any{},
+		"rootfs": map[string]any{"type": "layers", "diff_ids": []string{diffID}},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode image config: %w", err)
+	}
 	configDigest := digest(config)
+	layerDigest := digest(layer)
 	manifest, err := json.Marshal(map[string]any{
 		"schemaVersion": 2,
 		"mediaType":     imageManifestMediaType,
 		"config":        descriptor{MediaType: "application/vnd.oci.image.config.v1+json", Digest: configDigest, Size: len(config)},
-		"layers":        []descriptor{},
+		"layers":        []descriptor{{MediaType: imageLayerMediaType, Digest: layerDigest, Size: len(layer)}},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encode image manifest: %w", err)
@@ -147,6 +164,7 @@ func newFixture(directory string) (*fixture, error) {
 	empty := []byte("{}")
 	return &fixture{
 		directory: directory, config: config, configDigest: configDigest,
+		layer: layer, layerDigest: layerDigest,
 		imageManifest: manifest, imageDigest: digest(manifest),
 		emptyConfig: empty, emptyConfigHash: digest(empty),
 	}, nil
@@ -236,6 +254,10 @@ func (f *fixture) serveBlob(writer http.ResponseWriter, identifier string) {
 		return
 	case f.emptyConfigHash:
 		_, _ = writer.Write(f.emptyConfig)
+		return
+	case f.layerDigest:
+		writer.Header().Set("Content-Type", imageLayerMediaType)
+		_, _ = writer.Write(f.layer)
 		return
 	}
 	payload, _, err := f.evidence()
@@ -355,4 +377,38 @@ func writeJSON(writer http.ResponseWriter, mediaType string, value any) {
 func digest(content []byte) string {
 	sum := sha256.Sum256(content)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func fixtureLayer() ([]byte, string, error) {
+	var archive bytes.Buffer
+	tarWriter := tar.NewWriter(&archive)
+	content := []byte("#!/bin/sh\nprintf 'phase5 fixture executed\\n'\n")
+	header := &tar.Header{
+		Name: "usr/bin/phase5-fixture", Mode: 0755, Size: int64(len(content)),
+		Typeflag: tar.TypeReg,
+	}
+	if err := tarWriter.WriteHeader(header); err != nil {
+		return nil, "", fmt.Errorf("write fixture layer header: %w", err)
+	}
+	if _, err := tarWriter.Write(content); err != nil {
+		return nil, "", fmt.Errorf("write fixture layer content: %w", err)
+	}
+	if err := tarWriter.Close(); err != nil {
+		return nil, "", fmt.Errorf("close fixture layer: %w", err)
+	}
+
+	var compressed bytes.Buffer
+	gzipWriter, err := gzip.NewWriterLevel(&compressed, gzip.BestCompression)
+	if err != nil {
+		return nil, "", fmt.Errorf("create fixture layer compressor: %w", err)
+	}
+	gzipWriter.Header.ModTime = time.Unix(0, 0)
+	gzipWriter.Header.OS = 255
+	if _, err = gzipWriter.Write(archive.Bytes()); err != nil {
+		return nil, "", fmt.Errorf("compress fixture layer: %w", err)
+	}
+	if err = gzipWriter.Close(); err != nil {
+		return nil, "", fmt.Errorf("close fixture layer compressor: %w", err)
+	}
+	return compressed.Bytes(), digest(archive.Bytes()), nil
 }
