@@ -451,6 +451,7 @@ go vet ./...
 CGO_ENABLED=0 go build -tags cpak_ui_builtin -trimpath -o "$phase5_dir/bin/cpak" .
 CGO_ENABLED=0 go build -trimpath -o "$phase5_dir/bin/cpak-sign" ./cmd/cpak-sign
 CGO_ENABLED=0 go build -tags cpak_ui_builtin -trimpath -o "$phase5_dir/bin/cpak-installer" ./cmd/cpak-installer
+CGO_ENABLED=0 go build -trimpath -o "$phase5_dir/bin/cpak-storaged" ./cmd/cpak-storaged
 CGO_ENABLED=0 go build -trimpath -o "$phase5_dir/bin/cpak-phase5-fixture" ./hack/application-trust-phase5/fixture-server
 
 printf '%s\n' 'phase5-disposable-material' >"$phase5_dir/passphrase"
