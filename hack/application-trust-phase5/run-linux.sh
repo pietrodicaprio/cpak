@@ -33,7 +33,8 @@ if document.get("schema_version") != 1:
 final = document.get("final", {})
 if final.get("exit_code") != expected_status or actual_status != expected_status:
     raise SystemExit(
-        f"exit disagreement: process={actual_status}, decision={final.get('exit_code')}, expected={expected_status}"
+        f"exit disagreement: process={actual_status}, decision={final.get('exit_code')}, "
+        f"action={final.get('action')!r}, reason={final.get('reason_code')!r}, expected={expected_status}"
     )
 if final.get("action") != expected_action:
     raise SystemExit(f"final action={final.get('action')!r}, expected={expected_action!r}")
@@ -77,7 +78,8 @@ if result.get("context") != expected_context or result.get("operation") != expec
     )
 if final.get("exit_code") != expected_status or actual_status != expected_status:
     raise SystemExit(
-        f"exit disagreement: process={actual_status}, decision={final.get('exit_code')}, expected={expected_status}"
+        f"exit disagreement: process={actual_status}, decision={final.get('exit_code')}, "
+        f"action={final.get('action')!r}, reason={final.get('reason_code')!r}, expected={expected_status}"
     )
 if final.get("action") != expected_action or not final.get("reason_code"):
     raise SystemExit(f"unexpected final decision: {final!r}")

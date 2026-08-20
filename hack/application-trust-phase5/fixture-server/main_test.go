@@ -6,6 +6,9 @@
 package main
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -14,6 +17,42 @@ import (
 	"path/filepath"
 	"testing"
 )
+
+func TestFixtureLayerContainsExecutableHeadlessCommand(t *testing.T) {
+	layer, diffID, err := fixtureLayer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := gzip.NewReader(bytes.NewReader(layer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	uncompressed, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if digest(uncompressed) != diffID {
+		t.Fatalf("diff ID = %q, want %q", diffID, digest(uncompressed))
+	}
+	tarReader := tar.NewReader(bytes.NewReader(uncompressed))
+	header, err := tarReader.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if header.Name != "usr/bin/phase5-fixture" || header.Mode != 0755 {
+		t.Fatalf("fixture entry = %q mode %#o", header.Name, header.Mode)
+	}
+	content, err := io.ReadAll(tarReader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(content, []byte("phase5 fixture executed")) {
+		t.Fatalf("unexpected fixture command: %q", content)
+	}
+}
 
 func TestManifestEndpointServesOnlyTheFixtureManifest(t *testing.T) {
 	directory := t.TempDir()
@@ -83,6 +122,13 @@ func TestRegistryPublishesImageAndCurrentEvidence(t *testing.T) {
 	server.serveRegistry(recorder, request)
 	if recorder.Code != http.StatusOK || recorder.Header().Get("Docker-Content-Digest") != server.imageDigest {
 		t.Fatalf("image response = %d digest %q", recorder.Code, recorder.Header().Get("Docker-Content-Digest"))
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/v2/"+repository+"/blobs/"+server.layerDigest, nil)
+	recorder = httptest.NewRecorder()
+	server.serveRegistry(recorder, request)
+	if recorder.Code != http.StatusOK || recorder.Body.Len() == 0 {
+		t.Fatalf("layer response = %d with %d bytes", recorder.Code, recorder.Body.Len())
 	}
 }
 
