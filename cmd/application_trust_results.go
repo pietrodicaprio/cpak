@@ -12,7 +12,6 @@ import (
 
 	"github.com/mirkobrombin/cpak/pkg/applicationtrust"
 	"github.com/mirkobrombin/cpak/pkg/cpak"
-	"github.com/mirkobrombin/cpak/pkg/tools"
 	"github.com/mirkobrombin/cpak/pkg/types"
 	clilog "github.com/mirkobrombin/go-cli-builder/v3/pkg/log"
 )
@@ -45,23 +44,9 @@ func reportApplicationTrustResults(logger clilog.Logger, results []applicationtr
 }
 
 func reportApplicationTrustResult(logger clilog.Logger, result applicationtrust.Result) {
-	publisher := result.Publisher.DisplayName
-	if publisher == "" {
-		publisher = result.Publisher.ID
+	for _, line := range applicationtrust.HumanLines(result) {
+		logger.Info("%s", line)
 	}
-	if publisher == "" {
-		publisher = string(result.Publisher.Status)
-	}
-	logger.Info("Application trust for %s: %s (%s).", tools.SanitizeForDisplay(result.Subject.Origin), result.Final.Action, result.Final.ReasonCode)
-	logger.Info("  Publisher: %s (%s); verification: %s/%s (%s); origin: %s.",
-		tools.SanitizeForDisplay(publisher), result.Publisher.ReasonCode, result.Verification.Status,
-		result.Verification.EvidenceKind, result.Verification.ReasonCode, result.Publisher.OriginAuthorization)
-	logger.Info("  Trust: chain %s, root %s, signing time %s, revocation %s (%s).",
-		result.Trust.Chain, tools.SanitizeForDisplay(result.Trust.RootSource), result.Trust.SigningTime, result.Trust.Revocation, result.Trust.ReasonCode)
-	logger.Info("  Reputation: provider %s, status %s, freshness %s (%s); policy: signatures %s, reputation %s, action %s, confirmation %s (%s).",
-		tools.SanitizeForDisplay(result.Reputation.ProviderID), result.Reputation.Status, result.Reputation.Freshness,
-		result.Reputation.ReasonCode, result.Policy.SignatureMode, result.Policy.ReputationMode, result.Policy.Action,
-		result.Policy.Confirmation, result.Policy.ReasonCode)
 }
 
 func applicationTrustResultExit(results []applicationtrust.Result) error {
