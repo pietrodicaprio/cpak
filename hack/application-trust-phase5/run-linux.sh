@@ -223,6 +223,55 @@ exercise_reputation_frontend() {
   printf 'phase5: %s reputation frontend lifecycle passed\n' "$frontend"
 }
 
+run_graphical_enrolment() {
+  local origin="$1"
+  local display_number=":99"
+  local install_pid=""
+  local status window_id=""
+
+  Xvfb "$display_number" -screen 0 1024x768x24 -nolisten tcp \
+    >"$phase5_dir/xvfb.log" 2>&1 &
+  xvfb_pid=$!
+  for _ in {1..100}; do
+    if DISPLAY="$display_number" xdotool getmouselocation >/dev/null 2>&1; then
+      break
+    fi
+    kill -0 "$xvfb_pid" 2>/dev/null || fail "the graphical test display stopped"
+    sleep 0.1
+  done
+  DISPLAY="$display_number" xdotool getmouselocation >/dev/null 2>&1 || \
+    fail "the graphical test display did not become ready"
+
+  DISPLAY="$display_number" timeout 30 "$phase5_bin_dir/cpak" install \
+    --branch main --yes --graphical "$origin" \
+    >"$phase5_dir/install-graphical.log" 2>&1 &
+  install_pid=$!
+  for _ in {1..100}; do
+    if DISPLAY="$display_number" xdotool search --name '^Publisher reputation$' \
+      >"$phase5_dir/reputation-window" 2>/dev/null; then
+      window_id="$(head -n 1 "$phase5_dir/reputation-window")"
+      break
+    fi
+    kill -0 "$install_pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  [[ -n "$window_id" ]] || fail "the publisher reputation window did not appear"
+
+  DISPLAY="$display_number" xdotool mousemove --window "$window_id" 429 479 click 1
+  set +e
+  wait "$install_pid"
+  status=$?
+  set -e
+  kill "$xvfb_pid" 2>/dev/null || true
+  wait "$xvfb_pid" 2>/dev/null || true
+  xvfb_pid=""
+
+  [[ "$status" -eq 0 ]] || fail "graphical enrolment exited $status"
+  grep -F 'confirmation accepted' "$phase5_dir/install-graphical.log" >/dev/null || \
+    fail "graphical result did not record accepted confirmation"
+  printf 'phase5: real graphical reputation confirmation passed\n'
+}
+
 run_process_lifecycle() {
   local publisher_id="$1"
 
@@ -307,6 +356,32 @@ PY
   set -e
   assert_trust_envelope 23 confirmation-required non-interactive install \
     "$phase5_dir/install-non-interactive.json" "$status"
+
+  if [[ "$graphical_runtime" == "1" ]]; then
+    run_graphical_enrolment "$origin"
+    "$phase5_bin_dir/cpak" system explain "$origin" --json >"$phase5_dir/explain-graphical.json"
+    python3 - "$phase5_dir/explain-graphical.json" <<'PY'
+import json
+import pathlib
+import sys
+
+document = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+trust = document.get("trust", {})
+if not document.get("launch", {}).get("enrolled"):
+    raise SystemExit("the graphical confirmation did not enrol the installation")
+if trust.get("context") != "graphical" or trust.get("policy", {}).get("confirmation") != "accepted":
+    raise SystemExit(f"unexpected graphical recorded decision: {trust!r}")
+PY
+    "$phase5_bin_dir/cpak" remove --branch main "$origin"
+
+    set +e
+    timeout 20 "$phase5_bin_dir/cpak" install --branch main --yes --non-interactive --json "$origin" \
+      </dev/null >"$phase5_dir/install-non-interactive.json" 2>"$phase5_dir/install-non-interactive.err"
+    status=$?
+    set -e
+    assert_trust_envelope 23 confirmation-required non-interactive install \
+      "$phase5_dir/install-non-interactive.json" "$status"
+  fi
 
   set +e
   printf 'y\n' | script -qfec \
@@ -410,12 +485,18 @@ inside_namespace() {
   cleanup_gid="${5:-}"
   local phase5_data_root="${6:-$phase5_dir/home/.local/share}"
   frontend_user="${7:-}"
+  graphical_runtime="${8:-}"
   unset SUDO_UID SUDO_GID SUDO_USER
   fixture_pid=""
+  xvfb_pid=""
   cleanup_namespace() {
     if [[ -n "$fixture_pid" ]]; then
       kill "$fixture_pid" 2>/dev/null || true
       wait "$fixture_pid" 2>/dev/null || true
+    fi
+    if [[ -n "$xvfb_pid" ]]; then
+      kill "$xvfb_pid" 2>/dev/null || true
+      wait "$xvfb_pid" 2>/dev/null || true
     fi
     if [[ -n "$cleanup_uid" && -n "$cleanup_gid" ]]; then
       chown -R "$cleanup_uid:$cleanup_gid" "$phase5_dir"
@@ -450,6 +531,12 @@ inside_namespace() {
       mkdir -p "$phase5_bin_dir/frontend-$frontend"
       ln -s "$frontend_binary" "$phase5_bin_dir/frontend-$frontend/$frontend"
     done
+  fi
+  if [[ "$graphical_runtime" == "1" ]]; then
+    require_command Xvfb
+    require_command xdotool
+  elif [[ -n "$graphical_runtime" ]]; then
+    fail "CPAK_PHASE5_GRAPHICAL must be empty or 1"
   fi
 
   local root_fingerprint
@@ -576,6 +663,7 @@ phase5_bin_dir="$(mktemp -d "$exec_root/.cpak-phase5-bin.XXXXXXXX")"
 phase5_data_root="${CPAK_PHASE5_DATA_ROOT:-$phase5_dir/home/.local/share}"
 [[ "$phase5_data_root" == /* ]] || fail "CPAK_PHASE5_DATA_ROOT must be absolute"
 frontend_user="${CPAK_PHASE5_FRONTEND_USER:-}"
+graphical_runtime="${CPAK_PHASE5_GRAPHICAL:-}"
 trap 'rm -rf -- "$phase5_dir" "$phase5_bin_dir"' EXIT
 chmod 0700 "$phase5_dir"
 chmod 0755 "$phase5_bin_dir"
@@ -637,14 +725,14 @@ if [[ "$namespace_mode" == "--sudo-namespace" ]]; then
   owner_uid="$(id -u)"
   owner_gid="$(id -g)"
   sudo --non-interactive unshare --mount --pid --fork --mount-proc \
-    "$0" --inside-namespace "$phase5_dir" "$phase5_bin_dir" "$owner_uid" "$owner_gid" "$phase5_data_root" "$frontend_user"
+    "$0" --inside-namespace "$phase5_dir" "$phase5_bin_dir" "$owner_uid" "$owner_gid" "$phase5_data_root" "$frontend_user" "$graphical_runtime"
 elif [[ "$namespace_mode" == "--root-namespace" ]]; then
   [[ "$(id -u)" -eq 0 ]] || fail "--root-namespace requires an already-root disposable environment"
   unshare --mount --pid --fork --mount-proc \
-    "$0" --inside-namespace "$phase5_dir" "$phase5_bin_dir" 0 0 "$phase5_data_root" "$frontend_user"
+    "$0" --inside-namespace "$phase5_dir" "$phase5_bin_dir" 0 0 "$phase5_data_root" "$frontend_user" "$graphical_runtime"
 else
   unshare --user --map-root-user --mount --pid --fork --mount-proc \
-    "$0" --inside-namespace "$phase5_dir" "$phase5_bin_dir" "" "" "$phase5_data_root" "$frontend_user"
+    "$0" --inside-namespace "$phase5_dir" "$phase5_bin_dir" "" "" "$phase5_data_root" "$frontend_user" "$graphical_runtime"
 fi
 
 printf 'phase5: Linux core and isolated administrator harness passed\n'
