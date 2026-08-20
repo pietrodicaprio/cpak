@@ -1,10 +1,10 @@
 # Application Trust Phase 5 Linux harness
 
 `run-linux.sh` is an executable Phase 5 gate. It runs the repository's tests
-and vet on Linux, builds the real `cpak`, `cpak-sign`, `cpak-installer`, and
-fixture-server binaries, and then exercises the X.509, reputation, and package
-lifecycle CLI in a disposable mount namespace. By default it obtains root only
-inside an unprivileged user namespace.
+and vet on Linux, builds the real `cpak`, `cpak-sign`, `cpak-installer`,
+`cpak-storaged`, and fixture-server binaries, and then exercises the X.509,
+reputation, storage, and package lifecycle CLI in a disposable mount namespace.
+By default it obtains root only inside an unprivileged user namespace.
 
 The namespace makes the caller root only inside the test and replaces
 `/var/lib` with a private `tmpfs`. It also uses a temporary home and removes
