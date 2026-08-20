@@ -1103,6 +1103,7 @@ func TestUpdateStoresTheMigratedOverrideOfAV1Manifest(t *testing.T) {
 	manifest := newTestManifest()
 	manifest.ManifestVersion = "1.0"
 	manifest.Override.FsHostHome = true
+	manifest.Image = newSignatureRegistry().start(t).ContextName() + ":main"
 	stub := &updateStub{manifest: manifest, layers: []string{"newlayer"}, config: "{}"}
 	results, err := c.updateWithOptions(testOrigin, stub.deps(), UpdateOptions{
 		ConfirmPermissions: func([]types.UpdateResult) bool { return true },

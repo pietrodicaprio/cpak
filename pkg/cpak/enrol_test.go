@@ -401,8 +401,10 @@ func TestUpdateEnrolsTheApplicationItProduced(t *testing.T) {
 		Config:         "{}",
 	})
 
+	manifest := newTestManifest()
+	manifest.Image = newSignatureRegistry().start(t).ContextName() + ":main"
 	stub := &updateStub{
-		manifest:    newTestManifest(),
+		manifest:    manifest,
 		layers:      []string{verifiedBaseLayer, verifiedTopLayer},
 		config:      "{}",
 		imageDigest: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
@@ -451,8 +453,10 @@ func TestUpdateSucceedsWhenTheApplicationCannotBeEnrolled(t *testing.T) {
 		Config:         "{}",
 	})
 
+	manifest := newTestManifest()
+	manifest.Image = newSignatureRegistry().start(t).ContextName() + ":main"
 	stub := &updateStub{
-		manifest:    newTestManifest(),
+		manifest:    manifest,
 		layers:      []string{verifiedBaseLayer, verifiedTopLayer},
 		config:      "{}",
 		imageDigest: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
@@ -889,10 +893,11 @@ func TestEnrolPublishedApplicationReportsAReferrerThatNamesNoGeneration(t *testi
 	if authority.signature != nil {
 		t.Fatal("a referrer that names no generation was handed to the authority")
 	}
-	// It is still enrolled, because the application is installed either way and
-	// refusing it over a publisher's mistake would be a worse answer.
-	if authority.recorded == 0 {
-		t.Fatal("the application was not enrolled at all")
+	// Attached evidence that cannot name a state is never allowed to disappear
+	// into the unsigned path. The bytes stay installed, but there is no launch
+	// enrolment for them.
+	if enrolment.Outcome != EnrolmentUnrecordable || authority.recorded != 0 {
+		t.Fatalf("unusable attached evidence reached enrolment: outcome=%s recorded=%d", enrolment.Outcome, authority.recorded)
 	}
 }
 
@@ -1554,11 +1559,13 @@ func TestSignedLockTravelsOnlyWithThePackageItIsRootedAt(t *testing.T) {
 
 // A registry that will not answer is cpak failing to find out, and it used to
 // be reported as a package claiming a publisher it does not have. Nothing about
-// the installation is refused either way, so the line is all the operator gets
-// and it has to say which of the two happened.
+// the installation bytes stay either way, so the line is all the operator gets
+// and it has to say which of the two happened. It must not enrol an outage as
+// unsigned, because that would make registry availability a signature-policy
+// downgrade.
 func TestARegistryThatWillNotAnswerIsNotReportedAsAFailedSignature(t *testing.T) {
 	cp := newSignatureCpak(t)
-	useEnrolmentAuthority(t)
+	authority := useEnrolmentAuthority(t)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusInternalServerError)
 	}))
@@ -1573,14 +1580,14 @@ func TestARegistryThatWillNotAnswerIsNotReportedAsAFailedSignature(t *testing.T)
 	reported := captureStderr(t, func() {
 		enrolment = cp.EnrolPublishedApplication(app, publishedTestPackage(t))
 	})
-	if enrolment.Outcome != EnrolmentRecorded {
-		t.Fatalf("got outcome %s (%v), want the installation to be enrolled anyway", enrolment.Outcome, enrolment.Reason)
+	if enrolment.Outcome != EnrolmentUnrecordable || authority.recorded != 0 {
+		t.Fatalf("got outcome %s (%v), want the outage to leave the install unenrolled", enrolment.Outcome, enrolment.Reason)
 	}
 	if enrolment.Signature.Verified || enrolment.Signature.Unsigned() {
 		t.Fatalf("got signature %+v, want a registry that would not answer to be neither signed nor unsigned", enrolment.Signature)
 	}
-	if !strings.Contains(reported, "could not be found out") {
-		t.Fatalf("got %q on the error stream, want it to say who published %s could not be found out", reported, testOrigin)
+	if !strings.Contains(reported, "installed and not enrolled") || !strings.Contains(reported, "500 Internal Server Error") {
+		t.Fatalf("got %q on the error stream, want the registry outage and unenrolled state", reported)
 	}
 	if strings.Contains(reported, "is attached to") {
 		t.Fatalf("got %q on the error stream, want no claim that a signature is attached to %s", reported, testOrigin)
@@ -1592,7 +1599,7 @@ func TestARegistryThatWillNotAnswerIsNotReportedAsAFailedSignature(t *testing.T)
 // answer, and it keeps saying so.
 func TestABundleThatDoesNotStandIsReportedAsAnAttachedSignature(t *testing.T) {
 	cp := newSignatureCpak(t)
-	useEnrolmentAuthority(t)
+	authority := useEnrolmentAuthority(t)
 	registry := newSignatureRegistry()
 	digest := contentDigest([]byte("the image somebody signed"))
 	attachSigned(t, registry, digest, 1, []byte("a bundle that does not stand"))
@@ -1602,12 +1609,15 @@ func TestABundleThatDoesNotStandIsReportedAsAnAttachedSignature(t *testing.T) {
 	})
 
 	reported := captureStderr(t, func() {
-		if enrolment := cp.EnrolPublishedApplication(app, publishedTestPackage(t)); enrolment.Outcome != EnrolmentRecorded {
-			t.Errorf("got outcome %s (%v), want the installation to be enrolled anyway", enrolment.Outcome, enrolment.Reason)
+		if enrolment := cp.EnrolPublishedApplication(app, publishedTestPackage(t)); enrolment.Outcome != EnrolmentUnrecordable {
+			t.Errorf("got outcome %s (%v), want invalid attached evidence to remain unenrolled", enrolment.Outcome, enrolment.Reason)
 		}
 	})
-	if !strings.Contains(reported, "A publisher signature is attached to "+testOrigin) {
-		t.Fatalf("got %q on the error stream, want a bundle that does not stand reported as one attached to %s", reported, testOrigin)
+	if authority.recorded != 0 {
+		t.Fatal("invalid attached evidence reached the authority as an enrolment")
+	}
+	if !strings.Contains(reported, "installed and not enrolled") || !strings.Contains(reported, "publisher signature does not verify") {
+		t.Fatalf("got %q on the error stream, want the invalid attached signature and unenrolled state", reported)
 	}
 }
 
