@@ -107,7 +107,7 @@ verify_x509() {
   local output="$phase5_dir/decision-$expected_status-$expected_action.json"
   local status
   set +e
-  "$phase5_dir/bin/cpak" verify-signature "$phase5_dir/state.cms" \
+  "$phase5_bin_dir/cpak" verify-signature "$phase5_dir/state.cms" \
     --state "$phase5_dir/state" --evidence-kind x509-cms --json >"$output"
   status=$?
   set -e
@@ -140,7 +140,7 @@ payload = {
 }
 pathlib.Path(sys.argv[1]).write_text(json.dumps(payload, separators=(",", ":")) + "\n", encoding="utf-8")
 PY
-  "$phase5_dir/bin/cpak-sign" reputation-sign \
+  "$phase5_bin_dir/cpak-sign" reputation-sign \
     --authority "$phase5_dir/reputation-provider.json" \
     --key "$phase5_dir/reputation-provider-key.pem" \
     --key-passphrase-file "$phase5_dir/passphrase" \
@@ -149,7 +149,7 @@ PY
 
   local snapshot_fingerprint
   snapshot_fingerprint="$(sha256sum "$snapshot" | awk '{print $1}')"
-  "$phase5_dir/bin/cpak" system reputation-import "$snapshot" \
+  "$phase5_bin_dir/cpak" system reputation-import "$snapshot" \
     --fingerprint "$snapshot_fingerprint" --yes
 }
 
@@ -160,7 +160,7 @@ run_process_lifecycle() {
   printf '127.0.0.1 phase5.invalid\n' >>"$phase5_dir/hosts"
   mount --bind "$phase5_dir/hosts" /etc/hosts
 
-  "$phase5_dir/bin/cpak-phase5-fixture" --directory "$phase5_dir" \
+  "$phase5_bin_dir/cpak-phase5-fixture" --directory "$phase5_dir" \
     >"$phase5_dir/fixture-server.log" 2>&1 &
   fixture_pid=$!
   for _ in {1..100}; do
@@ -195,13 +195,13 @@ manifest = {
 }
 pathlib.Path(sys.argv[1]).write_text(json.dumps(manifest) + "\n", encoding="utf-8")
 PY
-  "$phase5_dir/bin/cpak-sign" state \
+  "$phase5_bin_dir/cpak-sign" state \
     --manifest "$phase5_dir/cpak.json" \
     --origin "$origin" \
     --image-digest "$image_digest" \
     --generation 1 \
     --output "$phase5_dir/state-1"
-  "$phase5_dir/bin/cpak-sign" x509-sign \
+  "$phase5_bin_dir/cpak-sign" x509-sign \
     --state "$phase5_dir/state-1" \
     --certificate "$phase5_dir/pki/publisher.pem" \
     --chain "$phase5_dir/pki/publisher-chain.pem" \
@@ -226,11 +226,11 @@ policy = {
 }
 pathlib.Path(sys.argv[1]).write_text(json.dumps(policy) + "\n", encoding="utf-8")
 PY
-  "$phase5_dir/bin/cpak" system set-trust "$phase5_dir/trust-policy.json"
+  "$phase5_bin_dir/cpak" system set-trust "$phase5_dir/trust-policy.json"
 
   local status
   set +e
-  timeout 20 "$phase5_dir/bin/cpak" install --branch main --yes --non-interactive --json "$origin" \
+  timeout 20 "$phase5_bin_dir/cpak" install --branch main --yes --non-interactive --json "$origin" \
     </dev/null >"$phase5_dir/install-non-interactive.json" 2>"$phase5_dir/install-non-interactive.err"
   status=$?
   set -e
@@ -239,7 +239,7 @@ PY
 
   set +e
   printf 'y\n' | script -qfec \
-    "$phase5_dir/bin/cpak install --branch main --yes $origin" /dev/null \
+    "$phase5_bin_dir/cpak install --branch main --yes $origin" /dev/null \
     >"$phase5_dir/install-terminal.log" 2>&1
   status=$?
   set -e
@@ -247,7 +247,7 @@ PY
   grep -F 'confirmation accepted' "$phase5_dir/install-terminal.log" >/dev/null || \
     fail "interactive terminal result did not record accepted confirmation"
 
-  "$phase5_dir/bin/cpak" system explain "$origin" --json >"$phase5_dir/explain-recorded.json"
+  "$phase5_bin_dir/cpak" system explain "$origin" --json >"$phase5_dir/explain-recorded.json"
   python3 - "$phase5_dir/explain-recorded.json" <<'PY'
 import json
 import pathlib
@@ -263,13 +263,13 @@ if trust.get("policy", {}).get("confirmation") != "accepted":
     raise SystemExit(f"accepted confirmation was not recorded: {trust!r}")
 PY
 
-  "$phase5_dir/bin/cpak-sign" state \
+  "$phase5_bin_dir/cpak-sign" state \
     --manifest "$phase5_dir/cpak.json" \
     --origin "$origin" \
     --image-digest "$image_digest" \
     --generation 2 \
     --output "$phase5_dir/state-2"
-  "$phase5_dir/bin/cpak-sign" x509-sign \
+  "$phase5_bin_dir/cpak-sign" x509-sign \
     --state "$phase5_dir/state-2" \
     --certificate "$phase5_dir/pki/publisher.pem" \
     --chain "$phase5_dir/pki/publisher-chain.pem" \
@@ -280,21 +280,21 @@ PY
   import_reputation_status 3 established "$publisher_id"
 
   set +e
-  "$phase5_dir/bin/cpak" update --non-interactive --json "$origin" \
+  "$phase5_bin_dir/cpak" update --non-interactive --json "$origin" \
     >"$phase5_dir/update-non-interactive.json" 2>"$phase5_dir/update-non-interactive.err"
   status=$?
   set -e
   assert_trust_envelope 0 allow non-interactive update \
     "$phase5_dir/update-non-interactive.json" "$status"
 
-  "$phase5_dir/bin/cpak" system reputation-provider-clear \
+  "$phase5_bin_dir/cpak" system reputation-provider-clear \
     --fingerprint "$provider_key" --yes
   kill "$fixture_pid"
   wait "$fixture_pid" 2>/dev/null || true
   fixture_pid=""
 
-  "$phase5_dir/bin/cpak" system explain "$origin" --json >"$phase5_dir/explain-offline.json"
-  "$phase5_dir/bin/cpak" audit --json >"$phase5_dir/audit-offline.json"
+  "$phase5_bin_dir/cpak" system explain "$origin" --json >"$phase5_dir/explain-offline.json"
+  "$phase5_bin_dir/cpak" audit --json >"$phase5_dir/audit-offline.json"
   python3 - "$phase5_dir/explain-offline.json" "$phase5_dir/audit-offline.json" <<'PY'
 import json
 import pathlib
@@ -316,8 +316,9 @@ PY
 
 inside_namespace() {
   phase5_dir="$2"
-  cleanup_uid="${3:-}"
-  cleanup_gid="${4:-}"
+  phase5_bin_dir="$3"
+  cleanup_uid="${4:-}"
+  cleanup_gid="${5:-}"
   unset SUDO_UID SUDO_GID SUDO_USER
   fixture_pid=""
   cleanup_namespace() {
@@ -351,7 +352,7 @@ PY
 )"
 
   verify_x509 21 invalid
-  "$phase5_dir/bin/cpak" system trust-root-add "$phase5_dir/pki/root.pem" \
+  "$phase5_bin_dir/cpak" system trust-root-add "$phase5_dir/pki/root.pem" \
     --purpose code-signing --fingerprint "$root_fingerprint" --yes
   verify_x509 0 allow
 
@@ -383,7 +384,7 @@ payload = {
 }
 pathlib.Path(sys.argv[1]).write_text(json.dumps(payload, separators=(",", ":")) + "\n", encoding="utf-8")
 PY
-  "$phase5_dir/bin/cpak-sign" reputation-sign \
+  "$phase5_bin_dir/cpak-sign" reputation-sign \
     --authority "$phase5_dir/reputation-provider.json" \
     --key "$phase5_dir/reputation-provider-key.pem" \
     --key-passphrase-file "$phase5_dir/passphrase" \
@@ -400,19 +401,19 @@ PY
 )"
   snapshot_fingerprint="$(sha256sum "$phase5_dir/reputation-snapshot.json" | awk '{print $1}')"
 
-  "$phase5_dir/bin/cpak" system reputation-provider-set "$phase5_dir/reputation-provider.json" \
+  "$phase5_bin_dir/cpak" system reputation-provider-set "$phase5_dir/reputation-provider.json" \
     --fingerprint "$provider_key" --yes
-  "$phase5_dir/bin/cpak" system reputation-import "$phase5_dir/reputation-snapshot.json" \
+  "$phase5_bin_dir/cpak" system reputation-import "$phase5_dir/reputation-snapshot.json" \
     --fingerprint "$snapshot_fingerprint" --yes
-  "$phase5_dir/bin/cpak" system reputation-check "$publisher_id" | grep -F 'established' >/dev/null
+  "$phase5_bin_dir/cpak" system reputation-check "$publisher_id" | grep -F 'established' >/dev/null
   if [[ -n "$cleanup_uid" && -n "$cleanup_gid" ]]; then
     run_process_lifecycle "$publisher_id"
   else
-    "$phase5_dir/bin/cpak" system reputation-provider-clear \
+    "$phase5_bin_dir/cpak" system reputation-provider-clear \
       --fingerprint "$provider_key" --yes
   fi
 
-  "$phase5_dir/bin/cpak" system trust-root-remove "$root_fingerprint" \
+  "$phase5_bin_dir/cpak" system trust-root-remove "$root_fingerprint" \
     --purpose code-signing --yes
   verify_x509 21 invalid
 
@@ -447,19 +448,20 @@ temp_root="${TMPDIR:-/tmp}"
 temp_root="${temp_root%/}"
 phase5_dir="$(mktemp -d "$temp_root/cpak-phase5.XXXXXXXX")"
 [[ "$phase5_dir" == "$temp_root/cpak-phase5."* ]] || fail "unsafe temporary directory"
-trap 'rm -rf -- "$phase5_dir"' EXIT
+phase5_bin_dir="$(mktemp -d "$repo_dir/.cpak-phase5-bin.XXXXXXXX")"
+[[ "$phase5_bin_dir" == "$repo_dir/.cpak-phase5-bin."* ]] || fail "unsafe executable directory"
+trap 'rm -rf -- "$phase5_dir" "$phase5_bin_dir"' EXIT
 chmod 0700 "$phase5_dir"
-mkdir -p "$phase5_dir/bin"
 
 cd "$repo_dir"
 go test -race ./...
 go test -tags cpak_ui_builtin ./pkg/desktopui
 go vet ./...
-CGO_ENABLED=0 go build -tags cpak_ui_builtin -trimpath -o "$phase5_dir/bin/cpak" .
-CGO_ENABLED=0 go build -trimpath -o "$phase5_dir/bin/cpak-sign" ./cmd/cpak-sign
-CGO_ENABLED=0 go build -tags cpak_ui_builtin -trimpath -o "$phase5_dir/bin/cpak-installer" ./cmd/cpak-installer
-CGO_ENABLED=0 go build -trimpath -o "$phase5_dir/bin/cpak-storaged" ./cmd/cpak-storaged
-CGO_ENABLED=0 go build -trimpath -o "$phase5_dir/bin/cpak-phase5-fixture" ./hack/application-trust-phase5/fixture-server
+CGO_ENABLED=0 go build -tags cpak_ui_builtin -trimpath -o "$phase5_bin_dir/cpak" .
+CGO_ENABLED=0 go build -trimpath -o "$phase5_bin_dir/cpak-sign" ./cmd/cpak-sign
+CGO_ENABLED=0 go build -tags cpak_ui_builtin -trimpath -o "$phase5_bin_dir/cpak-installer" ./cmd/cpak-installer
+CGO_ENABLED=0 go build -trimpath -o "$phase5_bin_dir/cpak-storaged" ./cmd/cpak-storaged
+CGO_ENABLED=0 go build -trimpath -o "$phase5_bin_dir/cpak-phase5-fixture" ./hack/application-trust-phase5/fixture-server
 
 printf '%s\n' 'phase5-disposable-material' >"$phase5_dir/passphrase"
 chmod 0600 "$phase5_dir/passphrase"
@@ -467,7 +469,7 @@ go run ./hack/poc-ca \
   --output "$phase5_dir/pki" \
   --key-passphrase-file "$phase5_dir/passphrase" \
   --publisher 'cpak Phase 5 Publisher'
-"$phase5_dir/bin/cpak-sign" reputation-keygen \
+"$phase5_bin_dir/cpak-sign" reputation-keygen \
   --provider cpak-phase5 \
   --key-passphrase-file "$phase5_dir/passphrase" \
   --output-key "$phase5_dir/reputation-provider-key.pem" \
@@ -488,13 +490,13 @@ manifest = {
 }
 pathlib.Path(sys.argv[1]).write_text(json.dumps(manifest) + "\n", encoding="utf-8")
 PY
-"$phase5_dir/bin/cpak-sign" state \
+"$phase5_bin_dir/cpak-sign" state \
   --manifest "$phase5_dir/cpak.json" \
   --origin github.com/containerpak/phase5-fixture \
   --image-digest "sha256:$(printf '1%.0s' {1..64})" \
   --generation 1 \
   --output "$phase5_dir/state"
-"$phase5_dir/bin/cpak-sign" x509-sign \
+"$phase5_bin_dir/cpak-sign" x509-sign \
   --state "$phase5_dir/state" \
   --certificate "$phase5_dir/pki/publisher.pem" \
   --chain "$phase5_dir/pki/publisher-chain.pem" \
@@ -506,10 +508,10 @@ if [[ "$namespace_mode" == "--sudo-namespace" ]]; then
   owner_uid="$(id -u)"
   owner_gid="$(id -g)"
   sudo --non-interactive unshare --mount --fork \
-    "$0" --inside-namespace "$phase5_dir" "$owner_uid" "$owner_gid"
+    "$0" --inside-namespace "$phase5_dir" "$phase5_bin_dir" "$owner_uid" "$owner_gid"
 else
   unshare --user --map-root-user --mount --fork \
-    "$0" --inside-namespace "$phase5_dir"
+    "$0" --inside-namespace "$phase5_dir" "$phase5_bin_dir"
 fi
 
 printf 'phase5: Linux core and isolated administrator harness passed\n'
