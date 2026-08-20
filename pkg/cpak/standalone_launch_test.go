@@ -69,6 +69,50 @@ func TestBinaryOnlyHeadlessCommandUsesTheAnchorWithoutPublisherWork(t *testing.T
 	}
 }
 
+func TestFutureCommandRefusesChangedStateWithoutRemovingAnExistingContainer(t *testing.T) {
+	cp := newTestCpak(t)
+	useNoHostCeiling(t)
+	ledger := useAnchorLedger(t)
+	useEnforcement(t, systemauthority.EnforcementRefuse)
+	bindLayer(t, cp, verifiedBaseLayer, "state-base")
+	bindLayer(t, cp, verifiedTopLayer, "state-top")
+	app := verifiedApplication()
+	seedApplication(t, cp, app)
+	identity, err := cp.verifyLaunch(app, resolvedOverride(app), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrol(t, ledger, identity)
+
+	scope := ApplicationScope(app.CpakId, "")
+	store, err := NewStore(cp.Options.StorePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.NewContainer(types.Container{CpakId: "existing-container", ApplicationCpakId: scope, Pid: os.Getpid()}); err != nil {
+		t.Fatal(err)
+	}
+
+	changed := app
+	changed.ImageDigest = "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	if _, err := cp.prepareContainer(changed, asLaunched(resolvedOverride(changed)), scope, "", store); !errors.Is(err, errLaunchUnrecognised) {
+		t.Fatalf("changed state reached container reuse: %v", err)
+	}
+
+	store, err = NewStore(cp.Options.StorePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	containers, err := store.GetApplicationContainers(types.Application{CpakId: scope})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(containers) != 1 || containers[0].CpakId != "existing-container" {
+		t.Fatalf("a future refusal claimed or attempted to terminate the existing process: %+v", containers)
+	}
+}
+
 // reachedTheLayerMount answers whether a launch got past the gate and stopped
 // where this fixture always stops: none of its layers is on disk.
 //
