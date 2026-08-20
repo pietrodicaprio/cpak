@@ -448,7 +448,7 @@ if [[ "${1:-}" == "--inside-namespace" ]]; then
 fi
 
 namespace_mode="${1:-}"
-if [[ -n "$namespace_mode" && "$namespace_mode" != "--sudo-namespace" ]]; then
+if [[ -n "$namespace_mode" && "$namespace_mode" != "--sudo-namespace" && "$namespace_mode" != "--root-namespace" ]]; then
   fail "unknown argument: $namespace_mode"
 fi
 
@@ -458,6 +458,8 @@ for command_name in go python3 unshare mount sha256sum awk grep cp; do
 done
 if [[ "$namespace_mode" == "--sudo-namespace" ]]; then
   require_command sudo
+fi
+if [[ "$namespace_mode" == "--sudo-namespace" || "$namespace_mode" == "--root-namespace" ]]; then
   require_command id
   require_command chown
   require_command script
@@ -532,6 +534,10 @@ if [[ "$namespace_mode" == "--sudo-namespace" ]]; then
   owner_gid="$(id -g)"
   sudo --non-interactive unshare --mount --pid --fork --mount-proc \
     "$0" --inside-namespace "$phase5_dir" "$phase5_bin_dir" "$owner_uid" "$owner_gid"
+elif [[ "$namespace_mode" == "--root-namespace" ]]; then
+  [[ "$(id -u)" -eq 0 ]] || fail "--root-namespace requires an already-root disposable environment"
+  unshare --mount --pid --fork --mount-proc \
+    "$0" --inside-namespace "$phase5_dir" "$phase5_bin_dir" 0 0
 else
   unshare --user --map-root-user --mount --pid --fork --mount-proc \
     "$0" --inside-namespace "$phase5_dir" "$phase5_bin_dir"
