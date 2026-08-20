@@ -78,6 +78,17 @@ func TestApplicationTrustResultMapsEveryStableExitClass(t *testing.T) {
 			}
 		})
 	}
+
+	recorded, err := warning(EnrolmentRecorded, applicationtrust.ConfirmationAccepted).applicationTrustResultAtSource(
+		applicationtrust.OperationExplain, applicationtrust.ContextNonInteractive, applicationtrust.SourceRecorded, now,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recorded.DecisionSource != applicationtrust.SourceRecorded || recorded.Final.Action != applicationtrust.FinalWarn ||
+		recorded.Policy.Confirmation != applicationtrust.ConfirmationAccepted {
+		t.Fatalf("recorded warning=%+v", recorded)
+	}
 }
 
 func withOutcome(value ApplicationEnrolment, outcome EnrolmentOutcome) ApplicationEnrolment {
