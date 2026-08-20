@@ -689,9 +689,14 @@ The X.509 headless milestone is executed at commit `5689688` by
 [Portability run 32411499077](https://github.com/pietrodicaprio/cpak/actions/runs/32411499077):
 real OCI install/update, detached non-interactive confirmation-required, exact
 PTY recovery with accepted consent, and offline explain/audit all pass in the
-private Linux namespace. This does not close Phase 5: Sigstore, graphical,
-real `sudo`/`doas` frontend, binary execution, service, and the remaining
-negative/recovery rows are still required.
+private Linux namespace. The expanded headless lifecycle is executed at commit
+`2c78445` by
+[Portability run 32415553153](https://github.com/pietrodicaprio/cpak/actions/runs/32415553153):
+after provider removal and fixture shutdown, the binary installed from the OCI
+layer executes with its exact expected output, stops normally, and remains
+explainable and auditable from the recorded established decision. This does not
+close Phase 5: Sigstore, graphical, real `sudo`/`doas` frontend, service, and
+the remaining negative/recovery rows are still required.
 
 ### Phase 6: Publication package and final certification
 

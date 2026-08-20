@@ -33,6 +33,11 @@ uses the separate root mode:
 ./hack/application-trust-phase5/run-linux.sh --root-namespace
 ```
 
+The portability workflow sets `CPAK_PHASE5_DATA_ROOT` to an anonymous Docker
+volume so cpak's nested rootless OverlayFS uses a host-native backing store
+rather than Docker's overlay-backed root. The volume holds disposable cpak test
+state, is removed with the container, and is not a redirected developer cache.
+
 Those modes still run cpak directly as root inside the private namespace. They
 are not evidence for cpak's own `sudo` reinvocation path. Because binding the
 fixture repository to HTTPS port 443 requires a privileged network port, the
@@ -57,18 +62,23 @@ The current harness proves:
   real pseudo-terminal, records explicit confirmation, and does not rewrite
   package state merely to recover enrolment;
 - a next-generation signed update evaluates refreshed reputation, followed by
-  offline `system explain` and `audit` using the recorded decision after the
-  provider and fixture network are removed;
+  an actual headless binary launch, `system explain`, and `audit` using the
+  recorded decision after the provider and fixture network are removed;
+- the launched payload is the executable stored in the installed OCI layer,
+  returns the exact expected output, and is stopped through the normal CLI;
 - all direct-root administration works without a display or session bus while
   host state remains untouched.
 
-The first complete execution of this lifecycle is
+The first install/update milestone is
 [Portability run 32411499077](https://github.com/pietrodicaprio/cpak/actions/runs/32411499077)
-at commit `5689688`.
+at commit `5689688`. The expanded headless lifecycle, including the installed
+binary's offline execution, is
+[Portability run 32415553153](https://github.com/pietrodicaprio/cpak/actions/runs/32415553153)
+at commit `2c78445`.
 
 It does **not** prove the complete Phase 5 gate. Separate disposable-machine
 runs must still record real `sudo` and `doas` reinvocation, graphical
-confirmation, Sigstore install/update, binary execution, service
-restart/command enforcement, and the remaining negative/recovery matrix. The
-pseudo-terminal row proves terminal confirmation for X.509 only. A wrapper
-named `sudo` or `doas` is not acceptable evidence for those frontend rows.
+confirmation, Sigstore install/update, service restart enforcement, and the
+remaining negative/recovery matrix. The pseudo-terminal row proves terminal
+confirmation for X.509 only. A wrapper named `sudo` or `doas` is not acceptable
+evidence for those frontend rows.
