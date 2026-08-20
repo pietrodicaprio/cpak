@@ -5,6 +5,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"runtime"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/mirkobrombin/cpak/pkg/applicationtrust"
 	"github.com/mirkobrombin/cpak/pkg/cpak"
+	"github.com/mirkobrombin/cpak/pkg/desktopui"
 	"github.com/mirkobrombin/cpak/pkg/logger"
 	"github.com/mirkobrombin/cpak/pkg/tools"
 	"github.com/mirkobrombin/cpak/pkg/types"
@@ -26,6 +28,7 @@ type InstallCmd struct {
 	Commit         string `cli:"commit,c" help:"Specify a commit"`
 	Yes            bool   `cli:"yes,y" help:"Acknowledge the installation without the operation prompt; never accepts trust warnings"`
 	NonInteractive bool   `cli:"non-interactive,n" help:"Never wait for an operation or trust confirmation"`
+	Graphical      bool   `cli:"graphical" help:"Use the configured desktop frontend for publisher-reputation confirmation"`
 	JSON           bool   `cli:"json,j" help:"Print versioned application-trust decisions as JSON"`
 
 	cli.Base
@@ -94,8 +97,8 @@ func (c *InstallCmd) Run() error {
 
 	context := c.invocationContext()
 	if !c.Yes {
-		if context == applicationtrust.ContextNonInteractive {
-			return fmt.Errorf("a non-interactive install requires --yes to acknowledge the operation")
+		if context == applicationtrust.ContextNonInteractive || context == applicationtrust.ContextGraphical {
+			return fmt.Errorf("an install without a terminal operation prompt requires --yes to acknowledge the operation")
 		}
 		if !tools.ConfirmOperation("Do you want to continue?") {
 			return nil
@@ -113,6 +116,8 @@ func (c *InstallCmd) Run() error {
 	}
 	if context == applicationtrust.ContextInteractiveTerminal {
 		options.Enrolment.ConfirmReputation = c.confirmReputation
+	} else if context == applicationtrust.ContextGraphical {
+		options.Enrolment.ConfirmReputation = c.confirmGraphicalReputation
 	}
 	if err := cp.InstallCpakWithOptions(remote, manifest, branch, c.Commit, c.Release, options); err != nil {
 		return err
@@ -132,20 +137,40 @@ func (c *InstallCmd) Run() error {
 }
 
 func (c *InstallCmd) invocationContext() applicationtrust.InvocationContext {
-	if c.NonInteractive || c.JSON || !term.IsTerminal(int(os.Stdin.Fd())) {
+	if c.NonInteractive || c.JSON {
+		return applicationtrust.ContextNonInteractive
+	}
+	if c.Graphical {
+		return applicationtrust.ContextGraphical
+	}
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		return applicationtrust.ContextNonInteractive
 	}
 	return applicationtrust.ContextInteractiveTerminal
 }
 
-func (c *InstallCmd) confirmReputation(warning cpak.ReputationWarning) applicationtrust.ConfirmationResponse {
-	publisher := warning.PublisherName
-	if publisher == "" {
-		publisher = warning.PublisherID
+func (c *InstallCmd) confirmGraphicalReputation(warning cpak.ReputationWarning) applicationtrust.ConfirmationResponse {
+	accepted, err := desktopui.ConfirmPublisherReputation(context.Background(), desktopui.SelectBackend(""), desktopui.ReputationPrompt{
+		Origin: warning.Origin, PublisherName: warning.PublisherName, PublisherID: warning.PublisherID,
+		ProviderID: warning.ProviderID, Status: string(warning.Status), ProviderReason: warning.ProviderReason,
+		PolicyReason: warning.PolicyReason,
+	})
+	if err != nil {
+		c.Logger.Warning("Publisher reputation confirmation is unavailable; the installation remains unenrolled.")
+		return applicationtrust.NoConfirmation
 	}
-	c.Logger.Warning("Publisher reputation requires confirmation: publisher %s, provider %s, status %s, reason %s.",
-		tools.SanitizeForDisplay(publisher), tools.SanitizeForDisplay(warning.ProviderID), warning.Status, tools.SanitizeForDisplay(warning.ProviderReason))
-	if tools.ConfirmOperation("Continue and enrol this publisher for this installation?") {
+	if accepted {
+		c.Logger.Info("Checking publisher reputation again")
+		return applicationtrust.Confirm
+	}
+	return applicationtrust.Decline
+}
+
+func (c *InstallCmd) confirmReputation(warning cpak.ReputationWarning) applicationtrust.ConfirmationResponse {
+	c.Logger.Warning("Publisher reputation requires confirmation for %s: publisher %s, identity %s, provider %s, status %s, provider reason %s, host policy %s.",
+		tools.SanitizeForDisplay(warning.Origin), tools.SanitizeForDisplay(warning.PublisherName), tools.SanitizeForDisplay(warning.PublisherID),
+		tools.SanitizeForDisplay(warning.ProviderID), warning.Status, tools.SanitizeForDisplay(warning.ProviderReason), tools.SanitizeForDisplay(warning.PolicyReason))
+	if tools.ConfirmOperation("Continue and enrol this installation? This does not create a permanent publisher exception.") {
 		return applicationtrust.Confirm
 	}
 	return applicationtrust.Decline

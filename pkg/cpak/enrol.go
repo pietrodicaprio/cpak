@@ -228,6 +228,7 @@ type ApplicationEnrolment struct {
 }
 
 type ReputationWarning struct {
+	Origin         string
 	PublisherID    string
 	PublisherName  string
 	ProviderID     string
@@ -414,32 +415,42 @@ func (c *Cpak) enrolApplication(app types.Application, published PublishedPackag
 			enrolment.ReputationDecision = &confirmation.Decision
 			enrolment.SignatureMode = confirmation.SignatureMode
 			enrolment.ReputationMode = confirmation.ReputationMode
-			response := applicationtrust.NoConfirmation
-			if options.ConfirmReputation != nil {
-				response = options.ConfirmReputation(reputationWarning(enrolment, confirmation))
-			}
-			switch response {
-			case applicationtrust.Confirm:
-				if confirmErr := confirmAnchor(anchor, &policy, signed, confirmation.Token); confirmErr == nil {
-					enrolment.Outcome = EnrolmentRecorded
-					enrolment.Confirmation = applicationtrust.ConfirmationAccepted
-					return recordedEnrolmentDetails(enrolment)
-				} else {
-					var changed *systemauthority.ReputationConfirmationRequiredError
-					if errors.As(confirmErr, &changed) {
-						enrolment.Reputation = &changed.Result
-						enrolment.ReputationDecision = &changed.Decision
-						enrolment.SignatureMode = changed.SignatureMode
-						enrolment.ReputationMode = changed.ReputationMode
-						return confirmationRequiredEnrolment(enrolment)
-					}
-					err = confirmErr
+			var confirmationFailure error
+			for attempts := 0; attempts < 3; attempts++ {
+				response := applicationtrust.NoConfirmation
+				if options.ConfirmReputation != nil {
+					response = options.ConfirmReputation(reputationWarning(enrolment, confirmation))
 				}
-			case applicationtrust.Decline:
-				return declinedEnrolment(enrolment)
-			default:
+				switch response {
+				case applicationtrust.Confirm:
+					confirmErr := confirmAnchor(anchor, &policy, signed, confirmation.Token)
+					if confirmErr == nil {
+						enrolment.Outcome = EnrolmentRecorded
+						enrolment.Confirmation = applicationtrust.ConfirmationAccepted
+						return recordedEnrolmentDetails(enrolment)
+					}
+					var changed *systemauthority.ReputationConfirmationRequiredError
+					if !errors.As(confirmErr, &changed) {
+						confirmationFailure = confirmErr
+						break
+					}
+					confirmation = changed
+					enrolment.Reputation = &changed.Result
+					enrolment.ReputationDecision = &changed.Decision
+					enrolment.SignatureMode = changed.SignatureMode
+					enrolment.ReputationMode = changed.ReputationMode
+					continue
+				case applicationtrust.Decline:
+					return declinedEnrolment(enrolment)
+				default:
+					return confirmationRequiredEnrolment(enrolment)
+				}
+				break
+			}
+			if confirmationFailure == nil {
 				return confirmationRequiredEnrolment(enrolment)
 			}
+			err = confirmationFailure
 		}
 		if errors.Is(err, systemauthority.ErrSignatureRequired) {
 			return unsignedEnrolment(enrolment, err)
@@ -473,6 +484,7 @@ func recordedEnrolmentDetails(enrolment ApplicationEnrolment) ApplicationEnrolme
 
 func reputationWarning(enrolment ApplicationEnrolment, confirmation *systemauthority.ReputationConfirmationRequiredError) ReputationWarning {
 	warning := ReputationWarning{
+		Origin:     enrolment.Origin,
 		ProviderID: confirmation.Result.ProviderID, Status: confirmation.Result.Status,
 		ProviderReason: confirmation.Result.ReasonCode, PolicyReason: confirmation.Decision.ReasonCode,
 	}

@@ -7,16 +7,19 @@ package main
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
 	"image/png"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/mirkobrombin/cpak/pkg/applicationtrust"
 	"github.com/mirkobrombin/cpak/pkg/bootstrap"
 	"github.com/mirkobrombin/cpak/pkg/desktopui"
 	"github.com/srwiley/oksvg"
@@ -119,7 +122,7 @@ func runGUI(capsule bootstrap.Capsule) {
 						}
 						frame.Resize(width, height)
 					} else if hovered {
-						if phase == phaseDone {
+						if phase == phaseDone || phase == phaseFailed {
 							return
 						}
 						if phase != phaseInstalling {
@@ -173,12 +176,12 @@ func startGUIInstall(window screen.Window, capsule bootstrap.Capsule, state *gui
 			state.status = message
 			state.Unlock()
 			window.Send(guiUpdate{})
-		})
+		}, true)
 		close(stop)
 		state.Lock()
 		if err != nil {
 			state.phase = phaseFailed
-			state.status = err.Error()
+			state.status = graphicalInstallFailure(err)
 		} else {
 			state.phase = phaseDone
 			state.status = capsule.Metadata.Name + " is installed"
@@ -242,10 +245,35 @@ func renderGUICanvas(width, height int, button image.Rectangle, metadata bootstr
 	} else if phase == phaseDone {
 		label = "Close"
 	} else if phase == phaseFailed {
-		label = "Try again"
+		label = "Close"
 	}
 	drawCentered(canvas, label, width/2, button.Min.Y+34, 18, true, buttonText)
 	return canvas
+}
+
+func graphicalInstallFailure(err error) string {
+	var exited *exec.ExitError
+	if errors.As(err, &exited) {
+		if label, ok := graphicalInstallExitLabel(exited.ExitCode()); ok {
+			return label
+		}
+	}
+	return "Installation did not complete: " + applicationtrust.SanitizeText(err.Error(), 240)
+}
+
+func graphicalInstallExitLabel(code int) (string, bool) {
+	switch code {
+	case applicationtrust.ExitDenied:
+		return "Installed, not enrolled: the decision was declined or denied", true
+	case applicationtrust.ExitInvalid:
+		return "Installed, not enrolled: publisher evidence is invalid", true
+	case applicationtrust.ExitUnavailable:
+		return "Installed, not enrolled: trust information is unavailable", true
+	case applicationtrust.ExitConfirmationRequired:
+		return "Installed, not enrolled: confirmation is still required", true
+	default:
+		return "", false
+	}
 }
 
 func buttonRect(width, height int) image.Rectangle {
@@ -458,6 +486,8 @@ func guiProgressLabel(message, name string) string {
 		return runtimeSourceProgressLabel(message, "Using cached runtime source ", "Preparing ")
 	case strings.Contains(message, "Installing runtime source "):
 		return runtimeSourceProgressLabel(message, "Installing runtime source ", "Installing ")
+	case strings.Contains(message, "Checking publisher reputation again"):
+		return "Checking publisher reputation again"
 	case message == "cpak is ready", strings.HasPrefix(message, "Installed cpak"):
 		return "cpak is ready"
 	case strings.HasPrefix(message, "Resolving "):

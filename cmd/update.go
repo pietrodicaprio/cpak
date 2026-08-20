@@ -5,6 +5,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/mirkobrombin/cpak/pkg/applicationtrust"
 	"github.com/mirkobrombin/cpak/pkg/cpak"
+	"github.com/mirkobrombin/cpak/pkg/desktopui"
 	"github.com/mirkobrombin/cpak/pkg/logger"
 	"github.com/mirkobrombin/cpak/pkg/tools"
 	"github.com/mirkobrombin/cpak/pkg/types"
@@ -25,6 +27,7 @@ type UpdateCmd struct {
 	Remote         string `arg:"remote" help:"Remote Git repository, all the installed cpak(s) if omitted"`
 	JSON           bool   `cli:"json,j" help:"Print output in JSON format"`
 	NonInteractive bool   `cli:"non-interactive,n" help:"Reject updates that request additional permissions"`
+	Graphical      bool   `cli:"graphical" help:"Use the configured desktop frontend for publisher-reputation confirmation"`
 	Verbose        bool   `cli:"verbose,v" help:"Report every cpak, not only the ones that need attention"`
 
 	cli.Base
@@ -77,6 +80,8 @@ func (c *UpdateCmd) Run() error {
 	}
 	if context == applicationtrust.ContextInteractiveTerminal {
 		options.Enrolment.ConfirmReputation = c.confirmReputation
+	} else if context == applicationtrust.ContextGraphical {
+		options.Enrolment.ConfirmReputation = c.confirmGraphicalReputation
 	}
 	results, err := cp.UpdateWithOptions(remote, options)
 	if err != nil {
@@ -119,20 +124,40 @@ func (c *UpdateCmd) Run() error {
 }
 
 func (c *UpdateCmd) invocationContext() applicationtrust.InvocationContext {
-	if c.NonInteractive || c.JSON || !term.IsTerminal(int(os.Stdin.Fd())) {
+	if c.NonInteractive || c.JSON {
+		return applicationtrust.ContextNonInteractive
+	}
+	if c.Graphical {
+		return applicationtrust.ContextGraphical
+	}
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		return applicationtrust.ContextNonInteractive
 	}
 	return applicationtrust.ContextInteractiveTerminal
 }
 
-func (c *UpdateCmd) confirmReputation(warning cpak.ReputationWarning) applicationtrust.ConfirmationResponse {
-	publisher := warning.PublisherName
-	if publisher == "" {
-		publisher = warning.PublisherID
+func (c *UpdateCmd) confirmGraphicalReputation(warning cpak.ReputationWarning) applicationtrust.ConfirmationResponse {
+	accepted, err := desktopui.ConfirmPublisherReputation(context.Background(), desktopui.SelectBackend(""), desktopui.ReputationPrompt{
+		Origin: warning.Origin, PublisherName: warning.PublisherName, PublisherID: warning.PublisherID,
+		ProviderID: warning.ProviderID, Status: string(warning.Status), ProviderReason: warning.ProviderReason,
+		PolicyReason: warning.PolicyReason,
+	})
+	if err != nil {
+		c.Logger.Warning("Publisher reputation confirmation is unavailable; the update remains unenrolled.")
+		return applicationtrust.NoConfirmation
 	}
-	c.Logger.Warning("Publisher reputation requires confirmation: publisher %s, provider %s, status %s, reason %s.",
-		tools.SanitizeForDisplay(publisher), tools.SanitizeForDisplay(warning.ProviderID), warning.Status, tools.SanitizeForDisplay(warning.ProviderReason))
-	if tools.ConfirmOperation("Continue and enrol this publisher for this update?") {
+	if accepted {
+		c.Logger.Info("Checking publisher reputation again")
+		return applicationtrust.Confirm
+	}
+	return applicationtrust.Decline
+}
+
+func (c *UpdateCmd) confirmReputation(warning cpak.ReputationWarning) applicationtrust.ConfirmationResponse {
+	c.Logger.Warning("Publisher reputation requires confirmation for %s: publisher %s, identity %s, provider %s, status %s, provider reason %s, host policy %s.",
+		tools.SanitizeForDisplay(warning.Origin), tools.SanitizeForDisplay(warning.PublisherName), tools.SanitizeForDisplay(warning.PublisherID),
+		tools.SanitizeForDisplay(warning.ProviderID), warning.Status, tools.SanitizeForDisplay(warning.ProviderReason), tools.SanitizeForDisplay(warning.PolicyReason))
+	if tools.ConfirmOperation("Continue and enrol this update? This does not create a permanent publisher exception.") {
 		return applicationtrust.Confirm
 	}
 	return applicationtrust.Decline

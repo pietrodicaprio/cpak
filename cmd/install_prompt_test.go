@@ -63,6 +63,21 @@ func TestInstallTrustOutcomeUsesStableExitCodes(t *testing.T) {
 	}
 }
 
+func TestExplicitGraphicalContextCannotBeInferredOrOverriddenByYes(t *testing.T) {
+	if got := (&InstallCmd{Graphical: true, Yes: true}).invocationContext(); got != applicationtrust.ContextGraphical {
+		t.Fatalf("graphical context = %s", got)
+	}
+	if got := (&InstallCmd{Graphical: true, Yes: true, NonInteractive: true}).invocationContext(); got != applicationtrust.ContextNonInteractive {
+		t.Fatalf("non-interactive context = %s", got)
+	}
+	if got := (&UpdateCmd{Graphical: true}).invocationContext(); got != applicationtrust.ContextGraphical {
+		t.Fatalf("graphical update context = %s", got)
+	}
+	if got := (&UpdateCmd{Graphical: true, JSON: true}).invocationContext(); got != applicationtrust.ContextNonInteractive {
+		t.Fatalf("machine update context = %s", got)
+	}
+}
+
 func TestTheInstallPromptOnlyShowsRuntimeSourcesForThisArchitecture(t *testing.T) {
 	other := "amd64"
 	if runtime.GOARCH == other {

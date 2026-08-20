@@ -47,7 +47,7 @@ func main() {
 	if !*forceTerminal && !term.IsTerminal(int(os.Stdin.Fd())) && (os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != "") {
 		backend := desktopui.SelectBackend("")
 		handled, nativeErr := desktopui.Install(backend, capsule.Metadata.Name, capsule.Metadata.Description, capsule.Metadata.Origin, func(progress func(string)) error {
-			return install(capsule, progress)
+			return install(capsule, progress, true)
 		})
 		if handled {
 			if nativeErr != nil {
@@ -91,17 +91,31 @@ func runTerminal(capsule bootstrap.Capsule) error {
 		fmt.Printf("Reference: %s %s\n", m.RefType, m.Ref)
 	}
 	fmt.Print("\nInstall this application? [Y/n] ")
-	answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-	answer = strings.ToLower(strings.TrimSpace(answer))
-	if answer != "" && answer != "y" && answer != "yes" {
+	confirmed, err := readInstallConfirmation(os.Stdin)
+	if err != nil {
+		return err
+	}
+	if !confirmed {
 		return nil
 	}
 	return install(capsule, func(message string) {
 		fmt.Println(message)
-	})
+	}, false)
 }
 
-func install(capsule bootstrap.Capsule, progress progressFunc) error {
+func readInstallConfirmation(reader io.Reader) (bool, error) {
+	answer, readErr := bufio.NewReader(reader).ReadString('\n')
+	if readErr != nil && answer == "" {
+		return false, errors.New("installation confirmation requires explicit input")
+	}
+	answer = strings.ToLower(strings.TrimSpace(answer))
+	if answer != "" && answer != "y" && answer != "yes" {
+		return false, nil
+	}
+	return true, nil
+}
+
+func install(capsule bootstrap.Capsule, progress progressFunc, graphical bool) error {
 	storageChanged := false
 	if len(capsule.Companion) > 0 {
 		changed, err := installStorageService(capsule.Companion)
@@ -131,6 +145,9 @@ func install(capsule bootstrap.Capsule, progress progressFunc) error {
 
 	metadata := capsule.Metadata
 	args := []string{"install", "--yes"}
+	if graphical {
+		args = append(args, "--graphical")
+	}
 	if metadata.Ref != "" {
 		args = append(args, "--"+metadata.RefType, metadata.Ref)
 	}
