@@ -248,7 +248,7 @@ run_graphical_enrolment() {
   install_pid=$!
   for _ in {1..100}; do
     window_id="$(DISPLAY="$display_number" xwininfo -root -children 2>/dev/null | \
-      awk '$1 ~ /^0x[0-9a-f]+$/ {print $1; exit}')"
+      awk '$1 ~ /^0x[0-9a-f]+$/ && $0 ~ /620x540/ {print $1; exit}')"
     if [[ -n "$window_id" ]]; then
       break
     fi
@@ -260,7 +260,8 @@ run_graphical_enrolment() {
     fail "the publisher reputation window did not appear"
   fi
 
-  DISPLAY="$display_number" xdotool mousemove --window "$window_id" 429 479 click 1
+  DISPLAY="$display_number" xdotool windowfocus "$window_id" \
+    mousemove --window "$window_id" 429 479 mousedown 1 mouseup 1
   for _ in {1..300}; do
     kill -0 "$install_pid" 2>/dev/null || break
     sleep 0.1
