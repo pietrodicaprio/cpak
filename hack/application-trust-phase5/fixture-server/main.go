@@ -50,6 +50,7 @@ const (
 	x509CMSMediaType             = "application/pkcs7-signature"
 	generationAnnotation         = "dev.cpak.signature.generation"
 	maximumEvidenceSize    int64 = 1 << 20
+	maximumPayloadSize           = 32 << 20
 )
 
 type metadata struct {
@@ -81,11 +82,16 @@ type fixture struct {
 
 func main() {
 	directory := flag.String("directory", "", "private fixture directory")
+	payloadPath := flag.String("payload", "", "static Linux executable to place in the OCI layer")
 	flag.Parse()
 	if *directory == "" || !filepath.IsAbs(*directory) {
 		log.Fatal("--directory must be an absolute path")
 	}
-	server, err := newFixture(*directory)
+	payload, err := readPayload(*payloadPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	server, err := newFixture(*directory, payload)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -138,8 +144,8 @@ func main() {
 	_ = registryHTTP.Shutdown(ctx)
 }
 
-func newFixture(directory string) (*fixture, error) {
-	layer, diffID, err := fixtureLayer()
+func newFixture(directory string, payload []byte) (*fixture, error) {
+	layer, diffID, err := fixtureLayer(payload)
 	if err != nil {
 		return nil, err
 	}
@@ -379,10 +385,38 @@ func digest(content []byte) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-func fixtureLayer() ([]byte, string, error) {
+func readPayload(path string) ([]byte, error) {
+	if path == "" || !filepath.IsAbs(path) {
+		return nil, errors.New("--payload must be an absolute path")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open fixture payload: %w", err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("inspect fixture payload: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 || info.Size() <= 0 || info.Size() > maximumPayloadSize {
+		return nil, errors.New("fixture payload must be a non-empty executable regular file within the size limit")
+	}
+	payload, err := io.ReadAll(io.LimitReader(file, maximumPayloadSize+1))
+	if err != nil || len(payload) > maximumPayloadSize {
+		return nil, errors.New("read fixture payload within the size limit")
+	}
+	if len(payload) < 4 || !bytes.Equal(payload[:4], []byte{0x7f, 'E', 'L', 'F'}) {
+		return nil, errors.New("fixture payload is not an ELF executable")
+	}
+	return payload, nil
+}
+
+func fixtureLayer(content []byte) ([]byte, string, error) {
+	if len(content) == 0 || len(content) > maximumPayloadSize {
+		return nil, "", errors.New("fixture layer payload is outside the size limit")
+	}
 	var archive bytes.Buffer
 	tarWriter := tar.NewWriter(&archive)
-	content := []byte("#!/bin/sh\nprintf 'phase5 fixture executed\\n'\n")
 	header := &tar.Header{
 		Name: "usr/bin/phase5-fixture", Mode: 0755, Size: int64(len(content)),
 		Typeflag: tar.TypeReg,
