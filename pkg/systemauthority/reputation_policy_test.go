@@ -233,3 +233,32 @@ func TestReputationOffDoesNotConsultAProvider(t *testing.T) {
 		t.Fatalf("recorded policy modes = %s/%s", recorded.SignatureMode, recorded.ReputationMode)
 	}
 }
+
+func TestRecordedAndLaunchAnchorReadsNeverConsultReputationAgain(t *testing.T) {
+	ledger := testAnchorLedger(t)
+	publisher := testNormalizedPublisher(t)
+	testReputationTrustPolicy(t, ledger, trustpolicy.ReputationAudit, publisher.ID)
+	acceptSignaturesOf(t, testAnchor().Origin)
+	ledger.Now = func() time.Time { return reputationNow }
+	lookups := 0
+	ledger.ReputationLookup = func(publisherID string, _ time.Time) (reputation.Result, error) {
+		lookups++
+		return authorityReputationResult(publisherID, reputation.Established), nil
+	}
+	if err := ledger.Record(Enrolment{Anchor: testAnchor(), Signature: testSignedState(1)}); err != nil {
+		t.Fatal(err)
+	}
+	if lookups != 1 {
+		t.Fatalf("enrolment consulted reputation %d times", lookups)
+	}
+	ledger.ReputationLookup = func(string, time.Time) (reputation.Result, error) {
+		t.Fatal("a recorded or launch-anchor read consulted reputation")
+		return reputation.Result{}, nil
+	}
+	if _, found, err := ledger.Recorded(testAnchor().UID, testAnchor().Origin); err != nil || !found {
+		t.Fatalf("recorded read found=%v err=%v", found, err)
+	}
+	if _, found, err := ledger.Load(testAnchor().UID, testAnchor().Origin); err != nil || !found {
+		t.Fatalf("launch-anchor read found=%v err=%v", found, err)
+	}
+}

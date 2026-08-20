@@ -10,10 +10,64 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/mirkobrombin/cpak/pkg/signature"
 	"github.com/mirkobrombin/cpak/pkg/systemauthority"
 	"github.com/mirkobrombin/cpak/pkg/types"
 )
+
+func TestBinaryOnlyHeadlessCommandUsesTheAnchorWithoutPublisherWork(t *testing.T) {
+	cp := newTestCpak(t)
+	useNoHostCeiling(t)
+	ledger := useAnchorLedger(t)
+	useEnforcement(t, systemauthority.EnforcementRefuse)
+	t.Setenv("DISPLAY", "")
+	t.Setenv("WAYLAND_DISPLAY", "")
+	t.Setenv("DBUS_SESSION_BUS_ADDRESS", "")
+	bindLayer(t, cp, verifiedBaseLayer, "state-base")
+	bindLayer(t, cp, verifiedTopLayer, "state-top")
+	app := verifiedApplication()
+	if len(app.ParsedDesktopEntries) != 0 || len(app.ParsedBinaries) != 1 {
+		t.Fatalf("fixture is not binary-only: %+v", app)
+	}
+	seedApplication(t, cp, app)
+	identity, err := cp.verifyLaunch(app, resolvedOverride(app), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrol(t, ledger, identity)
+
+	savedVerifier, savedRecorded := verifyEvidence, recordedAnchor
+	t.Cleanup(func() {
+		verifyEvidence = savedVerifier
+		recordedAnchor = savedRecorded
+	})
+	verifyEvidence = func(signature.SignatureEvidence, signature.TrustMaterial, time.Time) (signature.VerificationResult, error) {
+		t.Fatal("a headless launch reran publisher PKI")
+		return signature.VerificationResult{}, nil
+	}
+	recordedAnchor = func(uint32, string) (systemauthority.Enrolment, bool, error) {
+		t.Fatal("a headless launch reinterpreted the recorded publisher or reputation decision")
+		return systemauthority.Enrolment{}, false, nil
+	}
+
+	store, err := NewStore(cp.Options.StorePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := standaloneLaunchPolicy(store, app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = cp.runApplicationInstanceWithStore(app, policy, "", "/usr/bin/demo", false, false, store)
+	if errors.Is(err, errLaunchUnrecognised) {
+		t.Fatalf("binary-only headless command was refused by the anchor gate: %v", err)
+	}
+	if !reachedTheLayerMount(err) {
+		t.Fatalf("command stopped before its post-gate layer mount: %v", err)
+	}
+}
 
 // reachedTheLayerMount answers whether a launch got past the gate and stopped
 // where this fixture always stops: none of its layers is on disk.
