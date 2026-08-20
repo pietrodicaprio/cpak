@@ -13,7 +13,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mirkobrombin/cpak/pkg/applicationtrust"
+	"github.com/mirkobrombin/cpak/pkg/applicationtrust/cpakadapter"
 	"github.com/mirkobrombin/cpak/pkg/signature"
+	"github.com/mirkobrombin/cpak/pkg/types"
 	"github.com/mirkobrombin/go-cli-builder/v3/pkg/cli"
 )
 
@@ -33,6 +36,7 @@ type VerifySignatureCmd struct {
 	PrintCanonical bool   `cli:"print-canonical" help:"Write the exact bytes a publisher signs to standard output and stop"`
 	AnyIdentity    bool   `cli:"any-identity" help:"Report who signed without requiring that they may speak for the origin"`
 	EvidenceKind   string `cli:"evidence-kind" help:"Evidence format: sigstore (default) or x509-cms"`
+	JSON           bool   `cli:"json,j" help:"Print the versioned application-trust decision as JSON"`
 
 	cli.Base
 }
@@ -43,6 +47,9 @@ func (c *VerifySignatureCmd) Run() error {
 		return err
 	}
 	if c.PrintCanonical {
+		if c.JSON {
+			return errors.New("--json and --print-canonical select different output contracts")
+		}
 		canonical, canonicalErr := state.Canonical()
 		if canonicalErr != nil {
 			return canonicalErr
@@ -62,6 +69,9 @@ func (c *VerifySignatureCmd) Run() error {
 		return err
 	}
 	result, err := signature.VerifyEvidence(evidence, nil, time.Now())
+	if c.JSON {
+		return c.reportJSON(state, result, err)
+	}
 	var verified signature.Verified
 	if err == nil {
 		verified, err = signature.LegacyVerified(result, state)
@@ -71,6 +81,32 @@ func (c *VerifySignatureCmd) Run() error {
 	}
 	c.reportSigner(verified, result)
 	return c.reportOrigin(verified, result, state.Origin)
+}
+
+func (c *VerifySignatureCmd) reportJSON(state signature.State, verified signature.VerificationResult, verificationErr error) error {
+	result, err := cpakadapter.SignatureVerification(cpakadapter.SignatureVerificationInput{
+		Actor:          "cpak",
+		Operation:      applicationtrust.OperationVerify,
+		Context:        applicationtrust.ContextNonInteractive,
+		State:          state,
+		Verification:   verified,
+		OperationalErr: verificationErr,
+		RequireOrigin:  !c.AnyIdentity,
+	})
+	if err != nil {
+		return fmt.Errorf("construct the application-trust result: %w", err)
+	}
+	encoded, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode the application-trust result: %w", err)
+	}
+	if _, err := fmt.Fprintln(os.Stdout, string(encoded)); err != nil {
+		return err
+	}
+	if result.Final.ExitCode != applicationtrust.ExitAllowed {
+		return &types.ExitError{Code: result.Final.ExitCode}
+	}
+	return nil
 }
 
 func (c *VerifySignatureCmd) evidence(state signature.State, payload []byte) (signature.SignatureEvidence, error) {

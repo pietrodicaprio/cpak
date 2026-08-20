@@ -5,11 +5,16 @@
 package cmd
 
 import (
+	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/mirkobrombin/cpak/pkg/applicationtrust"
 	"github.com/mirkobrombin/cpak/pkg/signature"
+	"github.com/mirkobrombin/cpak/pkg/types"
 )
 
 func TestVerifySignatureSelectsAnExplicitEvidenceProfile(t *testing.T) {
@@ -42,6 +47,61 @@ func TestVerifySignatureSelectsAnExplicitEvidenceProfile(t *testing.T) {
 	if _, err := (&VerifySignatureCmd{EvidenceKind: "unknown"}).evidence(state, payload); err == nil {
 		t.Fatal("unknown evidence profile was accepted")
 	}
+}
+
+func TestVerifySignatureJSONReportsInvalidEvidenceWithTheStableExitCode(t *testing.T) {
+	bundle := filepath.Join(t.TempDir(), "signature.p7s")
+	if err := os.WriteFile(bundle, []byte("not CMS"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	command := VerifySignatureCmd{
+		Bundle:         bundle,
+		Origin:         "registry.example/org/application",
+		ManifestSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		ImageDigest:    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		Generation:     1,
+		EvidenceKind:   "x509-cms",
+		JSON:           true,
+	}
+	output, runErr := captureVerifySignatureStdout(t, command.Run)
+	var exitErr *types.ExitError
+	if !errors.As(runErr, &exitErr) || exitErr.Code != applicationtrust.ExitInvalid {
+		t.Fatalf("run error = %v", runErr)
+	}
+	var result applicationtrust.Result
+	if err := json.Unmarshal(output, &result); err != nil {
+		t.Fatalf("decode JSON %q: %v", output, err)
+	}
+	if err := result.Validate(); err != nil {
+		t.Fatalf("invalid portable result: %v", err)
+	}
+	if result.Final.Action != applicationtrust.FinalInvalid || result.Final.ExitCode != applicationtrust.ExitInvalid || result.Verification.EvidenceKind != string(signature.EvidenceX509CMS) {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func captureVerifySignatureStdout(t *testing.T, run func() error) ([]byte, error) {
+	t.Helper()
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := os.Stdout
+	os.Stdout = writer
+	defer func() { os.Stdout = previous }()
+
+	runErr := run()
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return output, runErr
 }
 
 func TestVerifySignatureReadsTheCanonicalStateProducedByCpakSign(t *testing.T) {

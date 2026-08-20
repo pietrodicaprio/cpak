@@ -77,6 +77,16 @@ func TestNonInteractiveInvocationCannotSupplyConfirmation(t *testing.T) {
 	}
 }
 
+func TestSanitizeTextRemovesControlsAndKeepsAUTF8Boundary(t *testing.T) {
+	got := SanitizeText("publisher\x00\x1b[2J-éé", 15)
+	if got != "publisher[2J-é" {
+		t.Fatalf("sanitized text = %q", got)
+	}
+	if invalid := SanitizeText(string([]byte{'a', 0xff, 'b'}), 8); invalid != "ab" {
+		t.Fatalf("invalid UTF-8 became %q", invalid)
+	}
+}
+
 func TestDecisionRejectsContradictoryTrustSurfaces(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -94,6 +104,7 @@ func TestDecisionRejectsContradictoryTrustSurfaces(t *testing.T) {
 		}},
 		{"terminal control", func(result *Result) { result.Publisher.DisplayName = "publisher\u001b[2J" }},
 		{"noninteractive consent", func(result *Result) { result.Context = ContextNonInteractive }},
+		{"foreign install publisher", func(result *Result) { result.Publisher.OriginAuthorization = "foreign" }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -196,10 +207,11 @@ func validResult(t *testing.T) Result {
 			Diagnostic:   "detached CMS signature verified",
 		},
 		Publisher: Publisher{
-			Status:      PublisherVerified,
-			ID:          "x509-spki-v1:sha256:0123456789abcdef",
-			DisplayName: "Example Publisher",
-			ReasonCode:  "publisher-verified",
+			Status:              PublisherVerified,
+			ID:                  "x509-spki-v1:sha256:0123456789abcdef",
+			DisplayName:         "Example Publisher",
+			OriginAuthorization: "authorized",
+			ReasonCode:          "publisher-verified",
 		},
 		Trust: Trust{
 			Chain:       "trusted-local",

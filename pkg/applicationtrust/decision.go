@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 	"unicode/utf8"
 )
@@ -153,10 +154,11 @@ type Verification struct {
 }
 
 type Publisher struct {
-	Status      PublisherStatus `json:"status"`
-	ID          string          `json:"id,omitempty"`
-	DisplayName string          `json:"display_name,omitempty"`
-	ReasonCode  string          `json:"reason_code"`
+	Status              PublisherStatus `json:"status"`
+	ID                  string          `json:"id,omitempty"`
+	DisplayName         string          `json:"display_name,omitempty"`
+	OriginAuthorization string          `json:"origin_authorization"`
+	ReasonCode          string          `json:"reason_code"`
 }
 
 type Trust struct {
@@ -197,6 +199,14 @@ var (
 	digestPattern = regexp.MustCompile("^[a-z0-9][a-z0-9+._-]{0,31}:[0-9a-f]{32,128}$")
 )
 
+func ValidReasonCode(value string) bool {
+	return namePattern.MatchString(value)
+}
+
+func ValidArtifactDigest(value string) bool {
+	return digestPattern.MatchString(value)
+}
+
 func (r Result) Validate() error {
 	if r.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("unsupported application trust result schema %d", r.SchemaVersion)
@@ -234,7 +244,7 @@ func (r Result) Validate() error {
 	if err := r.Final.validate(); err != nil {
 		return fmt.Errorf("application trust final action: %w", err)
 	}
-	return validateResolution(r.Context, r.Policy, r.Final)
+	return validateResolution(r)
 }
 
 func (s Subject) validate() error {
@@ -283,6 +293,12 @@ func (p Publisher) validate() error {
 	}
 	if p.Status != PublisherVerified && p.DisplayName != "" {
 		return errors.New("unverified publisher carries a display name")
+	}
+	if !oneOf(p.OriginAuthorization, "authorized", "foreign", "unsupported", "not-evaluated") {
+		return errors.New("invalid origin authorization")
+	}
+	if p.Status != PublisherVerified && p.OriginAuthorization != "not-evaluated" {
+		return errors.New("unverified publisher carries an origin authorization")
 	}
 	if err := safeText(p.DisplayName, 200, true); err != nil {
 		return fmt.Errorf("invalid display name: %w", err)
@@ -369,7 +385,8 @@ func (f Final) validate() error {
 	return nil
 }
 
-func validateResolution(context InvocationContext, policy Policy, final Final) error {
+func validateResolution(result Result) error {
+	context, policy, final := result.Context, result.Policy, result.Final
 	switch final.Action {
 	case FinalAllow:
 		if policy.Action != PolicyAllow && policy.Action != PolicyNotEvaluated {
@@ -395,6 +412,10 @@ func validateResolution(context InvocationContext, policy Policy, final Final) e
 		if policy.Confirmation != ConfirmationNotRequired {
 			return errors.New("application trust resolution uses confirmation to override a failed prerequisite")
 		}
+	}
+	if result.Operation != OperationVerify && (final.Action == FinalAllow || final.Action == FinalWarn) &&
+		result.Publisher.Status == PublisherVerified && result.Publisher.OriginAuthorization != "authorized" {
+		return errors.New("application trust resolution allows a publisher that cannot speak for the origin")
 	}
 	return nil
 }
@@ -451,6 +472,31 @@ func NewFinal(action FinalAction, reason string) (Final, error) {
 		return Final{}, errors.New("invalid final action")
 	}
 	return Final{Action: action, Class: class, ReasonCode: reason, ExitCode: code}, nil
+}
+
+// SanitizeText produces bounded presentation text. It is deliberately not an
+// identity normalizer: adapters must make every trust decision before calling
+// it and may use the result only in diagnostic fields.
+func SanitizeText(value string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	value = strings.ToValidUTF8(value, "")
+	value = strings.Map(func(char rune) rune {
+		if char < 0x20 || char == 0x7f {
+			return -1
+		}
+		return char
+	}, value)
+	encoded := []byte(value)
+	if len(encoded) <= limit {
+		return value
+	}
+	encoded = encoded[:limit]
+	for !utf8.Valid(encoded) {
+		encoded = encoded[:len(encoded)-1]
+	}
+	return string(encoded)
 }
 
 func finalFor(action FinalAction, reason string) Final {

@@ -37,7 +37,7 @@ by an explicit status and reason code, never by omission or a zero value.
 | `decision_source` | `evaluated` for a new decision or `recorded` for authenticated historical state. |
 | `subject` | Origin and, when available, immutable artifact digest and publisher generation. |
 | `verification` | Evidence kind, verification status, stable reason, and bounded diagnostic. |
-| `publisher` | Identity status, normalized ID, and bounded display name. |
+| `publisher` | Identity status, normalized ID, bounded display name, and origin authorization. |
 | `trust` | Chain, root source, signing-time, and revocation status. |
 | `reputation` | Provider, status, freshness, snapshot time, and stable reason. |
 | `policy` | Signature mode, reputation mode, policy action, confirmation state, exception flag, and stable reason. |
@@ -56,7 +56,9 @@ or `not-evaluated`. Evidence kind is one of `sigstore-bundle-v1`,
 Publisher status is one of `verified`, `absent`, `invalid`, `unavailable`, or
 `not-evaluated`. `publisher.id` is present only for a normalized verified
 identity. `publisher.display_name` is optional, bounded presentation text and
-never an authorization selector.
+never an authorization selector. `publisher.origin_authorization` is one of
+`authorized`, `foreign`, `unsupported`, or `not-evaluated`; it is computed
+against `subject.origin` and never copied from evidence.
 
 Chain status is one of `trusted-public`, `trusted-local`, `not-applicable`,
 `untrusted`, `invalid`, or `not-evaluated`. Signing-time status is one of
@@ -140,6 +142,8 @@ Producers validate a result before printing or recording it. Consumers reject:
 - missing stages;
 - a final action/class/exit-code combination outside the frozen table;
 - identity values attached to an unverified publisher;
+- an allowed install, update, launch, or service start whose verified publisher
+  is not authorized for the subject origin;
 - an evidence kind of `none` unless verification is `unsigned` or
   `not-evaluated`;
 - confirmation accepted in a non-interactive context;

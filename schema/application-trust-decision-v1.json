@@ -281,6 +281,7 @@
       "additionalProperties": false,
       "required": [
         "status",
+        "origin_authorization",
         "reason_code"
       ],
       "properties": {
@@ -312,6 +313,14 @@
             {
               "maxLength": 200
             }
+          ]
+        },
+        "origin_authorization": {
+          "enum": [
+            "authorized",
+            "foreign",
+            "unsupported",
+            "not-evaluated"
           ]
         },
         "reason_code": {
