@@ -452,6 +452,7 @@ phase5_bin_dir="$(mktemp -d "$repo_dir/.cpak-phase5-bin.XXXXXXXX")"
 [[ "$phase5_bin_dir" == "$repo_dir/.cpak-phase5-bin."* ]] || fail "unsafe executable directory"
 trap 'rm -rf -- "$phase5_dir" "$phase5_bin_dir"' EXIT
 chmod 0700 "$phase5_dir"
+chmod 0755 "$phase5_bin_dir"
 
 cd "$repo_dir"
 go test -race ./...
