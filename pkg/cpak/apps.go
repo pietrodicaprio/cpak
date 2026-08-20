@@ -73,9 +73,13 @@ type updateDeps struct {
 	removeExports  func(old types.Application, updated types.Application) error
 }
 
-// UpdateOptions controls updates which need explicit permission approval.
+// UpdateOptions controls approvals and application-trust reporting during an
+// update. Permission approval and publisher-reputation confirmation are
+// deliberately separate decisions.
 type UpdateOptions struct {
 	ConfirmPermissions func([]types.UpdateResult) bool
+	Enrolment          EnrolmentOptions
+	OnEnrolment        func(ApplicationEnrolment)
 }
 
 func (c *Cpak) newUpdateDeps() updateDeps {
@@ -177,7 +181,7 @@ func (c *Cpak) updateWithOptions(origin string, deps updateDeps, options UpdateO
 			results = append(results, result)
 			continue
 		}
-		results = append(results, c.updateApplication(app, deps, approvedAdditions[app.Origin]))
+		results = append(results, c.updateApplication(app, deps, approvedAdditions[app.Origin], options))
 	}
 
 	return results, nil
@@ -245,7 +249,7 @@ func (c *Cpak) preflightUpdate(app types.Application, deps updateDeps) (result t
 
 // updateApplication updates a single installed application, restoring the
 // previous store record and exports whenever a step fails.
-func (c *Cpak) updateApplication(app types.Application, deps updateDeps, approvedAdditions map[string]bool) (result types.UpdateResult) {
+func (c *Cpak) updateApplication(app types.Application, deps updateDeps, approvedAdditions map[string]bool, options UpdateOptions) (result types.UpdateResult) {
 	result = types.UpdateResult{
 		Origin:     app.Origin,
 		Name:       app.Name,
@@ -399,7 +403,7 @@ func (c *Cpak) updateApplication(app types.Application, deps updateDeps, approve
 		// nothing here, and the manifest travels with it because an update is
 		// the other moment cpak holds one: a package the publisher signed since
 		// it was installed is recognised without waiting for it to change.
-		c.EnrolPublishedApplication(updated, PublishedPackage{Manifest: manifest})
+		c.reportUpdateEnrolment(updated, PublishedPackage{Manifest: manifest}, options)
 		result.Status = types.UpdateStatusUpToDate
 		return result
 	}
@@ -443,11 +447,18 @@ func (c *Cpak) updateApplication(app types.Application, deps updateDeps, approve
 	// manifest the update applied goes with it, because the state a publisher
 	// signed is that manifest and the image it resolved to, and this is the
 	// last moment either of them is in hand.
-	c.EnrolPublishedApplication(updated, PublishedPackage{Manifest: manifest})
+	c.reportUpdateEnrolment(updated, PublishedPackage{Manifest: manifest}, options)
 
 	result.Status = types.UpdateStatusUpdated
 	result.NewVersion = updated.Version
 	return result
+}
+
+func (c *Cpak) reportUpdateEnrolment(app types.Application, published PublishedPackage, options UpdateOptions) {
+	enrolment := c.EnrolPublishedApplicationWithOptions(app, published, options.Enrolment)
+	if options.OnEnrolment != nil {
+		options.OnEnrolment(enrolment)
+	}
 }
 
 func sessionPermissionChanges(current, updated []types.Session) (changes, additions []string) {

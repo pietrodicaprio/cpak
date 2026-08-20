@@ -6,21 +6,26 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"runtime"
 	"strings"
 
+	"github.com/mirkobrombin/cpak/pkg/applicationtrust"
 	"github.com/mirkobrombin/cpak/pkg/cpak"
 	"github.com/mirkobrombin/cpak/pkg/tools"
 	"github.com/mirkobrombin/cpak/pkg/types"
 	"github.com/mirkobrombin/go-cli-builder/v3/pkg/cli"
+	"golang.org/x/term"
 )
 
 type InstallCmd struct {
-	Remote  string `arg:"remote" help:"Remote Git repository"`
-	Branch  string `cli:"branch,b" help:"Specify a branch"`
-	Release string `cli:"release,r" help:"Install a specific release"`
-	Commit  string `cli:"commit,c" help:"Specify a commit"`
-	Yes     bool   `cli:"yes,y" help:"Skip the confirmation prompt"`
+	Remote         string `arg:"remote" help:"Remote Git repository"`
+	Branch         string `cli:"branch,b" help:"Specify a branch"`
+	Release        string `cli:"release,r" help:"Install a specific release"`
+	Commit         string `cli:"commit,c" help:"Specify a commit"`
+	Yes            bool   `cli:"yes,y" help:"Acknowledge the installation without the operation prompt; never accepts trust warnings"`
+	NonInteractive bool   `cli:"non-interactive,n" help:"Never wait for an operation or trust confirmation"`
+	JSON           bool   `cli:"json,j" help:"Print versioned application-trust decisions as JSON"`
 
 	cli.Base
 }
@@ -52,7 +57,9 @@ func (c *InstallCmd) Run() error {
 		}
 		// The branch name is whatever the remote repository calls its default,
 		// so it is somebody else's text like everything printed below it.
-		c.Logger.Info("No version specified, using the default branch: %s", tools.SanitizeForDisplay(branch))
+		if !c.JSON {
+			c.Logger.Info("No version specified, using the default branch: %s", tools.SanitizeForDisplay(branch))
+		}
 	}
 
 	manifest, err := cp.FetchManifest(remote, branch, c.Release, c.Commit)
@@ -60,7 +67,9 @@ func (c *InstallCmd) Run() error {
 		return err
 	}
 
-	c.describeRootPackage(manifest)
+	if !c.JSON {
+		c.describeRootPackage(manifest)
+	}
 
 	// Every dependency is a package of its own, installed with the permissions
 	// its own publisher asked for, so the user is agreeing to those too and
@@ -74,18 +83,68 @@ func (c *InstallCmd) Run() error {
 		return err
 	}
 
-	c.describeDependencies(dependencies)
-	c.describeRuntimeSourcesAndPermissions(manifest)
-
-	if !c.Yes && !tools.ConfirmOperation("Do you want to continue?") {
-		return nil
+	if !c.JSON {
+		c.describeDependencies(dependencies)
+		c.describeRuntimeSourcesAndPermissions(manifest)
 	}
 
-	return cp.InstallCpakWithOptions(remote, manifest, branch, c.Commit, c.Release, cpak.InstallOptions{
+	context := c.invocationContext()
+	if !c.Yes {
+		if context == applicationtrust.ContextNonInteractive {
+			return fmt.Errorf("a non-interactive install requires --yes to acknowledge the operation")
+		}
+		if !tools.ConfirmOperation("Do you want to continue?") {
+			return nil
+		}
+	}
+
+	enrolments := []cpak.ApplicationEnrolment{}
+	options := cpak.InstallOptions{
 		CreateExports:        true,
 		ResolveImageRef:      true,
 		ResolvedDependencies: dependencies,
-	})
+		OnEnrolment: func(result cpak.ApplicationEnrolment) {
+			enrolments = append(enrolments, result)
+		},
+	}
+	if context == applicationtrust.ContextInteractiveTerminal {
+		options.Enrolment.ConfirmReputation = c.confirmReputation
+	}
+	if err := cp.InstallCpakWithOptions(remote, manifest, branch, c.Commit, c.Release, options); err != nil {
+		return err
+	}
+	trustResults, err := applicationTrustResults(applicationtrust.OperationInstall, context, enrolments)
+	if err != nil {
+		return err
+	}
+	if c.JSON {
+		if err := writeApplicationTrustResults(trustResults); err != nil {
+			return err
+		}
+	} else {
+		reportApplicationTrustResults(c.Logger, trustResults)
+	}
+	return applicationTrustResultExit(trustResults)
+}
+
+func (c *InstallCmd) invocationContext() applicationtrust.InvocationContext {
+	if c.NonInteractive || c.JSON || !term.IsTerminal(int(os.Stdin.Fd())) {
+		return applicationtrust.ContextNonInteractive
+	}
+	return applicationtrust.ContextInteractiveTerminal
+}
+
+func (c *InstallCmd) confirmReputation(warning cpak.ReputationWarning) applicationtrust.ConfirmationResponse {
+	publisher := warning.PublisherName
+	if publisher == "" {
+		publisher = warning.PublisherID
+	}
+	c.Logger.Warning("Publisher reputation requires confirmation: publisher %s, provider %s, status %s, reason %s.",
+		tools.SanitizeForDisplay(publisher), tools.SanitizeForDisplay(warning.ProviderID), warning.Status, tools.SanitizeForDisplay(warning.ProviderReason))
+	if tools.ConfirmOperation("Continue and enrol this publisher for this installation?") {
+		return applicationtrust.Confirm
+	}
+	return applicationtrust.Decline
 }
 
 // The prompt is the whole of what a user is given to decide on, and every

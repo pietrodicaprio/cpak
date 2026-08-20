@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/mirkobrombin/cpak/pkg/applicationtrust"
 	"github.com/mirkobrombin/cpak/pkg/integrity"
 	"github.com/mirkobrombin/cpak/pkg/logger"
 	"github.com/mirkobrombin/cpak/pkg/oci"
@@ -57,12 +58,15 @@ import (
 // to stop.
 var (
 	recordAnchor    = systemauthority.EnrolAnchorWithSignature
+	confirmAnchor   = systemauthority.EnrolAnchorWithSignatureConfirmed
 	forgetAnchor    = systemauthority.ForgetAnchor
 	recordedAnchor  = systemauthority.RecordedAnchor
 	forgottenAnchor = systemauthority.ForgottenAnchor
 	asksTheOwner    = systemauthority.EnrolmentAsksTheOwner
 	signaturePolicy = systemauthority.Signatures
 )
+
+var ErrReputationConfirmationDeclined = errors.New("publisher reputation confirmation was declined")
 
 // The three things a user can actually do. The first names the backfill and not
 // the layer state, because a digest shown to somebody with no way to act on it
@@ -110,6 +114,13 @@ const (
 	// EnrolmentUnsigned means this host enrols only signed packages and
 	// nothing that may speak for this origin signed this one.
 	EnrolmentUnsigned
+
+	// EnrolmentConfirmationRequired means host policy produced a warning and
+	// this invocation supplied no dedicated interactive confirmation.
+	EnrolmentConfirmationRequired
+
+	// EnrolmentDeclined means the dedicated trust prompt was answered no.
+	EnrolmentDeclined
 )
 
 func (o EnrolmentOutcome) String() string {
@@ -124,6 +135,10 @@ func (o EnrolmentOutcome) String() string {
 		return "not recorded"
 	case EnrolmentUnsigned:
 		return "not signed"
+	case EnrolmentConfirmationRequired:
+		return "confirmation required"
+	case EnrolmentDeclined:
+		return "confirmation declined"
 	}
 	return "not attempted"
 }
@@ -202,6 +217,27 @@ type ApplicationEnrolment struct {
 	// Advice is the one thing the user can do about it, in the words they
 	// would type. It is empty when there is nothing honest to suggest.
 	Advice string
+
+	Reputation         *reputation.Result
+	ReputationDecision *trustpolicy.ReputationDecision
+	SignatureMode      systemauthority.SignaturePolicy
+	ReputationMode     trustpolicy.ReputationMode
+	// Confirmation records only the dedicated reputation prompt. Generic
+	// operation approval, including --yes, never sets it.
+	Confirmation applicationtrust.ConfirmationState
+}
+
+type ReputationWarning struct {
+	PublisherID    string
+	PublisherName  string
+	ProviderID     string
+	Status         reputation.Status
+	ProviderReason string
+	PolicyReason   string
+}
+
+type EnrolmentOptions struct {
+	ConfirmReputation func(ReputationWarning) applicationtrust.ConfirmationResponse
 }
 
 // EnrolApplication records what a launch of an installed application is, for a
@@ -214,7 +250,7 @@ type ApplicationEnrolment struct {
 // one the first time somebody changed an override or enabled an addon, and on a
 // host that takes only signed packages that would unenrol working software.
 func (c *Cpak) EnrolApplication(app types.Application) ApplicationEnrolment {
-	return c.enrolApplication(app, PublishedPackage{}, c.carriedSignature(app), false)
+	return c.enrolApplication(app, PublishedPackage{}, c.carriedSignature(app), false, EnrolmentOptions{})
 }
 
 // enrolTakeover is the enrolment a removal makes on behalf of the installation
@@ -229,7 +265,7 @@ func (c *Cpak) EnrolApplication(app types.Application) ApplicationEnrolment {
 // ledger first, where nobody is prompted, keeps both halves: no prompt, and no
 // widening that slipped through because a prompt was skipped.
 func (c *Cpak) enrolTakeover(app types.Application) ApplicationEnrolment {
-	return c.enrolApplication(app, PublishedPackage{}, c.carriedSignature(app), true)
+	return c.enrolApplication(app, PublishedPackage{}, c.carriedSignature(app), true, EnrolmentOptions{})
 }
 
 // EnrolPublishedApplication is what an install and an update call. It is the
@@ -244,10 +280,14 @@ func (c *Cpak) enrolTakeover(app types.Application) ApplicationEnrolment {
 // is already on disk and working. What it must not be is quiet, so every
 // outcome other than a recorded anchor is reported to the user as it happens.
 func (c *Cpak) EnrolPublishedApplication(app types.Application, published PublishedPackage) ApplicationEnrolment {
-	return c.enrolApplication(app, published, nil, false)
+	return c.EnrolPublishedApplicationWithOptions(app, published, EnrolmentOptions{})
 }
 
-func (c *Cpak) enrolApplication(app types.Application, published PublishedPackage, carried *systemauthority.SignedState, takeover bool) ApplicationEnrolment {
+func (c *Cpak) EnrolPublishedApplicationWithOptions(app types.Application, published PublishedPackage, options EnrolmentOptions) ApplicationEnrolment {
+	return c.enrolApplication(app, published, nil, false, options)
+}
+
+func (c *Cpak) enrolApplication(app types.Application, published PublishedPackage, carried *systemauthority.SignedState, takeover bool, options EnrolmentOptions) ApplicationEnrolment {
 	enrolment := ApplicationEnrolment{Origin: app.Origin, UID: uint32(os.Getuid())}
 	components, addons, err := c.launchComposition(app)
 	if err != nil {
@@ -320,12 +360,15 @@ func (c *Cpak) enrolApplication(app types.Application, published PublishedPackag
 	if err := anchor.ValidateDigests(); err != nil {
 		return undescribedEnrolment(enrolment, err, "")
 	}
-	if held {
+	// A local re-enrolment of the same launch is free. Install and update hold
+	// the published manifest again, so they must refresh publisher evidence and
+	// reputation even when the resolved image did not move.
+	if held && published.Manifest == nil {
 		if recorded.LaunchRoot == anchor.LaunchRoot {
 			enrolment.Outcome = EnrolmentUnchanged
 			enrolment.Anchor = recorded
 			enrolment.Signature = c.heldSignature(app.Origin, enrolment.UID)
-			return enrolment
+			return recordedEnrolmentDetails(enrolment)
 		}
 	}
 	enrolment.Anchor = anchor
@@ -352,12 +395,52 @@ func (c *Cpak) enrolApplication(app types.Application, published PublishedPackag
 	// would be a network round trip spent on an answer nobody can use.
 	signed, found := c.packageSignature(app, published, carried)
 	enrolment.Signature = found
+	// No evidence and evidence that does not stand are different facts. Only
+	// the first may follow the host's unsigned-package policy; treating an
+	// attached invalid or foreign signature as absence would turn a failed
+	// trust claim into an unsigned anchor.
+	if signed == nil && !found.Unsigned() {
+		return unrecordableEnrolment(enrolment, found.Reason)
+	}
 	if signed == nil && signaturePolicy() == systemauthority.SignaturesRequired {
 		return unsignedEnrolment(enrolment, fmt.Errorf("%w: %w", systemauthority.ErrSignatureRequired, found.Reason))
 	}
 	reportSignature(app.Origin, enrolment.UID, enrolment.Signature)
 
 	if err = recordAnchor(anchor, &policy, signed); err != nil {
+		var confirmation *systemauthority.ReputationConfirmationRequiredError
+		if errors.As(err, &confirmation) {
+			enrolment.Reputation = &confirmation.Result
+			enrolment.ReputationDecision = &confirmation.Decision
+			enrolment.SignatureMode = confirmation.SignatureMode
+			enrolment.ReputationMode = confirmation.ReputationMode
+			response := applicationtrust.NoConfirmation
+			if options.ConfirmReputation != nil {
+				response = options.ConfirmReputation(reputationWarning(enrolment, confirmation))
+			}
+			switch response {
+			case applicationtrust.Confirm:
+				if confirmErr := confirmAnchor(anchor, &policy, signed, confirmation.Token); confirmErr == nil {
+					enrolment.Outcome = EnrolmentRecorded
+					enrolment.Confirmation = applicationtrust.ConfirmationAccepted
+					return recordedEnrolmentDetails(enrolment)
+				} else {
+					var changed *systemauthority.ReputationConfirmationRequiredError
+					if errors.As(confirmErr, &changed) {
+						enrolment.Reputation = &changed.Result
+						enrolment.ReputationDecision = &changed.Decision
+						enrolment.SignatureMode = changed.SignatureMode
+						enrolment.ReputationMode = changed.ReputationMode
+						return confirmationRequiredEnrolment(enrolment)
+					}
+					err = confirmErr
+				}
+			case applicationtrust.Decline:
+				return declinedEnrolment(enrolment)
+			default:
+				return confirmationRequiredEnrolment(enrolment)
+			}
+		}
 		if errors.Is(err, systemauthority.ErrSignatureRequired) {
 			return unsignedEnrolment(enrolment, err)
 		}
@@ -367,7 +450,37 @@ func (c *Cpak) enrolApplication(app types.Application, published PublishedPackag
 	if isVerbose {
 		logger.Printf("%s is enrolled for verified launch at generation %d", app.Origin, anchor.Generation)
 	}
+	return recordedEnrolmentDetails(enrolment)
+}
+
+func recordedEnrolmentDetails(enrolment ApplicationEnrolment) ApplicationEnrolment {
+	recorded, held, err := recordedAnchor(enrolment.UID, enrolment.Origin)
+	if err != nil || !held {
+		return enrolment
+	}
+	enrolment.SignatureMode = recorded.SignatureMode
+	enrolment.ReputationMode = recorded.ReputationMode
+	if recorded.Reputation != nil {
+		result := *recorded.Reputation
+		enrolment.Reputation = &result
+	}
+	if recorded.ReputationDecision != nil {
+		decision := *recorded.ReputationDecision
+		enrolment.ReputationDecision = &decision
+	}
 	return enrolment
+}
+
+func reputationWarning(enrolment ApplicationEnrolment, confirmation *systemauthority.ReputationConfirmationRequiredError) ReputationWarning {
+	warning := ReputationWarning{
+		ProviderID: confirmation.Result.ProviderID, Status: confirmation.Result.Status,
+		ProviderReason: confirmation.Result.ReasonCode, PolicyReason: confirmation.Decision.ReasonCode,
+	}
+	if enrolment.Signature.Publisher != nil {
+		warning.PublisherID = enrolment.Signature.Publisher.ID
+		warning.PublisherName = enrolment.Signature.Publisher.DisplayName
+	}
+	return warning
 }
 
 // enrolmentFloor is the highest generation this origin has already reached on
@@ -889,6 +1002,20 @@ func unsignedEnrolment(enrolment ApplicationEnrolment, reason error) Application
 	enrolment.Outcome = EnrolmentUnsigned
 	enrolment.Reason = reason
 	enrolment.Advice = unsignedAdvice
+	return reportEnrolment(enrolment)
+}
+
+func confirmationRequiredEnrolment(enrolment ApplicationEnrolment) ApplicationEnrolment {
+	enrolment.Outcome = EnrolmentConfirmationRequired
+	enrolment.Confirmation = applicationtrust.ConfirmationRequired
+	enrolment.Reason = systemauthority.ErrReputationConfirmationRequired
+	return reportEnrolment(enrolment)
+}
+
+func declinedEnrolment(enrolment ApplicationEnrolment) ApplicationEnrolment {
+	enrolment.Outcome = EnrolmentDeclined
+	enrolment.Confirmation = applicationtrust.ConfirmationDeclined
+	enrolment.Reason = ErrReputationConfirmationDeclined
 	return reportEnrolment(enrolment)
 }
 

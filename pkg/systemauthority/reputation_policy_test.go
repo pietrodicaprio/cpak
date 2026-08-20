@@ -150,6 +150,9 @@ func TestAuthorityReputationModesControlEnrolmentAndRecordedEvidence(t *testing.
 				if recorded.Reputation == nil || recorded.ReputationDecision == nil || recorded.Reputation.Status != test.status {
 					t.Fatalf("record dropped reputation evidence: %+v", recorded)
 				}
+				if recorded.SignatureMode != SignaturesOptional || recorded.ReputationMode != test.mode {
+					t.Fatalf("recorded policy modes = %s/%s", recorded.SignatureMode, recorded.ReputationMode)
+				}
 			}
 		})
 	}
@@ -172,7 +175,8 @@ func TestAuthorityRecordsAWarningOnlyAfterTheExactSingleUseConfirmation(t *testi
 
 	err := ledger.Record(enrolment)
 	var confirmation *ReputationConfirmationRequiredError
-	if !errors.As(err, &confirmation) || confirmation.Token == "" || confirmation.Decision.Action != trustpolicy.ActionWarn {
+	if !errors.As(err, &confirmation) || confirmation.Token == "" || confirmation.Decision.Action != trustpolicy.ActionWarn ||
+		confirmation.SignatureMode != SignaturesOptional || confirmation.ReputationMode != trustpolicy.ReputationWarn {
 		t.Fatalf("first decision = %v", err)
 	}
 	if _, found, readErr := ledger.Recorded(enrolment.UID, enrolment.Origin); readErr != nil || found {
@@ -221,5 +225,8 @@ func TestReputationOffDoesNotConsultAProvider(t *testing.T) {
 	}
 	if recorded.Reputation != nil || recorded.ReputationDecision != nil {
 		t.Fatal("off mode recorded a reputation verdict")
+	}
+	if recorded.SignatureMode != SignaturesOptional || recorded.ReputationMode != trustpolicy.ReputationOff {
+		t.Fatalf("recorded policy modes = %s/%s", recorded.SignatureMode, recorded.ReputationMode)
 	}
 }

@@ -7,14 +7,17 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"regexp"
 	"slices"
 	"strings"
 
+	"github.com/mirkobrombin/cpak/pkg/applicationtrust"
 	"github.com/mirkobrombin/cpak/pkg/cpak"
 	"github.com/mirkobrombin/cpak/pkg/tools"
 	"github.com/mirkobrombin/cpak/pkg/types"
 	"github.com/mirkobrombin/go-cli-builder/v3/pkg/cli"
+	"golang.org/x/term"
 )
 
 type UpdateCmd struct {
@@ -24,6 +27,12 @@ type UpdateCmd struct {
 	Verbose        bool   `cli:"verbose,v" help:"Report every cpak, not only the ones that need attention"`
 
 	cli.Base
+}
+
+type updateMachineOutput struct {
+	SchemaVersion int                       `json:"schema_version"`
+	Updates       []types.UpdateResult      `json:"updates"`
+	Trust         []applicationtrust.Result `json:"trust"`
 }
 
 func (c *UpdateCmd) Run() error {
@@ -43,9 +52,11 @@ func (c *UpdateCmd) Run() error {
 		c.announceUpdate(cp, remote)
 	}
 
-	results, err := cp.UpdateWithOptions(remote, cpak.UpdateOptions{
+	context := c.invocationContext()
+	enrolments := []cpak.ApplicationEnrolment{}
+	options := cpak.UpdateOptions{
 		ConfirmPermissions: func(requests []types.UpdateResult) bool {
-			if c.NonInteractive || c.JSON {
+			if context != applicationtrust.ContextInteractiveTerminal {
 				return false
 			}
 			c.Logger.Info("The following updates request additional permissions:")
@@ -56,18 +67,36 @@ func (c *UpdateCmd) Run() error {
 			tools.ShowTable([]string{"Name", "Origin", "Additional permissions"}, data)
 			return tools.ConfirmOperation("Approve these permissions and continue?")
 		},
-	})
+		OnEnrolment: func(result cpak.ApplicationEnrolment) {
+			enrolments = append(enrolments, result)
+		},
+	}
+	if context == applicationtrust.ContextInteractiveTerminal {
+		options.Enrolment.ConfirmReputation = c.confirmReputation
+	}
+	results, err := cp.UpdateWithOptions(remote, options)
 	if err != nil {
 		return fmt.Errorf("an error occurred while updating cpak(s): %s", err)
 	}
+	trustResults, err := applicationTrustResults(applicationtrust.OperationUpdate, context, enrolments)
+	if err != nil {
+		return err
+	}
 
 	if c.JSON {
-		jsonBytes, err := json.MarshalIndent(results, "", "  ")
+		jsonBytes, err := json.MarshalIndent(updateMachineOutput{
+			SchemaVersion: applicationtrust.SchemaVersion,
+			Updates:       results,
+			Trust:         trustResults,
+		}, "", "  ")
 		if err != nil {
 			return fmt.Errorf("an error occurred while updating cpak(s): %s", err)
 		}
 		fmt.Println(string(jsonBytes))
-		return updateFailures(results)
+		if err := updateFailures(results); err != nil {
+			return err
+		}
+		return applicationTrustResultExit(trustResults)
 	}
 
 	if len(results) == 0 {
@@ -77,8 +106,32 @@ func (c *UpdateCmd) Run() error {
 
 	c.Logger.Info("%s", summarizeUpdates(results))
 	c.showUpdateResults(results)
+	reportApplicationTrustResults(c.Logger, trustResults)
 
-	return updateFailures(results)
+	if err := updateFailures(results); err != nil {
+		return err
+	}
+	return applicationTrustResultExit(trustResults)
+}
+
+func (c *UpdateCmd) invocationContext() applicationtrust.InvocationContext {
+	if c.NonInteractive || c.JSON || !term.IsTerminal(int(os.Stdin.Fd())) {
+		return applicationtrust.ContextNonInteractive
+	}
+	return applicationtrust.ContextInteractiveTerminal
+}
+
+func (c *UpdateCmd) confirmReputation(warning cpak.ReputationWarning) applicationtrust.ConfirmationResponse {
+	publisher := warning.PublisherName
+	if publisher == "" {
+		publisher = warning.PublisherID
+	}
+	c.Logger.Warning("Publisher reputation requires confirmation: publisher %s, provider %s, status %s, reason %s.",
+		tools.SanitizeForDisplay(publisher), tools.SanitizeForDisplay(warning.ProviderID), warning.Status, tools.SanitizeForDisplay(warning.ProviderReason))
+	if tools.ConfirmOperation("Continue and enrol this publisher for this update?") {
+		return applicationtrust.Confirm
+	}
+	return applicationtrust.Decline
 }
 
 // announceUpdate says what the command is about to do, because resolving every
@@ -125,7 +178,7 @@ func verboseUpdateRows(results []types.UpdateResult) [][]string {
 			from,
 			to,
 			strings.Join(result.PermissionAdditions, ", "),
-			shortenDigests(result.Reason),
+			tools.SanitizeForDisplay(shortenDigests(result.Reason)),
 		})
 	}
 	return rows
@@ -141,7 +194,7 @@ func attentionUpdateRows(results []types.UpdateResult) [][]string {
 			result.Name,
 			result.Origin,
 			string(result.Status),
-			shortenDigests(result.Reason),
+			tools.SanitizeForDisplay(shortenDigests(result.Reason)),
 		})
 	}
 	return rows

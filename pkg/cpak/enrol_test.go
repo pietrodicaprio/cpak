@@ -14,7 +14,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/mirkobrombin/cpak/pkg/applicationtrust"
 	"github.com/mirkobrombin/cpak/pkg/integrity"
 	"github.com/mirkobrombin/cpak/pkg/reputation"
 	"github.com/mirkobrombin/cpak/pkg/signature"
@@ -55,11 +57,12 @@ func useEnrolmentAuthority(t *testing.T) *enrolmentAuthority {
 	t.Helper()
 
 	authority := &enrolmentAuthority{ledger: useAnchorLedger(t), records: map[string]systemauthority.Enrolment{}}
-	savedRecord, savedForget := recordAnchor, forgetAnchor
+	savedRecord, savedConfirm, savedForget := recordAnchor, confirmAnchor, forgetAnchor
 	savedRecorded, savedPolicy := recordedAnchor, signaturePolicy
 	savedForgotten, savedAsks := forgottenAnchor, asksTheOwner
 	t.Cleanup(func() {
 		recordAnchor = savedRecord
+		confirmAnchor = savedConfirm
 		forgetAnchor = savedForget
 		recordedAnchor = savedRecorded
 		forgottenAnchor = savedForgotten
@@ -636,10 +639,111 @@ func TestEnrolPublishedApplicationRecordsWhoSignedTheInstallation(t *testing.T) 
 	}
 }
 
+func TestReputationWarningUsesOnlyTheDedicatedEnrolmentConfirmation(t *testing.T) {
+	responses := []struct {
+		name         string
+		callback     bool
+		response     applicationtrust.ConfirmationResponse
+		outcome      EnrolmentOutcome
+		confirmation applicationtrust.ConfirmationState
+		confirmed    int
+	}{
+		{"no interactive adapter", false, applicationtrust.NoConfirmation, EnrolmentConfirmationRequired, applicationtrust.ConfirmationRequired, 0},
+		{"dedicated prompt accepted", true, applicationtrust.Confirm, EnrolmentRecorded, applicationtrust.ConfirmationAccepted, 1},
+		{"dedicated prompt declined", true, applicationtrust.Decline, EnrolmentDeclined, applicationtrust.ConfirmationDeclined, 0},
+	}
+	for _, test := range responses {
+		t.Run(test.name, func(t *testing.T) {
+			cp := newSignatureCpak(t)
+			useEnrolmentAuthority(t)
+			registry := newSignatureRegistry()
+			digest := contentDigest([]byte("the image behind a reputation warning"))
+			attachSigned(t, registry, digest, 1, []byte("a verified publisher bundle"))
+			app := installedFromRegistry(t, cp, registry, digest)
+			useSignatureVerifier(t, func(_ []byte, state signature.State) (signature.Verified, error) {
+				return signature.Verified{State: state, Identity: publisherIdentity(testOrigin)}, nil
+			})
+			publisher, _ := signature.NormalizeOIDCIdentity(publisherIdentity(testOrigin))
+			now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+			warning := &systemauthority.ReputationConfirmationRequiredError{
+				Token: "single-use-confirmation", SignatureMode: systemauthority.SignaturesOptional,
+				ReputationMode: trustpolicy.ReputationWarn,
+				Result: reputation.Result{
+					ProviderID: "cpak-poc", PublisherID: publisher.ID, Status: reputation.Unknown,
+					IssuedAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour), Sequence: 4, ReasonCode: "publisher-not-listed",
+				},
+				Decision: trustpolicy.ReputationDecision{Allowed: true, Action: trustpolicy.ActionWarn, ReasonCode: "publisher-not-listed", Reason: "publisher reputation requires a warning before continuing"},
+			}
+			recordAnchor = func(integrity.Anchor, *types.Override, *systemauthority.SignedState) error { return warning }
+			confirmed := 0
+			confirmAnchor = func(_ integrity.Anchor, _ *types.Override, signed *systemauthority.SignedState, token string) error {
+				confirmed++
+				if signed == nil || token != warning.Token {
+					t.Fatalf("confirmation carried signed=%v token=%q", signed != nil, token)
+				}
+				return nil
+			}
+
+			options := EnrolmentOptions{}
+			if test.callback {
+				options.ConfirmReputation = func(got ReputationWarning) applicationtrust.ConfirmationResponse {
+					if got.ProviderID != warning.Result.ProviderID || got.Status != warning.Result.Status || got.ProviderReason != warning.Result.ReasonCode || got.PublisherID == "" {
+						t.Fatalf("warning = %+v", got)
+					}
+					return test.response
+				}
+			}
+			enrolment := cp.EnrolPublishedApplicationWithOptions(app, publishedTestPackage(t), options)
+			if enrolment.Outcome != test.outcome || enrolment.Confirmation != test.confirmation || confirmed != test.confirmed {
+				t.Fatalf("enrolment=%+v confirmed=%d", enrolment, confirmed)
+			}
+		})
+	}
+}
+
+func TestChangedReputationWarningRequiresANewConfirmation(t *testing.T) {
+	cp := newSignatureCpak(t)
+	useEnrolmentAuthority(t)
+	registry := newSignatureRegistry()
+	digest := contentDigest([]byte("the image behind a changing reputation warning"))
+	attachSigned(t, registry, digest, 1, []byte("a verified publisher bundle"))
+	app := installedFromRegistry(t, cp, registry, digest)
+	useSignatureVerifier(t, func(_ []byte, state signature.State) (signature.Verified, error) {
+		return signature.Verified{State: state, Identity: publisherIdentity(testOrigin)}, nil
+	})
+	publisher, _ := signature.NormalizeOIDCIdentity(publisherIdentity(testOrigin))
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	warning := func(reason string, sequence uint64) *systemauthority.ReputationConfirmationRequiredError {
+		return &systemauthority.ReputationConfirmationRequiredError{
+			Token: reason + "-token", SignatureMode: systemauthority.SignaturesOptional,
+			ReputationMode: trustpolicy.ReputationWarn,
+			Result: reputation.Result{
+				ProviderID: "cpak-poc", PublisherID: publisher.ID, Status: reputation.Caution,
+				IssuedAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour), Sequence: sequence, ReasonCode: reason,
+			},
+			Decision: trustpolicy.ReputationDecision{Allowed: true, Action: trustpolicy.ActionWarn, ReasonCode: reason, Reason: "publisher reputation requires a warning before continuing"},
+		}
+	}
+	first := warning("first-warning", 4)
+	changed := warning("changed-warning", 5)
+	recordAnchor = func(integrity.Anchor, *types.Override, *systemauthority.SignedState) error { return first }
+	confirmAnchor = func(integrity.Anchor, *types.Override, *systemauthority.SignedState, string) error { return changed }
+
+	enrolment := cp.EnrolPublishedApplicationWithOptions(app, publishedTestPackage(t), EnrolmentOptions{
+		ConfirmReputation: func(ReputationWarning) applicationtrust.ConfirmationResponse { return applicationtrust.Confirm },
+	})
+	if enrolment.Outcome != EnrolmentConfirmationRequired || enrolment.Confirmation != applicationtrust.ConfirmationRequired {
+		t.Fatalf("enrolment=%+v, want a new confirmation", enrolment)
+	}
+	if enrolment.Reputation == nil || enrolment.Reputation.Sequence != changed.Result.Sequence || enrolment.Reputation.ReasonCode != changed.Result.ReasonCode {
+		t.Fatalf("reputation=%+v, want the changed warning", enrolment.Reputation)
+	}
+}
+
 // The negative of the one above. Nothing about the fetch changes, only the
-// answer the offline check gives, and the installation is enrolled as unsigned
-// instead of being enrolled as signed by nobody in particular.
-func TestEnrolPublishedApplicationEnrolsAsUnsignedWhenTheBundleDoesNotStand(t *testing.T) {
+// answer the offline check gives. Attached evidence that does not stand is not
+// absence and can never fall back to an unsigned anchor.
+func TestEnrolPublishedApplicationRefusesFallbackWhenTheBundleDoesNotStand(t *testing.T) {
 	cp := newSignatureCpak(t)
 	authority := useEnrolmentAuthority(t)
 	registry := newSignatureRegistry()
@@ -651,8 +755,8 @@ func TestEnrolPublishedApplicationEnrolsAsUnsignedWhenTheBundleDoesNotStand(t *t
 	})
 
 	enrolment := cp.EnrolPublishedApplication(app, publishedTestPackage(t))
-	if enrolment.Outcome != EnrolmentRecorded {
-		t.Fatalf("got outcome %s (%v), want the installation to be enrolled anyway", enrolment.Outcome, enrolment.Reason)
+	if enrolment.Outcome != EnrolmentUnrecordable {
+		t.Fatalf("got outcome %s (%v), want the invalid evidence to remain unenrolled", enrolment.Outcome, enrolment.Reason)
 	}
 	if enrolment.Signature.Verified {
 		t.Fatal("a bundle the offline check refused was reported as a signature")
@@ -665,6 +769,9 @@ func TestEnrolPublishedApplicationEnrolsAsUnsignedWhenTheBundleDoesNotStand(t *t
 	}
 	if authority.signature != nil {
 		t.Fatal("a signature that does not stand was handed to the authority")
+	}
+	if authority.recorded != 0 {
+		t.Fatalf("the invalid evidence reached the authority %d times", authority.recorded)
 	}
 }
 
@@ -1067,6 +1174,27 @@ func TestAnUnchangedEnrolmentStillReportsWhoSignedIt(t *testing.T) {
 	}
 	if !second.Signature.Verified || second.Signature.State.Generation != 6 {
 		t.Fatalf("got signature %+v, want the one the ledger holds", second.Signature)
+	}
+}
+
+func TestPublishedEnrolmentRefreshesTrustForAnUnchangedLaunch(t *testing.T) {
+	cp := newSignatureCpak(t)
+	authority := useEnrolmentAuthority(t)
+	registry := newSignatureRegistry()
+	digest := contentDigest([]byte("the unchanged image whose trust is refreshed"))
+	attachSigned(t, registry, digest, 6, []byte(`{"bundle":"signed"}`))
+	app := installedFromRegistry(t, cp, registry, digest)
+	useSignatureVerifier(t, func(_ []byte, state signature.State) (signature.Verified, error) {
+		return signature.Verified{State: state, Identity: publisherIdentity(testOrigin)}, nil
+	})
+
+	first := cp.EnrolPublishedApplication(app, publishedTestPackage(t))
+	second := cp.EnrolPublishedApplication(app, publishedTestPackage(t))
+	if first.Outcome != EnrolmentRecorded || second.Outcome != EnrolmentRecorded {
+		t.Fatalf("first=%+v second=%+v, want both published trust evaluations recorded", first, second)
+	}
+	if authority.recorded != 2 || second.Anchor.Generation != first.Anchor.Generation+1 {
+		t.Fatalf("authority calls=%d generations=%d,%d", authority.recorded, first.Anchor.Generation, second.Anchor.Generation)
 	}
 }
 

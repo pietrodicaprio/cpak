@@ -62,6 +62,15 @@ type InstallOptions struct {
 	// does not make cpak fetch every one of them a second time. A lock still
 	// wins over them: it is the stronger statement about the same graph.
 	ResolvedDependencies []ResolvedDependency
+
+	// Enrolment controls only the dedicated application-trust confirmation.
+	// It is separate from every operation acknowledgement such as --yes.
+	Enrolment EnrolmentOptions
+
+	// OnEnrolment receives the result for the root and every dependency after
+	// the installation is already on disk. A missing callback preserves the
+	// existing API behavior.
+	OnEnrolment func(ApplicationEnrolment)
 }
 
 // InstallWithOptions installs a remote package with explicit options.
@@ -269,10 +278,13 @@ func (c *Cpak) InstallCpakWithOptions(origin string, manifest *types.CpakManifes
 	// resolved to, and nothing the store keeps can name that pair afterwards,
 	// so an enrolment that did not get it here can never ask the registry who
 	// published this.
-	c.EnrolPublishedApplication(app, PublishedPackage{
+	enrolment := c.EnrolPublishedApplicationWithOptions(app, PublishedPackage{
 		Manifest: manifest,
 		Lock:     signedLock(origin, options.ManifestLock),
-	})
+	}, options.Enrolment)
+	if options.OnEnrolment != nil {
+		options.OnEnrolment(enrolment)
+	}
 
 	return nil
 }

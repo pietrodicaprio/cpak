@@ -6,10 +6,12 @@ package cmd
 
 import (
 	"bytes"
+	"errors"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/mirkobrombin/cpak/pkg/applicationtrust"
 	"github.com/mirkobrombin/cpak/pkg/cpak"
 	"github.com/mirkobrombin/cpak/pkg/types"
 	"github.com/mirkobrombin/go-cli-builder/v3/pkg/cli"
@@ -26,6 +28,39 @@ func carriesTerminalControl(value string) bool {
 		}
 	}
 	return false
+}
+
+func TestInstallTrustOutcomeUsesStableExitCodes(t *testing.T) {
+	for name, test := range map[string]struct {
+		outcome cpak.EnrolmentOutcome
+		context applicationtrust.InvocationContext
+		code    int
+	}{
+		"recorded":              {cpak.EnrolmentRecorded, applicationtrust.ContextNonInteractive, 0},
+		"confirmation required": {cpak.EnrolmentConfirmationRequired, applicationtrust.ContextNonInteractive, applicationtrust.ExitConfirmationRequired},
+		"declined":              {cpak.EnrolmentDeclined, applicationtrust.ContextInteractiveTerminal, applicationtrust.ExitDenied},
+	} {
+		t.Run(name, func(t *testing.T) {
+			results, resultErr := applicationTrustResults(applicationtrust.OperationInstall, test.context, []cpak.ApplicationEnrolment{{
+				Origin: "github.com/user/demo", Outcome: test.outcome,
+				Signature: cpak.EnrolmentSignature{Reason: cpak.ErrPackageUnsigned},
+			}})
+			if resultErr != nil {
+				t.Fatal(resultErr)
+			}
+			err := applicationTrustResultExit(results)
+			if test.code == 0 {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			var exitErr *types.ExitError
+			if !errors.As(err, &exitErr) || exitErr.Code != test.code {
+				t.Fatalf("exit = %v, want %d", err, test.code)
+			}
+		})
+	}
 }
 
 func TestTheInstallPromptOnlyShowsRuntimeSourcesForThisArchitecture(t *testing.T) {
@@ -104,5 +139,18 @@ func TestTheInstallPromptLetsNoPublisherValueMoveTheCursor(t *testing.T) {
 	}
 	if got := strings.Count(printed, `\u009b`); got != 18 {
 		t.Fatalf("the single character control sequences were spelled out %d times, want twice per printed value: %q", got, printed)
+	}
+}
+
+func TestUpdateRowsLetNoExternalReasonMoveTheCursor(t *testing.T) {
+	tainted := "registry failure\x1b[1A\x1b[2K\u009b1A"
+	rows := attentionUpdateRows([]types.UpdateResult{{
+		Origin: "github.com/user/demo", Name: "demo", Status: types.UpdateStatusFailed, Reason: tainted,
+	}})
+	if len(rows) != 1 || len(rows[0]) != 4 {
+		t.Fatalf("rows = %#v", rows)
+	}
+	if carriesTerminalControl(rows[0][3]) || !strings.Contains(rows[0][3], `\x1b[1A`) || !strings.Contains(rows[0][3], `\u009b`) {
+		t.Fatalf("unsafe update reason = %q", rows[0][3])
 	}
 }

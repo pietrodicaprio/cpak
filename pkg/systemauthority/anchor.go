@@ -148,6 +148,8 @@ type Enrolment struct {
 	// not launch-time inputs and never replace the signed snapshot or policy.
 	Reputation         *reputation.Result              `json:"reputation,omitempty"`
 	ReputationDecision *trustpolicy.ReputationDecision `json:"reputation_decision,omitempty"`
+	SignatureMode      SignaturePolicy                 `json:"signature_mode,omitempty"`
+	ReputationMode     trustpolicy.ReputationMode      `json:"reputation_mode,omitempty"`
 }
 
 // SignedState is the compatibility-facing shape used by the existing cpak API.
@@ -356,10 +358,12 @@ func (l AnchorLedger) record(enrolment Enrolment, reputationConfirmation string)
 	// arbitrary values on the wire; neither gets to select the new decision.
 	enrolment.Reputation = nil
 	enrolment.ReputationDecision = nil
+	enrolment.SignatureMode = ""
+	enrolment.ReputationMode = ""
 	if err := validateEnrolment(enrolment); err != nil {
 		return err
 	}
-	if err := l.admitSignature(enrolment); err != nil {
+	if err := l.admitSignature(&enrolment); err != nil {
 		return err
 	}
 	if err := l.admitTrust(&enrolment, reputationConfirmation); err != nil {
@@ -627,35 +631,23 @@ func (l AnchorLedger) AsksTheOwner(enrolment Enrolment) (bool, error) {
 // signed packages refuses the enrolment outright: the application stays on
 // disk, unenrolled, which is the state the enforcement level already answers
 // for, so the two settings compose instead of each inventing a refusal.
-func (l AnchorLedger) admitSignature(enrolment Enrolment) error {
+func (l AnchorLedger) admitSignature(enrolment *Enrolment) error {
 	_, err := enrolment.Signer()
+	policy, policyErr := EnforcementStore{Directory: l.Directory, OwnerUID: l.OwnerUID}.SignaturePolicy()
+	if policyErr != nil {
+		return fmt.Errorf("read the host signature policy: %w", policyErr)
+	}
+	enrolment.SignatureMode = policy
 	if err == nil {
 		return nil
 	}
 	if !errors.Is(err, ErrUnsigned) {
 		return err
 	}
-	required, err := l.signaturesRequired()
-	if err != nil {
-		return err
-	}
-	if required {
+	if policy == SignaturesRequired {
 		return fmt.Errorf("%w: %s", ErrSignatureRequired, enrolment.Origin)
 	}
 	return nil
-}
-
-// signaturesRequired reads the host policy from beside the ledger, which is
-// the only place it is ever read from. A policy that cannot be read is an
-// error rather than a permission: refusing an enrolment costs a user nothing
-// that a reinstall does not give back, and reading a broken file as optional
-// would let whoever broke it decide the answer.
-func (l AnchorLedger) signaturesRequired() (bool, error) {
-	policy, err := EnforcementStore{Directory: l.Directory, OwnerUID: l.OwnerUID}.SignaturePolicy()
-	if err != nil {
-		return false, fmt.Errorf("read the host signature policy: %w", err)
-	}
-	return policy == SignaturesRequired, nil
 }
 
 // authorizationFor says which authorization an enrolment deserves. It is
@@ -825,6 +817,16 @@ func validateEnrolment(enrolment Enrolment) error {
 	}
 	if (enrolment.Reputation == nil) != (enrolment.ReputationDecision == nil) {
 		return errors.New("enrolment reputation result and decision must appear together")
+	}
+	if enrolment.SignatureMode != "" && !enrolment.SignatureMode.valid() {
+		return errors.New("enrolment has an invalid signature mode")
+	}
+	if enrolment.ReputationMode != "" {
+		switch enrolment.ReputationMode {
+		case trustpolicy.ReputationOff, trustpolicy.ReputationAudit, trustpolicy.ReputationWarn, trustpolicy.ReputationRequireEstablished:
+		default:
+			return errors.New("enrolment has an invalid reputation mode")
+		}
 	}
 	if enrolment.Reputation != nil {
 		if err := enrolment.Reputation.Validate(); err != nil {
@@ -1085,7 +1087,18 @@ func decodeReputationConfirmationError(err error) error {
 	if err := wire.Decision.Validate(); err != nil || wire.Decision.Action != trustpolicy.ActionWarn {
 		return errors.New("system authority returned an invalid reputation confirmation")
 	}
-	return &ReputationConfirmationRequiredError{Result: wire.Result, Decision: wire.Decision, Token: token}
+	if !wire.SignatureMode.valid() {
+		return errors.New("system authority returned an invalid reputation confirmation")
+	}
+	switch wire.ReputationMode {
+	case trustpolicy.ReputationAudit, trustpolicy.ReputationWarn, trustpolicy.ReputationRequireEstablished:
+	default:
+		return errors.New("system authority returned an invalid reputation confirmation")
+	}
+	return &ReputationConfirmationRequiredError{
+		Result: wire.Result, Decision: wire.Decision, SignatureMode: wire.SignatureMode,
+		ReputationMode: wire.ReputationMode, Token: token,
+	}
 }
 
 type signedStateWire struct {

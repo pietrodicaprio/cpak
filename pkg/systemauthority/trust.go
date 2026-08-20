@@ -55,9 +55,11 @@ var ErrTrustRefused = errors.New("the host trust policy refuses this enrolment")
 var ErrReputationConfirmationRequired = errors.New("publisher reputation requires confirmation")
 
 type ReputationConfirmationRequiredError struct {
-	Result   reputation.Result
-	Decision trustpolicy.ReputationDecision
-	Token    string
+	Result         reputation.Result
+	Decision       trustpolicy.ReputationDecision
+	SignatureMode  SignaturePolicy
+	ReputationMode trustpolicy.ReputationMode
+	Token          string
 }
 
 func (e *ReputationConfirmationRequiredError) Error() string {
@@ -209,6 +211,10 @@ func (l AnchorLedger) admitTrust(enrolment *Enrolment, reputationConfirmation st
 	if err != nil {
 		return fmt.Errorf("read the host trust policy: %w", err)
 	}
+	enrolment.ReputationMode = trustpolicy.ReputationOff
+	if policy.ABI == trustpolicy.CurrentABIVersion && policy.Reputation != nil {
+		enrolment.ReputationMode = policy.Reputation.Mode
+	}
 	if policy.Empty() {
 		return nil
 	}
@@ -287,7 +293,10 @@ func (l AnchorLedger) admitReputation(policy trustpolicy.Policy, enrolment *Enro
 			if err != nil {
 				return fmt.Errorf("prepare reputation confirmation: %w", err)
 			}
-			return &ReputationConfirmationRequiredError{Result: result, Decision: decision, Token: token}
+			return &ReputationConfirmationRequiredError{
+				Result: result, Decision: decision, SignatureMode: enrolment.SignatureMode,
+				ReputationMode: enrolment.ReputationMode, Token: token,
+			}
 		}
 	}
 	if !decision.Allowed {
