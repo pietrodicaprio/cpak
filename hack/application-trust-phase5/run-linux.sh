@@ -598,7 +598,7 @@ policy = {
     "require_approval": False,
     "approved_publisher_ids": [sys.argv[2]],
     "x509": {"revocation": "allow-unknown"},
-    "reputation": {"mode": "enforce", "provider_id": "cpak-phase5"},
+    "reputation": {"mode": "require-established", "provider_id": "cpak-phase5"},
 }
 pathlib.Path(sys.argv[1]).write_text(json.dumps(policy) + "\n", encoding="utf-8")
 PY
