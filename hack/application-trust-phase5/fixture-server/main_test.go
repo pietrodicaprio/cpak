@@ -175,6 +175,46 @@ func TestRegistryPublishesImageAndCurrentEvidence(t *testing.T) {
 	if recorder.Code != http.StatusOK || recorder.Header().Get("Docker-Content-Digest") != server.imageDigest {
 		t.Fatalf("image response = %d digest %q", recorder.Code, recorder.Header().Get("Docker-Content-Digest"))
 	}
+	if server.updatedDigest == server.imageDigest {
+		t.Fatal("updated fixture image retained the original digest")
+	}
+	marker := filepath.Join(directory, updatedImageMarker)
+	if err := os.WriteFile(marker, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/v2/"+repository+"/manifests/main", nil)
+	recorder = httptest.NewRecorder()
+	server.serveRegistry(recorder, request)
+	if recorder.Code != http.StatusOK || recorder.Header().Get("Docker-Content-Digest") != server.updatedDigest {
+		t.Fatalf("updated image response = %d digest %q", recorder.Code, recorder.Header().Get("Docker-Content-Digest"))
+	}
+	request = httptest.NewRequest(http.MethodGet, "/v2/"+repository+"/referrers/"+server.updatedDigest+"?artifactType="+x509ArtifactType, nil)
+	recorder = httptest.NewRecorder()
+	server.serveRegistry(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("updated image referrers response = %d %q", recorder.Code, recorder.Body.String())
+	}
+	request = httptest.NewRequest(http.MethodGet, "/v2/"+repository+"/referrers/"+server.imageDigest+"?artifactType="+x509ArtifactType, nil)
+	recorder = httptest.NewRecorder()
+	server.serveRegistry(recorder, request)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("inactive image referrers response = %d %q", recorder.Code, recorder.Body.String())
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(marker, 0700); err != nil {
+		t.Fatal(err)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/v2/"+repository+"/manifests/main", nil)
+	recorder = httptest.NewRecorder()
+	server.serveRegistry(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("invalid image control did not fail closed: %d %q", recorder.Code, recorder.Body.String())
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
 
 	request = httptest.NewRequest(http.MethodGet, "/v2/"+repository+"/blobs/"+server.layerDigest, nil)
 	recorder = httptest.NewRecorder()
