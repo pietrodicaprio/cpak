@@ -75,6 +75,11 @@ The current harness proves:
 - real unprivileged cpak invocations add and remove the X.509 root and set,
   import, query, and clear reputation data through both `sudo` and `doas`, with
   exact argument and fingerprint policies and no graphical fallback.
+- in the dedicated GitHub Actions OIDC job, two real keyless Sigstore bundles
+  sign successive canonical package states, the Sigstore-only OCI referrers are
+  verified against cpak's bundled trust material, and the real install and
+  update complete under an exact-origin publisher policy with fresh
+  `established` reputation.
 
 The first install/update milestone is
 [Portability run 32411499077](https://github.com/pietrodicaprio/cpak/actions/runs/32411499077)
@@ -83,9 +88,17 @@ binary's offline execution, is
 [Portability run 32415553153](https://github.com/pietrodicaprio/cpak/actions/runs/32415553153)
 at commit `2c78445`. The real privilege-frontend matrix is
 [Portability run 32417008322](https://github.com/pietrodicaprio/cpak/actions/runs/32417008322)
-at commit `c251200`.
+at commit `c251200`. The real keyless Sigstore install/update gate is the
+successful `application-trust-phase5-sigstore` job in
+[Portability run 32457495922](https://github.com/pietrodicaprio/cpak/actions/runs/32457495922)
+at commit `05b1a2f`. That job uses GitHub Actions OIDC to obtain separate Fulcio
+certificates and Rekor-backed bundles for generations 1 and 2; it exposes no
+X.509 fallback evidence in the fixture.
 
 It does **not** prove the complete Phase 5 gate. Separate disposable-machine
-runs must still record graphical confirmation, Sigstore install/update, service
-restart enforcement, and the remaining negative/recovery matrix. The pseudo-
-terminal row proves terminal confirmation for X.509 only.
+runs must still record graphical confirmation, service restart enforcement,
+and the remaining negative/recovery matrix. The pseudo-terminal row proves
+terminal confirmation for X.509 only. The overall run containing the successful
+Sigstore job is intentionally not cited as a green Phase 5 run: its independent
+graphical job failed because the synthetic X11 confirmation did not finish the
+enrolment.

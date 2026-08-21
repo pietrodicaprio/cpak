@@ -2,7 +2,7 @@
 
 - Status: Phases 0 through 4 implemented; Phase 5 in progress; Phase 6 planned
 - Baseline: cpak v2.8.7 (`be29d55`)
-- Last updated: 2026-08-20
+- Last updated: 2026-08-21
 
 ## 1. How to read this matrix
 
@@ -177,12 +177,12 @@ behaviour require the real integration path described in the Evidence column.
 
 | ID | Requirement | Evidence | Phase | State |
 | --- | --- | --- | --- | --- |
-| AT-LIFE-001 | Fresh signed install succeeds for Sigstore and POC X.509 | `run-linux.sh --sudo-namespace` against the real loopback package repository, OCI registry, and CMS referrer | 5 | Executed for X.509; Sigstore remains planned |
-| AT-LIFE-002 | Signed update succeeds for the same publisher and next generation | The same process lifecycle publishes generation 2, imports refreshed established reputation, and executes the real non-interactive update | 5 | Executed for X.509; Sigstore remains planned |
+| AT-LIFE-001 | Fresh signed install succeeds for Sigstore and POC X.509 | `run-linux.sh --sudo-namespace` against the real loopback package repository and OCI registry, using evidence-kind-exclusive referrers | 5 | Executed for both: X.509/CMS with the generated POC root, and real keyless Sigstore with GitHub Actions OIDC, Fulcio, Rekor, bundled offline trust, exact repository origin, and fresh established reputation ([Sigstore job in run 32457495922](https://github.com/pietrodicaprio/cpak/actions/runs/32457495922), `05b1a2f`) |
+| AT-LIFE-002 | Signed update succeeds for the same publisher and next generation | The same process lifecycle publishes generation 2, imports refreshed established reputation, and executes the real non-interactive update | 5 | Executed for both X.509/CMS and real keyless Sigstore; the Sigstore fixture creates distinct signed canonical states for generations 1 and 2 and completes the real OCI install/update path |
 | AT-LIFE-003 | Replayed or downgraded generation fails | Existing ledger downgrade tests plus X.509 path | 1, 5 | Existing/Planned |
 | AT-LIFE-004 | Publisher key change is visible and policy-controlled | Update integration test | 5 | Authority continuity test proves an unapproved new normalized identity is denied before reputation and an approved new identity receives its own reputation result instead of borrowing the old publisher's; executed Linux update remains Phase 5 |
 | AT-LIFE-005 | Signed-to-unsigned transition remains visible and follows policy | Existing enrolment tests plus common evidence path | 1, 5 | Existing/Planned |
-| AT-LIFE-006 | Invalid attached evidence never falls back to unsigned | Existing tests plus both evidence kinds | 1-2, 5 | Implemented common fail-closed enrolment path; executed Linux fixtures for both evidence kinds remain Phase 5 |
+| AT-LIFE-006 | Invalid attached evidence never falls back to unsigned | Existing tests plus both evidence kinds | 1-2, 5 | Implemented common fail-closed enrolment path; Linux fixtures select exactly one evidence kind, and the executed Sigstore lifecycle exposes no X.509 fallback. Executed invalid-evidence process rows remain Phase 5 |
 | AT-LIFE-007 | Changed package with stale evidence is not enrolled under old state | Update integration test | 5 | Update integration fixture now proves stale evidence is invalid, the new bytes remain unenrolled, and the old anchor cannot authorize their launch; executed Linux test remains Phase 5 |
 | AT-LIFE-008 | Reputation is evaluated at install/update, not every launch | Provider call-count lifecycle test plus the real X.509 process lifecycle | 5 | Executed for install/update with caution then established snapshots and for actual launch after provider removal |
 | AT-LIFE-009 | Launch after provider outage uses anchored runtime integrity without PKI/network work | Network-deny launch test | 5 | Actual installed command launch succeeds after provider removal and fixture shutdown, then offline explain/audit retain the recorded established result |
@@ -219,6 +219,15 @@ the installed OCI layer after provider removal and fixture shutdown, is
 recorded by
 [Portability run 32415553153](https://github.com/pietrodicaprio/cpak/actions/runs/32415553153)
 at commit `2c78445`.
+
+The real keyless Sigstore lifecycle is recorded by the successful
+`application-trust-phase5-sigstore` job in
+[Portability run 32457495922](https://github.com/pietrodicaprio/cpak/actions/runs/32457495922)
+at commit `05b1a2f`. It signs generations 1 and 2 with GitHub Actions OIDC,
+verifies Sigstore-only OCI evidence and exact publisher origin, enforces fresh
+`established` reputation, and completes the real install/update path. The
+overall workflow is not a completed Phase 5 gate because its separate graphical
+job failed.
 
 Phase 0 requires at minimum:
 
