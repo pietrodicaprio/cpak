@@ -295,7 +295,7 @@ PY
   install_pid=$!
   for _ in {1..100}; do
     window_id="$(DISPLAY="$display_number" xwininfo -root -tree 2>/dev/null | \
-      awk '$1 ~ /^0x[0-9a-f]+$/ && $0 ~ /620x540/ {print $1; exit}')"
+      awk '$1 ~ /^0x[0-9a-f]+$/ && $0 ~ /620x540/ && !found {print $1; found=1}')"
     if [[ -n "$window_id" ]]; then
       break
     fi
