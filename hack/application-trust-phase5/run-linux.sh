@@ -365,11 +365,13 @@ start_phase5_service() {
       return
     fi
     kill -0 "$service_pid" 2>/dev/null || {
+      tail -n 80 "$output" >&2 || true
       tail -n 80 "$error_output" >&2 || true
       fail "the Phase 5 service exited before reporting readiness"
     }
     sleep 0.05
   done
+  tail -n 80 "$output" >&2 || true
   tail -n 80 "$error_output" >&2 || true
   fail "the Phase 5 service did not report readiness"
 }
@@ -468,6 +470,7 @@ write_x509_generation() {
   local generation="$1"
   local origin="$2"
   local image_digest="$3"
+  local publisher="${4:-publisher}"
 
   "$phase5_bin_dir/cpak-sign" state \
     --manifest "$phase5_dir/cpak.json" \
@@ -477,9 +480,9 @@ write_x509_generation() {
     --output "$phase5_dir/state-$generation"
   "$phase5_bin_dir/cpak-sign" x509-sign \
     --state "$phase5_dir/state-$generation" \
-    --certificate "$phase5_dir/pki/publisher.pem" \
-    --chain "$phase5_dir/pki/publisher-chain.pem" \
-    --key "$phase5_dir/pki/publisher-key.pem" \
+    --certificate "$phase5_dir/pki/$publisher.pem" \
+    --chain "$phase5_dir/pki/$publisher-chain.pem" \
+    --key "$phase5_dir/pki/$publisher-key.pem" \
     --key-passphrase-file "$phase5_dir/passphrase" \
     --output "$phase5_dir/state-$generation.cms"
   printf '%s\n' "$generation" >"$phase5_dir/generation"
@@ -662,6 +665,88 @@ PY
   run_update_decision 0 allow replayed-generation-recovered "$origin"
 
   printf 'phase5: replayed publisher generation refusal and recovery passed\n'
+}
+
+run_publisher_key_rotation_lifecycle() {
+  local origin="$1"
+  local original_publisher_id="$2"
+  local image_digest="$3"
+  local decision="$phase5_dir/decision-publisher-rotated.json"
+  local rotated_publisher_id status
+
+  write_x509_generation 14 "$origin" "$image_digest" publisher-rotated
+  set +e
+  "$phase5_bin_dir/cpak" verify-signature "$phase5_dir/state-14.cms" \
+    --state "$phase5_dir/state-14" --evidence-kind x509-cms --json >"$decision"
+  status=$?
+  set -e
+  assert_decision 0 allow "$decision" "$status"
+  rotated_publisher_id="$(python3 - "$decision" <<'PY'
+import json
+import pathlib
+import sys
+
+document = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+publisher = document.get("publisher", {})
+if publisher.get("status") != "verified" or not publisher.get("id"):
+    raise SystemExit(f"rotated publisher was not verified: {publisher!r}")
+print(publisher["id"])
+PY
+)"
+  [[ "$rotated_publisher_id" != "$original_publisher_id" ]] || \
+    fail "publisher key rotation retained the original normalized identity"
+
+  run_update_decision 20 deny publisher-key-unapproved "$origin"
+  python3 - "$phase5_dir/update-publisher-key-unapproved.json" "$rotated_publisher_id" <<'PY'
+import json
+import pathlib
+import sys
+
+document = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+result = document.get("trust", [{}])[0]
+if result.get("publisher", {}).get("id") != sys.argv[2]:
+    raise SystemExit(f"the changed publisher identity was not visible: {result!r}")
+if result.get("policy", {}).get("action") != "deny":
+    raise SystemExit(f"the unapproved publisher was not denied: {result!r}")
+if result.get("reputation", {}).get("status") != "not-consulted":
+    raise SystemExit(f"reputation ran before publisher policy: {result!r}")
+PY
+
+  write_reputation_policy "$phase5_dir/trust-policy-rotated.json" \
+    "$rotated_publisher_id" require-established
+  "$phase5_bin_dir/cpak" system set-trust "$phase5_dir/trust-policy-rotated.json"
+  run_update_decision 20 deny publisher-key-without-reputation "$origin"
+  python3 - "$phase5_dir/update-publisher-key-without-reputation.json" "$rotated_publisher_id" <<'PY'
+import json
+import pathlib
+import sys
+
+document = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+result = document.get("trust", [{}])[0]
+reputation = result.get("reputation", {})
+if result.get("publisher", {}).get("id") != sys.argv[2] or reputation.get("status") != "unknown":
+    raise SystemExit(f"the new publisher borrowed another identity's reputation: {result!r}")
+if result.get("policy", {}).get("action") != "deny":
+    raise SystemExit(f"the new publisher without established reputation was not denied: {result!r}")
+PY
+
+  import_reputation_status 8 established "$rotated_publisher_id"
+  run_update_decision 0 allow publisher-key-established "$origin"
+  python3 - "$phase5_dir/update-publisher-key-established.json" "$rotated_publisher_id" <<'PY'
+import json
+import pathlib
+import sys
+
+document = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+result = document.get("trust", [{}])[0]
+reputation = result.get("reputation", {})
+if result.get("publisher", {}).get("id") != sys.argv[2]:
+    raise SystemExit(f"the accepted update recorded the wrong publisher: {result!r}")
+if reputation.get("status") != "established":
+    raise SystemExit(f"the accepted update did not use the new publisher's reputation: {result!r}")
+PY
+
+  printf 'phase5: publisher key rotation isolation, refusal, and recovery passed\n'
 }
 
 run_process_negative_lifecycle() {
@@ -942,6 +1027,7 @@ PY
   run_reputation_outage_matrix "$origin" "$publisher_id" "$image_digest"
   run_signed_to_unsigned_lifecycle "$origin" "$image_digest"
   run_replayed_generation_lifecycle "$origin" "$image_digest"
+  run_publisher_key_rotation_lifecycle "$origin" "$publisher_id" "$image_digest"
   "$phase5_bin_dir/cpak" system reputation-provider-clear \
     --fingerprint "$provider_key" --yes
   kill "$fixture_pid"
@@ -1076,7 +1162,7 @@ PY
 
   "$phase5_bin_dir/cpak" system reputation-provider-set "$phase5_dir/reputation-provider.json" \
     --fingerprint "$provider_key" --yes
-  import_reputation_status 8 established "$publisher_id"
+  import_reputation_status 9 established "$publisher_id"
   python3 - "$phase5_dir/trust-policy-sigstore.json" "$publisher_id" <<'PY'
 import json
 import pathlib

@@ -104,6 +104,10 @@ func run(arguments []string, now time.Time) error {
 	if err != nil {
 		return err
 	}
+	publisherRotated, err := endEntity(now, *publisherName, codeCA, x509.ExtKeyUsageCodeSigning, 90*24*time.Hour)
+	if err != nil {
+		return err
+	}
 	tsa, err := endEntity(now, "cpak Experimental POC TSA", timestampCA, x509.ExtKeyUsageTimeStamping, 365*24*time.Hour)
 	if err != nil {
 		return err
@@ -114,6 +118,7 @@ func run(arguments []string, now time.Time) error {
 		"code-signing-intermediate.pem": codeCA.certificate,
 		"timestamping-intermediate.pem": timestampCA.certificate,
 		"publisher.pem":                 publisher.certificate,
+		"publisher-rotated.pem":         publisherRotated.certificate,
 		"tsa.pem":                       tsa.certificate,
 	}
 	for name, certificate := range certificates {
@@ -126,6 +131,7 @@ func run(arguments []string, now time.Time) error {
 		"code-signing-intermediate-key.pem": codeCA.key,
 		"timestamping-intermediate-key.pem": timestampCA.key,
 		"publisher-key.pem":                 publisher.key,
+		"publisher-rotated-key.pem":         publisherRotated.key,
 		"tsa-key.pem":                       tsa.key,
 	}
 	for name, key := range keys {
@@ -138,6 +144,9 @@ func run(arguments []string, now time.Time) error {
 		}
 	}
 	if err = writePEM(filepath.Join(*output, "publisher-chain.pem"), "CERTIFICATE", codeCA.certificate.Raw, 0o644); err != nil {
+		return err
+	}
+	if err = writePEM(filepath.Join(*output, "publisher-rotated-chain.pem"), "CERTIFICATE", codeCA.certificate.Raw, 0o644); err != nil {
 		return err
 	}
 	crl, err := emptyCRL(now, codeCA)
