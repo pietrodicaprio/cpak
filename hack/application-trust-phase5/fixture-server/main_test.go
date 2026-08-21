@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -102,6 +103,35 @@ func TestManifestEndpointServesOnlyTheFixtureManifest(t *testing.T) {
 	}
 }
 
+func TestFixtureConfigurationBindsOriginAndEvidenceProfile(t *testing.T) {
+	server, err := newFixture(t.TempDir(), []byte("fixture executable"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = server.configure("GitHub.com/Example/Project", "sigstore"); err != nil {
+		t.Fatal(err)
+	}
+	if server.origin != "github.com/example/project" || server.serverName != "github.com" ||
+		server.manifestPath != "/example/project/raw/main/cpak.json" {
+		t.Fatalf("unexpected configured origin: %+v", server)
+	}
+	if server.evidenceProfile.artifactType != sigstoreArtifactType ||
+		server.evidenceProfile.mediaType != sigstoreBundleMediaType || server.evidenceProfile.extension != ".sigstore.json" {
+		t.Fatalf("unexpected Sigstore profile: %+v", server.evidenceProfile)
+	}
+	for _, invalid := range []string{
+		"gitlab.com/example/project", "github.com/example", "github.com/example/project/extra",
+		"github.com/example/../project", "github.com/example/project?other=true",
+	} {
+		if err = server.configure(invalid, "sigstore"); err == nil {
+			t.Fatalf("invalid origin %q was accepted", invalid)
+		}
+	}
+	if err = server.configure("github.com/example/project", "unknown"); err == nil {
+		t.Fatal("unknown evidence profile was accepted")
+	}
+}
+
 func TestRegistryPublishesImageAndCurrentEvidence(t *testing.T) {
 	directory := t.TempDir()
 	evidence := []byte("disposable CMS evidence")
@@ -151,6 +181,60 @@ func TestRegistryPublishesImageAndCurrentEvidence(t *testing.T) {
 	server.serveRegistry(recorder, request)
 	if recorder.Code != http.StatusOK || recorder.Body.Len() == 0 {
 		t.Fatalf("layer response = %d with %d bytes", recorder.Code, recorder.Body.Len())
+	}
+}
+
+func TestRegistryPublishesOnlyTheSelectedSigstoreProfile(t *testing.T) {
+	directory := t.TempDir()
+	bundle := []byte(`{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json"}`)
+	if err := os.WriteFile(filepath.Join(directory, "generation"), []byte("2\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "state-2.sigstore.json"), bundle, 0600); err != nil {
+		t.Fatal(err)
+	}
+	server, err := newFixture(directory, []byte("fixture executable"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = server.configure("github.com/example/project", "sigstore"); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/v2/"+repository+"/referrers/"+server.imageDigest+"?artifactType="+url.QueryEscape(sigstoreArtifactType), nil)
+	recorder := httptest.NewRecorder()
+	server.serveRegistry(recorder, request)
+	var index struct {
+		Manifests []descriptor `json:"manifests"`
+	}
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("Sigstore referrers response = %d %q", recorder.Code, recorder.Body.String())
+	}
+	if err = json.Unmarshal(recorder.Body.Bytes(), &index); err != nil {
+		t.Fatal(err)
+	}
+	if len(index.Manifests) != 1 {
+		t.Fatalf("Sigstore referrers response = %d %q", recorder.Code, recorder.Body.String())
+	}
+	if index.Manifests[0].ArtifactType != sigstoreArtifactType {
+		t.Fatalf("Sigstore referrer profile = %+v", index.Manifests[0])
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/v2/"+repository+"/referrers/"+server.imageDigest+"?artifactType="+x509ArtifactType, nil)
+	recorder = httptest.NewRecorder()
+	server.serveRegistry(recorder, request)
+	if err = json.Unmarshal(recorder.Body.Bytes(), &index); err != nil {
+		t.Fatal(err)
+	}
+	if len(index.Manifests) != 0 {
+		t.Fatalf("X.509 fallback was exposed in Sigstore mode: %+v", index.Manifests)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/v2/"+repository+"/blobs/"+digest(bundle), nil)
+	recorder = httptest.NewRecorder()
+	server.serveRegistry(recorder, request)
+	if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Type") != sigstoreBundleMediaType || recorder.Body.String() != string(bundle) {
+		t.Fatalf("Sigstore bundle response = %d %q %q", recorder.Code, recorder.Header().Get("Content-Type"), recorder.Body.String())
 	}
 }
 
