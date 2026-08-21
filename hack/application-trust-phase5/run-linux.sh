@@ -347,6 +347,123 @@ PY
   printf 'phase5: real graphical reputation confirmation passed\n'
 }
 
+start_phase5_service() {
+  local origin="$1"
+  local output="$2"
+  local error_output="$3"
+
+  : >"$output"
+  : >"$error_output"
+  "$phase5_bin_dir/cpak" run --branch main "$origin" phase5-fixture service \
+    >"$output" 2>"$error_output" &
+  service_pid=$!
+  service_origin="$origin"
+
+  for _ in {1..200}; do
+    if grep -Fx 'phase5 service ready' "$output" >/dev/null 2>&1; then
+      kill -0 "$service_pid" 2>/dev/null || fail "the Phase 5 service exited after reporting readiness"
+      return
+    fi
+    kill -0 "$service_pid" 2>/dev/null || {
+      tail -n 80 "$error_output" >&2 || true
+      fail "the Phase 5 service exited before reporting readiness"
+    }
+    sleep 0.05
+  done
+  tail -n 80 "$error_output" >&2 || true
+  fail "the Phase 5 service did not report readiness"
+}
+
+stop_phase5_service() {
+  local origin="$1"
+
+  timeout 20 "$phase5_bin_dir/cpak" stop --branch main "$origin"
+  for _ in {1..200}; do
+    kill -0 "$service_pid" 2>/dev/null || break
+    sleep 0.05
+  done
+  if kill -0 "$service_pid" 2>/dev/null; then
+    fail "the Phase 5 service did not stop"
+  fi
+  wait "$service_pid" 2>/dev/null || true
+  service_pid=""
+  service_origin=""
+}
+
+run_service_lifecycle() {
+  local origin="$1"
+  local host owner repository extra
+  IFS=/ read -r host owner repository extra <<<"$origin"
+  [[ -n "$host" && -n "$owner" && -n "$repository" && -z "$extra" ]] || \
+    fail "the service lifecycle received an invalid origin"
+
+  start_phase5_service "$origin" "$phase5_dir/service-first.out" "$phase5_dir/service-first.err"
+
+  local override_dir="$HOME/.config/cpak/overrides/$host/$owner/$repository/main"
+  local override_file="$override_dir/cpak.json"
+  mkdir -p "$override_dir"
+  (
+    umask 077
+    printf '{"network":true}\n' >"$override_file"
+  )
+  chmod 0600 "$override_file"
+
+  local status
+  set +e
+  "$phase5_bin_dir/cpak" system explain "$origin" --json \
+    >"$phase5_dir/explain-service-mismatch.json" 2>"$phase5_dir/explain-service-mismatch.err"
+  status=$?
+  set -e
+  python3 - "$phase5_dir/explain-service-mismatch.json" "$status" <<'PY'
+import json
+import pathlib
+import sys
+
+document = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+status = int(sys.argv[2])
+trust = document.get("trust", {})
+final = trust.get("final", {})
+if document.get("schema_version") != 1 or trust.get("operation") != "explain":
+    raise SystemExit(f"unexpected service mismatch envelope: {document!r}")
+if status != 21 or final.get("exit_code") != 21 or final.get("action") != "invalid":
+    raise SystemExit(f"service mismatch exit disagreement: process={status}, final={final!r}")
+if final.get("reason_code") != "runtime-integrity-mismatch":
+    raise SystemExit(f"unexpected service mismatch reason: {final!r}")
+PY
+
+  set +e
+  timeout 20 "$phase5_bin_dir/cpak" run --branch main "$origin" phase5-fixture \
+    </dev/null >"$phase5_dir/service-refused.out" 2>"$phase5_dir/service-refused.err"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 && "$status" -ne 124 ]] || \
+    fail "a changed service launch was not refused before container reuse"
+  grep -F 'does not match the integrity anchor it was enrolled with' \
+    "$phase5_dir/service-refused.err" >/dev/null || \
+    fail "the changed service launch did not report its anchor mismatch"
+  kill -0 "$service_pid" 2>/dev/null || \
+    fail "a future service refusal terminated the already running process"
+
+  stop_phase5_service "$origin"
+
+  set +e
+  timeout 20 "$phase5_bin_dir/cpak" run --branch main "$origin" phase5-fixture service \
+    </dev/null >"$phase5_dir/service-restart-refused.out" 2>"$phase5_dir/service-restart-refused.err"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 && "$status" -ne 124 ]] || \
+    fail "the changed service restart was not refused"
+  grep -F 'does not match the integrity anchor it was enrolled with' \
+    "$phase5_dir/service-restart-refused.err" >/dev/null || \
+    fail "the changed service restart did not report its anchor mismatch"
+
+  rm -f -- "$override_file"
+  start_phase5_service "$origin" "$phase5_dir/service-recovered.out" "$phase5_dir/service-recovered.err"
+  stop_phase5_service "$origin"
+
+  printf 'phase5: systemd-equivalent service start, refusal, recovery, and restart passed\n'
+}
+
 run_process_lifecycle() {
   local publisher_id="$1"
 
@@ -513,6 +630,8 @@ PY
   set -e
   assert_trust_envelope 0 allow non-interactive update \
     "$phase5_dir/update-non-interactive.json" "$status"
+
+  run_service_lifecycle "$origin"
 
   "$phase5_bin_dir/cpak" system reputation-provider-clear \
     --fingerprint "$provider_key" --yes
@@ -741,6 +860,8 @@ inside_namespace() {
   fixture_pid=""
   xvfb_pid=""
   wm_pid=""
+  service_pid=""
+  service_origin=""
   cleanup_namespace() {
     if [[ -n "$fixture_pid" ]]; then
       kill "$fixture_pid" 2>/dev/null || true
@@ -753,6 +874,14 @@ inside_namespace() {
     if [[ -n "$xvfb_pid" ]]; then
       kill "$xvfb_pid" 2>/dev/null || true
       wait "$xvfb_pid" 2>/dev/null || true
+    fi
+    if [[ -n "$service_origin" ]]; then
+      timeout 20 "$phase5_bin_dir/cpak" stop --branch main "$service_origin" \
+        >/dev/null 2>&1 || true
+    fi
+    if [[ -n "$service_pid" ]]; then
+      kill "$service_pid" 2>/dev/null || true
+      wait "$service_pid" 2>/dev/null || true
     fi
     if [[ -n "$cleanup_uid" && -n "$cleanup_gid" ]]; then
       chown -R "$cleanup_uid:$cleanup_gid" "$phase5_dir"
