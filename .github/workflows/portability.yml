@@ -176,6 +176,7 @@ jobs:
               printf "%s\n" "$oidc_url" >/cpak-phase5-oidc/url
               oidc_token=
               oidc_url=
+              umask 022
               chown phase5:phase5 /cpak-phase5-oidc/token /cpak-phase5-oidc/url
               printf "phase5 ALL=(root) NOPASSWD: /usr/bin/unshare *\n" >/etc/sudoers.d/phase5
               chmod 0440 /etc/sudoers.d/phase5
