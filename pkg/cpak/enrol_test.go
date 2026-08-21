@@ -779,6 +779,9 @@ func TestEnrolPublishedApplicationRefusesFallbackWhenTheBundleDoesNotStand(t *te
 	if !errors.Is(enrolment.Signature.Reason, ErrSignatureUnverified) {
 		t.Fatalf("got reason %v, want the refusal to say the signature does not verify", enrolment.Signature.Reason)
 	}
+	if enrolment.Signature.Verification.ReasonCode != "test-refusal" {
+		t.Fatalf("the enrolment lost the verifier result: %+v", enrolment.Signature.Verification)
+	}
 	if enrolment.Signature.Unsigned() {
 		t.Fatal("a bundle that does not stand was reported as no bundle at all")
 	}
@@ -787,6 +790,42 @@ func TestEnrolPublishedApplicationRefusesFallbackWhenTheBundleDoesNotStand(t *te
 	}
 	if authority.recorded != 0 {
 		t.Fatalf("the invalid evidence reached the authority %d times", authority.recorded)
+	}
+}
+
+func TestEnrolPublishedApplicationPreservesRevokedEvidenceDecision(t *testing.T) {
+	cp := newSignatureCpak(t)
+	useEnrolmentAuthority(t)
+	registry := newSignatureRegistry()
+	digest := contentDigest([]byte("the image signed by a revoked certificate"))
+	registry.attachWithMediaType(t, digest, signature.X509ArtifactType, signature.X509CMSMediaType, []byte("revoked CMS evidence"))
+	attached := registry.referrers[digest]
+	attached[len(attached)-1].Annotations = map[string]string{signedGenerationAnnotation: "4"}
+	app := installedFromRegistry(t, cp, registry, digest)
+
+	previous := verifyEvidence
+	verifyEvidence = func(evidence signature.SignatureEvidence, _ signature.TrustMaterial, _ time.Time) (signature.VerificationResult, error) {
+		return signature.VerificationResult{
+			EvidenceKind: evidence.Kind, Cryptographic: signature.CryptographicInvalid,
+			Chain: signature.ChainTrustedLocal, SigningTime: signature.SigningTimeCurrent,
+			Revocation: signature.RevocationRevoked, RootSource: "local:phase5-test",
+			OriginAuthorization: string(signature.OriginUnsupported), ReasonCode: "certificate-revoked",
+			Diagnostic: "the publisher certificate chain was revoked at the applicable signing time",
+		}, nil
+	}
+	t.Cleanup(func() { verifyEvidence = previous })
+
+	enrolment := cp.EnrolPublishedApplication(app, publishedTestPackage(t))
+	if enrolment.Outcome != EnrolmentUnrecordable || !errors.Is(enrolment.Signature.Reason, ErrSignatureUnverified) {
+		t.Fatalf("revoked enrolment=%+v, want attached evidence to remain unenrolled", enrolment)
+	}
+	result, err := enrolment.applicationTrustResultAt(applicationtrust.OperationInstall, applicationtrust.ContextNonInteractive, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Trust.Revocation != string(signature.RevocationRevoked) || result.Final.Action != applicationtrust.FinalDeny ||
+		result.Final.ExitCode != applicationtrust.ExitDenied || result.Final.ReasonCode != "certificate-revoked" {
+		t.Fatalf("revoked portable result=%+v", result)
 	}
 }
 

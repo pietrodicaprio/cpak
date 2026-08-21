@@ -532,11 +532,7 @@ func (c *Cpak) packageSignature(app types.Application, published PublishedPackag
 		}
 		return carried, describeSignature(app.Origin, carried)
 	}
-	signed, err := c.verifiedPackageSignature(app, published)
-	if err != nil {
-		return nil, EnrolmentSignature{Reason: err}
-	}
-	return signed, describeSignature(app.Origin, signed)
+	return c.verifiedPackageSignature(app, published)
 }
 
 // carriedSignature is the signature the ledger holds for this application, kept
@@ -586,25 +582,24 @@ func (c *Cpak) heldSignature(origin string, uid uint32) EnrolmentSignature {
 // an annotation is safe for exactly one reason: it goes straight into the state
 // the signature then has to cover, so a wrong value produces a state no bundle
 // covers, which is a refusal and never an acceptance.
-func (c *Cpak) verifiedPackageSignature(app types.Application, published PublishedPackage) (*systemauthority.SignedState, error) {
+func (c *Cpak) verifiedPackageSignature(app types.Application, published PublishedPackage) (*systemauthority.SignedState, EnrolmentSignature) {
 	state, err := PackageState(app.Origin, published.Manifest, app.ImageDigest, published.Lock)
 	if err != nil {
-		return nil, err
+		return nil, EnrolmentSignature{Reason: err}
 	}
 	ref, err := c.installedImageReference(app.Origin, app.ImageDigest)
 	if err != nil {
-		return nil, err
+		return nil, EnrolmentSignature{Reason: err}
 	}
 	attached, err := c.attachedSignatures(ref, app.Origin, app.ImageDigest)
 	if err != nil {
-		return nil, err
+		return nil, EnrolmentSignature{Reason: err}
 	}
 	if len(attached) == 0 {
-		return nil, fmt.Errorf("verify the signature of %s: %w", app.Origin, ErrPackageUnsigned)
+		return nil, EnrolmentSignature{Reason: fmt.Errorf("verify the signature of %s: %w", app.Origin, ErrPackageUnsigned)}
 	}
-	var foreign string
-	var madeByAnother bool
-	var refusal error
+	var foreign EnrolmentSignature
+	var refusal EnrolmentSignature
 	now := time.Now()
 	for _, candidate := range attached {
 		state.Generation = candidate.generation
@@ -614,29 +609,37 @@ func (c *Cpak) verifiedPackageSignature(app types.Application, published Publish
 		}
 		result, verified, verifyErr := checkEvidenceAt(evidence, now)
 		if verifyErr != nil {
-			if refusal == nil {
-				refusal = verifyErr
+			if refusal.Reason == nil {
+				refusal = EnrolmentSignature{
+					State: state, Verification: result,
+					Reason: fmt.Errorf("verify the signature of %s: %w: %w", app.Origin, ErrSignatureUnverified, verifyErr),
+				}
 			}
 			continue
 		}
 		if result.OriginAuthorization == string(signature.OriginAuthorized) {
-			return systemauthority.SignedStateFromEvidence(evidence), nil
+			return systemauthority.SignedStateFromEvidence(evidence), EnrolmentSignature{
+				Verified: true, Identity: verified.Identity, State: verified.State,
+				Publisher: result.Publisher, Verification: result,
+			}
 		}
-		if !madeByAnother {
-			madeByAnother = true
-			foreign = verifiedPublisherName(verified)
+		if foreign.Reason == nil {
+			foreign = EnrolmentSignature{
+				Identity: verified.Identity, State: state, Publisher: result.Publisher, Verification: result,
+				Reason: fmt.Errorf("verify the signature of %s: %w: %s", app.Origin, ErrSignatureForeign, whoseSignature(verifiedPublisherName(verified))),
+			}
 		}
 	}
 	// A signature that holds and was made by somebody else outranks one that
 	// does not hold: it is the more specific fact, and it is the one that says
 	// somebody who is not the publisher signed this image.
-	if madeByAnother {
-		return nil, fmt.Errorf("verify the signature of %s: %w: %s", app.Origin, ErrSignatureForeign, whoseSignature(foreign))
+	if foreign.Reason != nil {
+		return nil, foreign
 	}
-	if refusal == nil {
-		return nil, fmt.Errorf("verify the signature of %s: %w", app.Origin, ErrSignatureUnverified)
+	if refusal.Reason != nil {
+		return nil, refusal
 	}
-	return nil, fmt.Errorf("verify the signature of %s: %w: %w", app.Origin, ErrSignatureUnverified, refusal)
+	return nil, EnrolmentSignature{Reason: fmt.Errorf("verify the signature of %s: %w", app.Origin, ErrSignatureUnverified)}
 }
 
 // whoseSignature names the identity a foreign signature was made by. A

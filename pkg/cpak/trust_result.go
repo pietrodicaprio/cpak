@@ -141,6 +141,17 @@ func (e ApplicationEnrolment) applicationTrustResultAtSource(operation applicati
 	}
 	result.Reputation = portableReputation(e, now)
 	result.Policy.Exception = e.ReputationDecision != nil && e.ReputationDecision.Exception
+	// A failed verifier result already carries the most specific portable
+	// decision: revoked and stale evidence are denials, while malformed or
+	// untrusted evidence is invalid. Do not replace that result with the generic
+	// enrolment failure merely because none of those inputs can be recorded.
+	if e.Signature.Verification.ReasonCode != "" && result.Final.Action != applicationtrust.FinalAllow {
+		result.Policy.Confirmation = applicationtrust.ConfirmationNotRequired
+		if err := result.Validate(); err != nil {
+			return applicationtrust.Result{}, err
+		}
+		return result, nil
+	}
 
 	action, reason := enrolmentPolicyAction(e)
 	result.Policy.Action = action
