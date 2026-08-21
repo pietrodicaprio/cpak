@@ -37,6 +37,8 @@ demonstration. Never commit, publish, or reuse any `*-key.pem` file.
 - `publisher.pem`: example Code Signing leaf;
 - `tsa.pem`: example timestamping-only leaf;
 - `publisher.crl.pem`: empty test CRL issued by the Code Signing intermediate;
+- `publisher-revoked.crl.pem`: negative-test CRL that revokes exactly the
+  generated publisher leaf for process-level fail-closed demonstrations;
 - `manifest.json`: certificate SHA-256 fingerprints and generation metadata.
 
 The exact certificate fingerprints, not the hashes of the PEM files, are in

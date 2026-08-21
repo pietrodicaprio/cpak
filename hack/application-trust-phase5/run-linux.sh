@@ -464,6 +464,146 @@ PY
   printf 'phase5: systemd-equivalent service start, refusal, recovery, and restart passed\n'
 }
 
+write_x509_generation() {
+  local generation="$1"
+  local origin="$2"
+  local image_digest="$3"
+
+  "$phase5_bin_dir/cpak-sign" state \
+    --manifest "$phase5_dir/cpak.json" \
+    --origin "$origin" \
+    --image-digest "$image_digest" \
+    --generation "$generation" \
+    --output "$phase5_dir/state-$generation"
+  "$phase5_bin_dir/cpak-sign" x509-sign \
+    --state "$phase5_dir/state-$generation" \
+    --certificate "$phase5_dir/pki/publisher.pem" \
+    --chain "$phase5_dir/pki/publisher-chain.pem" \
+    --key "$phase5_dir/pki/publisher-key.pem" \
+    --key-passphrase-file "$phase5_dir/passphrase" \
+    --output "$phase5_dir/state-$generation.cms"
+  printf '%s\n' "$generation" >"$phase5_dir/generation"
+}
+
+run_install_decision() {
+  local expected_status="$1"
+  local expected_action="$2"
+  local label="$3"
+  local origin="$4"
+  local output="$phase5_dir/install-$label.json"
+  local status
+
+  set +e
+  timeout 20 "$phase5_bin_dir/cpak" install --branch main --yes --non-interactive --json "$origin" \
+    </dev/null >"$output" 2>"$phase5_dir/install-$label.err"
+  status=$?
+  set -e
+  assert_trust_envelope "$expected_status" "$expected_action" non-interactive install "$output" "$status"
+}
+
+run_process_negative_lifecycle() {
+  local origin="$1"
+  local publisher_id="$2"
+  local image_digest="$3"
+
+  "$phase5_bin_dir/cpak" remove --branch main "$origin"
+  write_x509_generation 3 "$origin" "$image_digest"
+  cp "$phase5_dir/state-3.cms" "$phase5_dir/state-3.valid.cms"
+  python3 - "$phase5_dir/state-3.cms" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+payload = bytearray(path.read_bytes())
+if len(payload) < 32:
+    raise SystemExit("the CMS fixture is unexpectedly short")
+payload[len(payload) // 2] ^= 1
+path.write_bytes(payload)
+PY
+  run_install_decision 21 invalid invalid-evidence "$origin"
+
+  mv "$phase5_dir/state-3.valid.cms" "$phase5_dir/state-3.cms"
+  import_reputation_status 4 established "$publisher_id"
+  run_install_decision 0 allow invalid-evidence-recovered "$origin"
+
+  "$phase5_bin_dir/cpak" remove --branch main "$origin"
+  write_x509_generation 4 "$origin" "$image_digest"
+  local crl_directory="/etc/cpak/trust/revocation/code-signing.d"
+  local revoked_crl="$crl_directory/phase5-publisher-revoked.pem"
+  mkdir -p "$crl_directory"
+  chmod 0755 /etc/cpak/trust/revocation "$crl_directory"
+  cp "$phase5_dir/pki/publisher-revoked.crl.pem" "$revoked_crl"
+  chmod 0644 "$revoked_crl"
+
+  local status
+  set +e
+  "$phase5_bin_dir/cpak" verify-signature "$phase5_dir/state-4.cms" \
+    --state "$phase5_dir/state-4" --evidence-kind x509-cms --json \
+    >"$phase5_dir/verify-revoked.json" 2>"$phase5_dir/verify-revoked.err"
+  status=$?
+  set -e
+  assert_decision 21 invalid "$phase5_dir/verify-revoked.json" "$status"
+  python3 - "$phase5_dir/verify-revoked.json" <<'PY'
+import json
+import pathlib
+import sys
+
+document = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+if document.get("trust", {}).get("revocation") != "revoked":
+    raise SystemExit(f"the negative CRL did not produce revoked: {document!r}")
+if document.get("trust", {}).get("reason_code") != "certificate-revoked":
+    raise SystemExit(f"the revoked decision lost its reason: {document!r}")
+PY
+  run_install_decision 21 invalid revoked-certificate "$origin"
+
+  rm -f -- "$revoked_crl"
+  run_install_decision 0 allow revoked-certificate-recovered "$origin"
+
+  "$phase5_bin_dir/cpak" remove --branch main "$origin"
+  write_x509_generation 5 "$origin" "$image_digest"
+  python3 - "$phase5_dir/trust-policy-denied.json" "$publisher_id" "$origin" <<'PY'
+import json
+import pathlib
+import sys
+
+policy = {
+    "abi": 2,
+    "require_publisher": True,
+    "require_approval": False,
+    "approved_publisher_ids": [sys.argv[2]],
+    "revoked": [{"origin": sys.argv[3], "generation": 5, "reason": "phase5-admin-denial"}],
+    "x509": {"revocation": "allow-unknown"},
+    "reputation": {"mode": "warn", "provider_id": "cpak-phase5"},
+}
+pathlib.Path(sys.argv[1]).write_text(json.dumps(policy) + "\n", encoding="utf-8")
+PY
+  "$phase5_bin_dir/cpak" system set-trust "$phase5_dir/trust-policy-denied.json"
+  run_install_decision 20 deny administrator-denied "$origin"
+
+  "$phase5_bin_dir/cpak" system set-trust "$phase5_dir/trust-policy.json"
+  run_install_decision 0 allow administrator-denial-recovered "$origin"
+
+  "$phase5_bin_dir/cpak" remove --branch main "$origin"
+  write_x509_generation 6 "$origin" "$image_digest"
+  import_reputation_status 5 blocked "$publisher_id"
+  run_install_decision 20 deny blocked-reputation "$origin"
+  python3 - "$phase5_dir/install-blocked-reputation.json" <<'PY'
+import json
+import pathlib
+import sys
+
+document = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+trust = document.get("trust", [{}])[0]
+if trust.get("reputation", {}).get("status") != "blocked" or trust.get("policy", {}).get("action") != "deny":
+    raise SystemExit(f"blocked reputation did not remain a denial: {trust!r}")
+PY
+
+  import_reputation_status 6 established "$publisher_id"
+  run_install_decision 0 allow blocked-reputation-recovered "$origin"
+
+  printf 'phase5: invalid, revoked, administrator-denied, and blocked --yes lifecycle passed\n'
+}
+
 run_process_lifecycle() {
   local publisher_id="$1"
 
@@ -632,6 +772,7 @@ PY
     "$phase5_dir/update-non-interactive.json" "$status"
 
   run_service_lifecycle "$origin"
+  run_process_negative_lifecycle "$origin" "$publisher_id" "$image_digest"
 
   "$phase5_bin_dir/cpak" system reputation-provider-clear \
     --fingerprint "$provider_key" --yes
@@ -899,6 +1040,8 @@ inside_namespace() {
   mount --make-rprivate /
   mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /var/lib
   mkdir -p /var/lib/cpak
+  mkdir -p /etc/cpak/trust
+  mount -t tmpfs -o mode=0755,nosuid,nodev,noexec tmpfs /etc/cpak/trust
   [[ -d "$phase5_bin_source" ]] || fail "executable staging directory is unavailable"
   mkdir -p "$phase5_bin_dir"
   mount -t tmpfs -o mode=0755,nosuid,nodev,exec tmpfs "$phase5_bin_dir"
