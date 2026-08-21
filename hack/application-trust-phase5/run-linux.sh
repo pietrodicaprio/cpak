@@ -542,7 +542,7 @@ PY
     >"$phase5_dir/verify-revoked.json" 2>"$phase5_dir/verify-revoked.err"
   status=$?
   set -e
-  assert_decision 21 invalid "$phase5_dir/verify-revoked.json" "$status"
+  assert_decision 20 deny "$phase5_dir/verify-revoked.json" "$status"
   python3 - "$phase5_dir/verify-revoked.json" <<'PY'
 import json
 import pathlib
@@ -554,7 +554,7 @@ if document.get("trust", {}).get("revocation") != "revoked":
 if document.get("trust", {}).get("reason_code") != "certificate-revoked":
     raise SystemExit(f"the revoked decision lost its reason: {document!r}")
 PY
-  run_install_decision 21 invalid revoked-certificate "$origin"
+  run_install_decision 20 deny revoked-certificate "$origin"
 
   rm -f -- "$revoked_crl"
   run_install_decision 0 allow revoked-certificate-recovered "$origin"
