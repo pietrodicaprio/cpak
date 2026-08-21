@@ -699,8 +699,17 @@ explainable and auditable from the recorded established decision. This does not
 close Phase 5. The privilege-frontend gate is executed at commit `c251200` by
 [Portability run 32417008322](https://github.com/pietrodicaprio/cpak/actions/runs/32417008322):
 real unprivileged cpak invocations complete exact-fingerprint trust-root and
-reputation lifecycles through both `sudo` and `doas`. Sigstore, graphical,
-service, and the remaining negative/recovery rows are still required.
+reputation lifecycles through both `sudo` and `doas`. The Sigstore install and
+update criterion is executed by the successful
+`application-trust-phase5-sigstore` job at commit `05b1a2f` in
+[Portability run 32457495922](https://github.com/pietrodicaprio/cpak/actions/runs/32457495922):
+GitHub Actions OIDC produces distinct real keyless Fulcio/Rekor bundles for
+canonical generations 1 and 2, the fixture serves Sigstore-only OCI referrers,
+cpak verifies them with bundled offline trust and exact repository identity,
+fresh `established` reputation is enforced, and the real install/update path
+passes. The overall workflow is red because its independent graphical job did
+not complete synthetic X11 confirmation; therefore graphical, service, and the
+remaining negative/recovery rows are still required and Phase 5 remains open.
 
 ### Phase 6: Publication package and final certification
 

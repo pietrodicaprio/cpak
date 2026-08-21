@@ -229,18 +229,31 @@ run_graphical_enrolment() {
   local install_pid=""
   local status window_id=""
 
-  Xvfb "$display_number" -screen 0 1024x768x24 -nolisten tcp \
+  Xvfb "$display_number" -screen 0 1024x768x24 -nolisten tcp -extension MIT-SHM \
     >"$phase5_dir/xvfb.log" 2>&1 &
   xvfb_pid=$!
   for _ in {1..100}; do
     if DISPLAY="$display_number" xwininfo -root >/dev/null 2>&1; then
       break
     fi
-    kill -0 "$xvfb_pid" 2>/dev/null || fail "the graphical test display stopped"
+    if ! kill -0 "$xvfb_pid" 2>/dev/null; then
+      python3 - "$phase5_dir/xvfb.log" <<'PY'
+import pathlib
+import sys
+print(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")[-4000:], file=sys.stderr)
+PY
+      fail "the graphical test display stopped"
+    fi
     sleep 0.1
   done
-  DISPLAY="$display_number" xwininfo -root >/dev/null 2>&1 || \
+  if ! DISPLAY="$display_number" xwininfo -root >/dev/null 2>&1; then
+    python3 - "$phase5_dir/xvfb.log" <<'PY'
+import pathlib
+import sys
+print(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")[-4000:], file=sys.stderr)
+PY
     fail "the graphical test display did not become ready"
+  fi
 
   DISPLAY="$display_number" "$phase5_bin_dir/cpak" install \
     --branch main --yes --graphical "$origin" \
