@@ -1404,7 +1404,12 @@ inside_namespace() {
   export XDG_DATA_HOME="$phase5_data_root/xdg"
   export XDG_STATE_HOME="$HOME/.local/state"
   export CPAK_INSTALLATION_PATH="$phase5_data_root/cpak"
-  unset DISPLAY WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS
+  # Leave no session-bus discovery path or desktop credential/picker hint in
+  # the headless lifecycle. The graphical row opts into X11 per process below;
+  # it still has no portal, Secret Service, or graphical privilege agent.
+  unset DISPLAY WAYLAND_DISPLAY WAYLAND_SOCKET XAUTHORITY DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR
+  unset XDG_CURRENT_DESKTOP XDG_SESSION_TYPE DESKTOP_SESSION
+  unset GTK_USE_PORTAL GIO_USE_PORTALS GNOME_KEYRING_CONTROL SSH_AUTH_SOCK
 
   mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"
   mount --make-rprivate /
