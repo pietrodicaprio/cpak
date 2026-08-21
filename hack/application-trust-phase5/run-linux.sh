@@ -496,6 +496,173 @@ PY
   printf 'phase5: real CLI install, retry, update, explain, audit, and offline lifecycle passed\n'
 }
 
+run_sigstore_lifecycle() {
+  local origin="$1"
+
+  [[ "$origin" =~ ^github\.com/[a-z0-9._-]+/[a-z0-9._-]+$ ]] || \
+    fail "the Sigstore fixture origin must be one canonical GitHub repository"
+
+  printf '127.0.0.1 %s\n' "${origin%%/*}" >>"$phase5_dir/hosts"
+  rm -f "$phase5_dir/fixture.json"
+  "$phase5_bin_dir/cpak-phase5-fixture" --directory "$phase5_dir" \
+    --payload "$phase5_bin_dir/phase5-payload" \
+    --origin "$origin" --evidence-kind sigstore \
+    >"$phase5_dir/fixture-sigstore.log" 2>&1 &
+  fixture_pid=$!
+  for _ in {1..100}; do
+    [[ -s "$phase5_dir/fixture.json" ]] && break
+    kill -0 "$fixture_pid" 2>/dev/null || fail "the Sigstore fixture server stopped"
+    sleep 0.1
+  done
+  [[ -s "$phase5_dir/fixture.json" ]] || fail "the Sigstore fixture server did not become ready"
+
+  local image image_digest tls_root
+  image="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["image"])' "$phase5_dir/fixture.json")"
+  image_digest="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["image_digest"])' "$phase5_dir/fixture.json")"
+  tls_root="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tls_root"])' "$phase5_dir/fixture.json")"
+  export SSL_CERT_FILE="$tls_root"
+  export NO_PROXY="${origin%%/*},phase5.invalid,127.0.0.1,localhost"
+  export no_proxy="$NO_PROXY"
+
+  python3 - "$phase5_dir/cpak.json" "$image" <<'PY'
+import json
+import pathlib
+import sys
+
+manifest = {
+    "manifest_version": "2.0",
+    "name": "Phase 5 Sigstore fixture",
+    "description": "Real keyless Sigstore install and update fixture",
+    "image": sys.argv[2],
+    "binaries": ["/usr/bin/phase5-fixture"],
+    "idle_time": 0,
+    "override": {},
+}
+pathlib.Path(sys.argv[1]).write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+PY
+
+  local generation
+  for generation in 1 2; do
+    "$phase5_bin_dir/cpak-sign" state \
+      --manifest "$phase5_dir/cpak.json" \
+      --origin "$origin" \
+      --image-digest "$image_digest" \
+      --generation "$generation" \
+      --output "$phase5_dir/state-$generation"
+    env -u SSL_CERT_FILE \
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN="$sigstore_oidc_token" \
+      ACTIONS_ID_TOKEN_REQUEST_URL="$sigstore_oidc_url" \
+      cosign sign-blob --yes \
+      --bundle "$phase5_dir/state-$generation.sigstore.json" \
+      "$phase5_dir/state-$generation"
+  done
+  sigstore_oidc_token=""
+  sigstore_oidc_url=""
+  printf '1\n' >"$phase5_dir/generation"
+
+  local decision="$phase5_dir/decision-sigstore.json"
+  local status
+  set +e
+  "$phase5_bin_dir/cpak" verify-signature "$phase5_dir/state-1.sigstore.json" \
+    --state "$phase5_dir/state-1" --evidence-kind sigstore --json >"$decision"
+  status=$?
+  set -e
+  assert_decision 0 allow "$decision" "$status"
+
+  local publisher_id
+  publisher_id="$(python3 - "$decision" <<'PY'
+import json
+import pathlib
+import sys
+
+document = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+if document.get("verification", {}).get("evidence_kind") != "sigstore-bundle-v1":
+    raise SystemExit(f"unexpected evidence kind: {document!r}")
+if document.get("publisher", {}).get("origin_authorization") != "authorized":
+    raise SystemExit(f"Sigstore identity does not authorize the fixture origin: {document!r}")
+print(document["publisher"]["id"])
+PY
+)"
+
+  "$phase5_bin_dir/cpak" system reputation-provider-set "$phase5_dir/reputation-provider.json" \
+    --fingerprint "$provider_key" --yes
+  import_reputation_status 4 established "$publisher_id"
+  python3 - "$phase5_dir/trust-policy-sigstore.json" "$publisher_id" <<'PY'
+import json
+import pathlib
+import sys
+
+policy = {
+    "abi": 2,
+    "require_publisher": True,
+    "require_approval": False,
+    "approved_publisher_ids": [sys.argv[2]],
+    "x509": {"revocation": "allow-unknown"},
+    "reputation": {"mode": "enforce", "provider_id": "cpak-phase5"},
+}
+pathlib.Path(sys.argv[1]).write_text(json.dumps(policy) + "\n", encoding="utf-8")
+PY
+  "$phase5_bin_dir/cpak" system set-trust "$phase5_dir/trust-policy-sigstore.json"
+
+  set +e
+  "$phase5_bin_dir/cpak" install --branch main --yes --non-interactive --json "$origin" \
+    >"$phase5_dir/install-sigstore.json" 2>"$phase5_dir/install-sigstore.err"
+  status=$?
+  set -e
+  assert_trust_envelope 0 allow non-interactive install "$phase5_dir/install-sigstore.json" "$status"
+  assert_sigstore_envelope "$phase5_dir/install-sigstore.json" 1
+
+  printf '2\n' >"$phase5_dir/generation"
+  set +e
+  "$phase5_bin_dir/cpak" update --non-interactive --json "$origin" \
+    >"$phase5_dir/update-sigstore.json" 2>"$phase5_dir/update-sigstore.err"
+  status=$?
+  set -e
+  assert_trust_envelope 0 allow non-interactive update "$phase5_dir/update-sigstore.json" "$status"
+  assert_sigstore_envelope "$phase5_dir/update-sigstore.json" 2
+
+  "$phase5_bin_dir/cpak" remove --branch main "$origin"
+  "$phase5_bin_dir/cpak" system reputation-provider-clear --fingerprint "$provider_key" --yes
+  kill "$fixture_pid"
+  wait "$fixture_pid" 2>/dev/null || true
+  fixture_pid=""
+  printf 'phase5: real keyless Sigstore OCI install and update passed\n'
+}
+
+assert_sigstore_envelope() {
+  local output="$1"
+  local expected_generation="$2"
+  python3 - "$output" "$expected_generation" <<'PY'
+import json
+import pathlib
+import sys
+
+document = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+trust = document.get("trust")
+if not isinstance(trust, list) or len(trust) != 1:
+    raise SystemExit(f"unexpected trust envelope: {trust!r}")
+result = trust[0]
+expected_generation = int(sys.argv[2])
+if result.get("subject", {}).get("generation") != expected_generation:
+    raise SystemExit(f"unexpected publisher generation: {result.get('subject')!r}")
+if result.get("verification", {}) != {
+    "status": "verified",
+    "evidence_kind": "sigstore-bundle-v1",
+    "reason_code": "evidence-verified",
+}:
+    raise SystemExit(f"unexpected Sigstore verification: {result.get('verification')!r}")
+publisher = result.get("publisher", {})
+if publisher.get("status") != "verified" or publisher.get("origin_authorization") != "authorized":
+    raise SystemExit(f"unexpected Sigstore publisher: {publisher!r}")
+root = result.get("trust", {})
+if root.get("chain") != "trusted-public" or root.get("root_source") != "bundled-sigstore" or root.get("signing_time") != "timestamped":
+    raise SystemExit(f"unexpected Sigstore trust root: {root!r}")
+reputation = result.get("reputation", {})
+if reputation.get("provider_id") != "cpak-phase5" or reputation.get("status") != "established" or reputation.get("freshness") != "fresh":
+    raise SystemExit(f"unexpected publisher reputation: {reputation!r}")
+PY
+}
+
 inside_namespace() {
   phase5_dir="$2"
   local phase5_bin_source="$3"
@@ -505,6 +672,9 @@ inside_namespace() {
   local phase5_data_root="${6:-$phase5_dir/home/.local/share}"
   frontend_user="${7:-}"
   graphical_runtime="${8:-}"
+  sigstore_origin="${9:-}"
+  local sigstore_oidc_token_path="${10:-}"
+  local sigstore_oidc_url_path="${11:-}"
   unset SUDO_UID SUDO_GID SUDO_USER
   fixture_pid=""
   xvfb_pid=""
@@ -556,6 +726,16 @@ inside_namespace() {
     require_command xwininfo
   elif [[ -n "$graphical_runtime" ]]; then
     fail "CPAK_PHASE5_GRAPHICAL must be empty or 1"
+  fi
+  if [[ -n "$sigstore_origin" ]]; then
+    require_command cosign
+    [[ -f "$sigstore_oidc_token_path" && -f "$sigstore_oidc_url_path" ]] || \
+      fail "the Sigstore lifecycle requires staged GitHub Actions OIDC material"
+    IFS= read -r sigstore_oidc_token <"$sigstore_oidc_token_path"
+    IFS= read -r sigstore_oidc_url <"$sigstore_oidc_url_path"
+    rm -f -- "$sigstore_oidc_token_path" "$sigstore_oidc_url_path"
+    [[ -n "$sigstore_oidc_token" && -n "$sigstore_oidc_url" ]] || \
+      fail "the staged GitHub Actions OIDC material is empty"
   fi
 
   local root_fingerprint
@@ -633,6 +813,9 @@ PY
   "$phase5_bin_dir/cpak" system reputation-check "$publisher_id" | grep -F 'established' >/dev/null
   if [[ -n "$cleanup_uid" && -n "$cleanup_gid" ]]; then
     run_process_lifecycle "$publisher_id"
+    if [[ -n "$sigstore_origin" ]]; then
+      run_sigstore_lifecycle "$sigstore_origin"
+    fi
   else
     "$phase5_bin_dir/cpak" system reputation-provider-clear \
       --fingerprint "$provider_key" --yes
@@ -655,10 +838,47 @@ if [[ -n "$namespace_mode" && "$namespace_mode" != "--sudo-namespace" && "$names
   fail "unknown argument: $namespace_mode"
 fi
 
+sigstore_origin="${CPAK_PHASE5_SIGSTORE_ORIGIN:-}"
+sigstore_oidc_token=""
+sigstore_oidc_url=""
 [[ "$(uname -s)" == "Linux" ]] || fail "this harness must run on Linux"
-for command_name in go python3 unshare mount sha256sum awk grep cp; do
+for command_name in go python3 unshare mount sha256sum awk grep cp tr wc; do
   require_command "$command_name"
 done
+if [[ -n "$sigstore_origin" ]]; then
+  oidc_token_source="${CPAK_PHASE5_OIDC_TOKEN_FILE:-}"
+  oidc_url_source="${CPAK_PHASE5_OIDC_URL_FILE:-}"
+  unset CPAK_PHASE5_OIDC_TOKEN_FILE CPAK_PHASE5_OIDC_URL_FILE
+  [[ "$oidc_token_source" == "/cpak-phase5-oidc/token" && "$oidc_url_source" == "/cpak-phase5-oidc/url" &&
+    -f "$oidc_token_source" && ! -L "$oidc_token_source" &&
+    -f "$oidc_url_source" && ! -L "$oidc_url_source" ]] || \
+    fail "the Sigstore lifecycle requires its bounded GitHub Actions OIDC files"
+  token_size="$(wc -c <"$oidc_token_source")"
+  url_size="$(wc -c <"$oidc_url_source")"
+  [[ "$token_size" -ge 2 && "$token_size" -le 16385 && "$url_size" -ge 2 && "$url_size" -le 4097 ]] || \
+    fail "the GitHub Actions OIDC material exceeds its bounds"
+  exec 3<"$oidc_token_source"
+  IFS= read -r sigstore_oidc_token <&3 || fail "the GitHub Actions OIDC request token is unreadable"
+  if IFS= read -r unexpected_oidc_input <&3; then
+    fail "the GitHub Actions OIDC request token must be one line"
+  fi
+  exec 3<&-
+  exec 3<"$oidc_url_source"
+  IFS= read -r sigstore_oidc_url <&3 || fail "the GitHub Actions OIDC request URL is unreadable"
+  if IFS= read -r unexpected_oidc_input <&3; then
+    fail "the GitHub Actions OIDC request URL must be one line"
+  fi
+  exec 3<&-
+  rm -f -- "$oidc_token_source" "$oidc_url_source"
+  sigstore_origin="$(printf '%s' "$sigstore_origin" | tr '[:upper:]' '[:lower:]')"
+  [[ "$sigstore_origin" =~ ^github\.com/[a-z0-9._-]+/[a-z0-9._-]+$ ]] || \
+    fail "CPAK_PHASE5_SIGSTORE_ORIGIN must be one canonical GitHub repository"
+  [[ -n "$sigstore_oidc_token" && ${#sigstore_oidc_token} -le 16384 && "$sigstore_oidc_token" != *$'\n'* ]] || \
+    fail "the GitHub Actions OIDC request token is missing or malformed"
+  [[ "$sigstore_oidc_url" == https://* && ${#sigstore_oidc_url} -le 4096 && "$sigstore_oidc_url" != *$'\n'* ]] || \
+    fail "the GitHub Actions OIDC request URL is missing or malformed"
+fi
+
 if [[ "$namespace_mode" == "--sudo-namespace" ]]; then
   require_command sudo
 fi
@@ -683,6 +903,19 @@ phase5_data_root="${CPAK_PHASE5_DATA_ROOT:-$phase5_dir/home/.local/share}"
 [[ "$phase5_data_root" == /* ]] || fail "CPAK_PHASE5_DATA_ROOT must be absolute"
 frontend_user="${CPAK_PHASE5_FRONTEND_USER:-}"
 graphical_runtime="${CPAK_PHASE5_GRAPHICAL:-}"
+sigstore_oidc_token_path=""
+sigstore_oidc_url_path=""
+if [[ -n "$sigstore_origin" ]]; then
+  sigstore_oidc_token_path="$phase5_dir/github-oidc-token"
+  sigstore_oidc_url_path="$phase5_dir/github-oidc-url"
+  (
+    umask 077
+    printf '%s\n' "$sigstore_oidc_token" >"$sigstore_oidc_token_path"
+    printf '%s\n' "$sigstore_oidc_url" >"$sigstore_oidc_url_path"
+  )
+  sigstore_oidc_token=""
+  sigstore_oidc_url=""
+fi
 trap 'rm -rf -- "$phase5_dir" "$phase5_bin_dir"' EXIT
 chmod 0700 "$phase5_dir"
 chmod 0755 "$phase5_bin_dir"
@@ -745,14 +978,14 @@ if [[ "$namespace_mode" == "--sudo-namespace" ]]; then
   owner_uid="$(id -u)"
   owner_gid="$(id -g)"
   sudo --non-interactive unshare --mount --pid --fork --mount-proc \
-    "$0" --inside-namespace "$phase5_dir" "$phase5_bin_dir" "$owner_uid" "$owner_gid" "$phase5_data_root" "$frontend_user" "$graphical_runtime"
+    "$0" --inside-namespace "$phase5_dir" "$phase5_bin_dir" "$owner_uid" "$owner_gid" "$phase5_data_root" "$frontend_user" "$graphical_runtime" "$sigstore_origin" "$sigstore_oidc_token_path" "$sigstore_oidc_url_path"
 elif [[ "$namespace_mode" == "--root-namespace" ]]; then
   [[ "$(id -u)" -eq 0 ]] || fail "--root-namespace requires an already-root disposable environment"
   unshare --mount --pid --fork --mount-proc \
-    "$0" --inside-namespace "$phase5_dir" "$phase5_bin_dir" 0 0 "$phase5_data_root" "$frontend_user" "$graphical_runtime"
+    "$0" --inside-namespace "$phase5_dir" "$phase5_bin_dir" 0 0 "$phase5_data_root" "$frontend_user" "$graphical_runtime" "$sigstore_origin" "$sigstore_oidc_token_path" "$sigstore_oidc_url_path"
 else
   unshare --user --map-root-user --mount --pid --fork --mount-proc \
-    "$0" --inside-namespace "$phase5_dir" "$phase5_bin_dir" "" "" "$phase5_data_root" "$frontend_user" "$graphical_runtime"
+    "$0" --inside-namespace "$phase5_dir" "$phase5_bin_dir" "" "" "$phase5_data_root" "$frontend_user" "$graphical_runtime" "$sigstore_origin" "$sigstore_oidc_token_path" "$sigstore_oidc_url_path"
 fi
 
 printf 'phase5: Linux core and isolated administrator harness passed\n'
