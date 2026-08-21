@@ -280,10 +280,28 @@ func enrolmentPolicyAction(e ApplicationEnrolment) (applicationtrust.PolicyActio
 			return applicationtrust.PolicyDeny, reason
 		}
 	}
-	if e.Outcome == EnrolmentUnsigned || errors.Is(e.Reason, systemauthority.ErrTrustRefused) || errors.Is(e.Signature.Reason, ErrSignatureForeign) {
+	if reason, refused := enrolmentRefusalReason(e); refused {
+		return applicationtrust.PolicyDeny, reason
+	}
+	if e.Outcome == EnrolmentUnsigned || errors.Is(e.Signature.Reason, ErrSignatureForeign) {
 		return applicationtrust.PolicyDeny, "trust-policy-denied"
 	}
 	return applicationtrust.PolicyAllow, "trust-policy-allowed"
+}
+
+func enrolmentRefusalReason(e ApplicationEnrolment) (string, bool) {
+	switch {
+	case errors.Is(e.Reason, systemauthority.ErrAnchorDowngrade):
+		return "anchor-generation-downgrade", true
+	case errors.Is(e.Reason, systemauthority.ErrSignatureDowngrade):
+		return "publisher-generation-downgrade", true
+	case errors.Is(e.Reason, systemauthority.ErrSignatureLost):
+		return "publisher-signature-lost", true
+	case errors.Is(e.Reason, systemauthority.ErrTrustRefused):
+		return "trust-policy-denied", true
+	default:
+		return "", false
+	}
 }
 
 func enrolmentPrerequisiteFailure(e ApplicationEnrolment) (applicationtrust.FinalAction, string) {
@@ -293,7 +311,8 @@ func enrolmentPrerequisiteFailure(e ApplicationEnrolment) (applicationtrust.Fina
 	if e.Outcome == EnrolmentUndescribed {
 		return applicationtrust.FinalInvalid, "subject-invalid"
 	}
-	if e.Outcome == EnrolmentUnrecordable && !errors.Is(e.Reason, systemauthority.ErrTrustRefused) {
+	_, refused := enrolmentRefusalReason(e)
+	if e.Outcome == EnrolmentUnrecordable && !refused {
 		return applicationtrust.FinalUnavailable, "authority-unavailable"
 	}
 	return "", ""

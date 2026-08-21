@@ -638,6 +638,32 @@ PY
   printf 'phase5: signed-to-unsigned policy refusal and signed recovery passed\n'
 }
 
+run_replayed_generation_lifecycle() {
+  local origin="$1"
+  local image_digest="$2"
+
+  printf '11\n' >"$phase5_dir/generation"
+  run_update_decision 20 deny replayed-generation "$origin"
+  python3 - "$phase5_dir/update-replayed-generation.json" <<'PY'
+import json
+import pathlib
+import sys
+
+document = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+result = document.get("trust", [{}])[0]
+final = result.get("final", {})
+if result.get("subject", {}).get("generation") != 11:
+    raise SystemExit(f"the replayed publisher generation was not reported: {result!r}")
+if final.get("reason_code") != "publisher-generation-downgrade":
+    raise SystemExit(f"the replay was not reported as a publisher downgrade: {final!r}")
+PY
+
+  write_x509_generation 13 "$origin" "$image_digest"
+  run_update_decision 0 allow replayed-generation-recovered "$origin"
+
+  printf 'phase5: replayed publisher generation refusal and recovery passed\n'
+}
+
 run_process_negative_lifecycle() {
   local origin="$1"
   local publisher_id="$2"
@@ -915,6 +941,7 @@ PY
     --fingerprint "$provider_key" --yes
   run_reputation_outage_matrix "$origin" "$publisher_id" "$image_digest"
   run_signed_to_unsigned_lifecycle "$origin" "$image_digest"
+  run_replayed_generation_lifecycle "$origin" "$image_digest"
   "$phase5_bin_dir/cpak" system reputation-provider-clear \
     --fingerprint "$provider_key" --yes
   kill "$fixture_pid"

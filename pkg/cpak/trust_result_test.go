@@ -65,6 +65,9 @@ func TestApplicationTrustResultMapsEveryStableExitClass(t *testing.T) {
 		{"warning accepted", warning(EnrolmentRecorded, applicationtrust.ConfirmationAccepted), applicationtrust.ContextInteractiveTerminal, applicationtrust.FinalWarn, 0, applicationtrust.ConfirmationAccepted},
 		{"warning declined", warning(EnrolmentDeclined, applicationtrust.ConfirmationDeclined), applicationtrust.ContextInteractiveTerminal, applicationtrust.FinalDeny, 20, applicationtrust.ConfirmationDeclined},
 		{"invalid evidence", withSignatureFailure(withOutcome(base, EnrolmentRecorded), ErrSignatureUnverified), applicationtrust.ContextNonInteractive, applicationtrust.FinalInvalid, 21, applicationtrust.ConfirmationNotRequired},
+		{"anchor downgrade", withReason(withOutcome(base, EnrolmentUnrecordable), systemauthority.ErrAnchorDowngrade), applicationtrust.ContextNonInteractive, applicationtrust.FinalDeny, 20, applicationtrust.ConfirmationNotRequired},
+		{"publisher downgrade", withReason(withOutcome(base, EnrolmentUnrecordable), systemauthority.ErrSignatureDowngrade), applicationtrust.ContextNonInteractive, applicationtrust.FinalDeny, 20, applicationtrust.ConfirmationNotRequired},
+		{"publisher signature lost", withReason(withOutcome(base, EnrolmentUnrecordable), systemauthority.ErrSignatureLost), applicationtrust.ContextNonInteractive, applicationtrust.FinalDeny, 20, applicationtrust.ConfirmationNotRequired},
 		{"authority unavailable", withReason(withOutcome(base, EnrolmentUnrecordable), errors.New("authority offline")), applicationtrust.ContextNonInteractive, applicationtrust.FinalUnavailable, 22, applicationtrust.ConfirmationNotRequired},
 	}
 	for _, test := range tests {
@@ -75,6 +78,14 @@ func TestApplicationTrustResultMapsEveryStableExitClass(t *testing.T) {
 			}
 			if result.Final.Action != test.action || result.Final.ExitCode != test.exit || result.Policy.Confirmation != test.confirm {
 				t.Fatalf("final=%+v policy=%+v", result.Final, result.Policy)
+			}
+			expectedReason := map[string]string{
+				"anchor downgrade":         "anchor-generation-downgrade",
+				"publisher downgrade":      "publisher-generation-downgrade",
+				"publisher signature lost": "publisher-signature-lost",
+			}[test.name]
+			if expectedReason != "" && (result.Final.ReasonCode != expectedReason || result.Policy.ReasonCode != expectedReason) {
+				t.Fatalf("final=%+v policy=%+v, want reason %q", result.Final, result.Policy, expectedReason)
 			}
 		})
 	}
