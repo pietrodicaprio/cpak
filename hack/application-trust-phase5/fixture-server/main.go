@@ -40,17 +40,19 @@ import (
 )
 
 const (
-	origin                       = "phase5.invalid/containerpak/phase5-fixture"
-	repository                   = "example/app"
-	imageManifestMediaType       = "application/vnd.oci.image.manifest.v1+json"
-	imageIndexMediaType          = "application/vnd.oci.image.index.v1+json"
-	emptyConfigMediaType         = "application/vnd.oci.empty.v1+json"
-	imageLayerMediaType          = "application/vnd.oci.image.layer.v1.tar+gzip"
-	x509ArtifactType             = "application/vnd.cpak.signature.x509.v1"
-	x509CMSMediaType             = "application/pkcs7-signature"
-	generationAnnotation         = "dev.cpak.signature.generation"
-	maximumEvidenceSize    int64 = 1 << 20
-	maximumPayloadSize           = 32 << 20
+	origin                        = "phase5.invalid/containerpak/phase5-fixture"
+	repository                    = "example/app"
+	imageManifestMediaType        = "application/vnd.oci.image.manifest.v1+json"
+	imageIndexMediaType           = "application/vnd.oci.image.index.v1+json"
+	emptyConfigMediaType          = "application/vnd.oci.empty.v1+json"
+	imageLayerMediaType           = "application/vnd.oci.image.layer.v1.tar+gzip"
+	x509ArtifactType              = "application/vnd.cpak.signature.x509.v1"
+	x509CMSMediaType              = "application/pkcs7-signature"
+	sigstoreArtifactType          = "application/vnd.cpak.signature.v1+json"
+	sigstoreBundleMediaType       = "application/vnd.dev.sigstore.bundle.v0.3+json"
+	generationAnnotation          = "dev.cpak.signature.generation"
+	maximumEvidenceSize     int64 = 1 << 20
+	maximumPayloadSize            = 32 << 20
 )
 
 type metadata struct {
@@ -70,6 +72,10 @@ type descriptor struct {
 
 type fixture struct {
 	directory       string
+	origin          string
+	manifestPath    string
+	serverName      string
+	evidenceProfile evidenceProfile
 	config          []byte
 	configDigest    string
 	layer           []byte
@@ -80,9 +86,17 @@ type fixture struct {
 	emptyConfigHash string
 }
 
+type evidenceProfile struct {
+	artifactType string
+	mediaType    string
+	extension    string
+}
+
 func main() {
 	directory := flag.String("directory", "", "private fixture directory")
 	payloadPath := flag.String("payload", "", "static Linux executable to place in the OCI layer")
+	packageOrigin := flag.String("origin", origin, "package origin served by the fixture")
+	evidenceKind := flag.String("evidence-kind", "x509-cms", "evidence profile: x509-cms or sigstore")
 	flag.Parse()
 	if *directory == "" || !filepath.IsAbs(*directory) {
 		log.Fatal("--directory must be an absolute path")
@@ -93,6 +107,9 @@ func main() {
 	}
 	server, err := newFixture(*directory, payload)
 	if err != nil {
+		log.Fatal(err)
+	}
+	if err = server.configure(*packageOrigin, *evidenceKind); err != nil {
 		log.Fatal(err)
 	}
 	certificate, rootPath, err := server.serverCertificate()
@@ -115,7 +132,7 @@ func main() {
 	tlsListener := tlsListener(manifestListener, certificate)
 
 	if err = writeMetadata(*directory, metadata{
-		Origin: origin, Image: registryListener.Addr().String() + "/" + repository + ":main",
+		Origin: server.origin, Image: registryListener.Addr().String() + "/" + repository + ":main",
 		ImageDigest: server.imageDigest, TLSRoot: rootPath,
 	}); err != nil {
 		manifestListener.Close()
@@ -126,7 +143,7 @@ func main() {
 	failures := make(chan error, 2)
 	go func() { failures <- manifestHTTP.Serve(tlsListener) }()
 	go func() { failures <- registryHTTP.Serve(registryListener) }()
-	log.Printf("phase5 fixture serves %s and %s", origin, registryListener.Addr())
+	log.Printf("phase5 fixture serves %s and %s", server.origin, registryListener.Addr())
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
@@ -169,15 +186,54 @@ func newFixture(directory string, payload []byte) (*fixture, error) {
 	}
 	empty := []byte("{}")
 	return &fixture{
-		directory: directory, config: config, configDigest: configDigest,
+		directory: directory, origin: origin,
+		manifestPath: "/containerpak/phase5-fixture/raw/main/cpak.json", serverName: "phase5.invalid",
+		evidenceProfile: evidenceProfile{artifactType: x509ArtifactType, mediaType: x509CMSMediaType, extension: ".cms"},
+		config:          config, configDigest: configDigest,
 		layer: layer, layerDigest: layerDigest,
 		imageManifest: manifest, imageDigest: digest(manifest),
 		emptyConfig: empty, emptyConfigHash: digest(empty),
 	}, nil
 }
 
+func (f *fixture) configure(packageOrigin, evidenceKind string) error {
+	packageOrigin = strings.ToLower(strings.TrimSpace(packageOrigin))
+	parts := strings.Split(packageOrigin, "/")
+	if len(parts) != 3 || (parts[0] != "phase5.invalid" && parts[0] != "github.com") ||
+		!validOriginPart(parts[1]) || !validOriginPart(parts[2]) {
+		return errors.New("--origin must be phase5.invalid or github.com followed by one owner and repository")
+	}
+	profile := evidenceProfile{}
+	switch evidenceKind {
+	case "x509-cms":
+		profile = evidenceProfile{artifactType: x509ArtifactType, mediaType: x509CMSMediaType, extension: ".cms"}
+	case "sigstore":
+		profile = evidenceProfile{artifactType: sigstoreArtifactType, mediaType: sigstoreBundleMediaType, extension: ".sigstore.json"}
+	default:
+		return errors.New("--evidence-kind must be x509-cms or sigstore")
+	}
+	f.origin = packageOrigin
+	f.serverName = parts[0]
+	f.manifestPath = "/" + parts[1] + "/" + parts[2] + "/raw/main/cpak.json"
+	f.evidenceProfile = profile
+	return nil
+}
+
+func validOriginPart(value string) bool {
+	if value == "" || value == "." || value == ".." || len(value) > 100 {
+		return false
+	}
+	for _, character := range value {
+		if (character < 'a' || character > 'z') && (character < '0' || character > '9') &&
+			character != '-' && character != '_' && character != '.' {
+			return false
+		}
+	}
+	return true
+}
+
 func (f *fixture) serveManifest(writer http.ResponseWriter, request *http.Request) {
-	if request.Method != http.MethodGet || request.URL.Path != "/containerpak/phase5-fixture/raw/main/cpak.json" {
+	if request.Method != http.MethodGet || request.URL.Path != f.manifestPath {
 		http.NotFound(writer, request)
 		return
 	}
@@ -223,14 +279,14 @@ func (f *fixture) serveReferrers(writer http.ResponseWriter, request *http.Reque
 		return
 	}
 	manifests := []descriptor{}
-	if request.URL.Query().Get("artifactType") == x509ArtifactType {
+	if request.URL.Query().Get("artifactType") == f.evidenceProfile.artifactType {
 		artifact, generation, err := f.artifactManifest()
 		if err != nil {
 			http.Error(writer, "evidence unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		manifests = append(manifests, descriptor{
-			MediaType: imageManifestMediaType, ArtifactType: x509ArtifactType,
+			MediaType: imageManifestMediaType, ArtifactType: f.evidenceProfile.artifactType,
 			Digest: digest(artifact), Size: len(artifact),
 			Annotations: map[string]string{generationAnnotation: strconv.FormatUint(generation, 10)},
 		})
@@ -268,7 +324,7 @@ func (f *fixture) serveBlob(writer http.ResponseWriter, identifier string) {
 	}
 	payload, _, err := f.evidence()
 	if err == nil && identifier == digest(payload) {
-		writer.Header().Set("Content-Type", x509CMSMediaType)
+		writer.Header().Set("Content-Type", f.evidenceProfile.mediaType)
 		_, _ = writer.Write(payload)
 		return
 	}
@@ -281,9 +337,9 @@ func (f *fixture) artifactManifest() ([]byte, uint64, error) {
 		return nil, 0, err
 	}
 	manifest, err := json.Marshal(map[string]any{
-		"schemaVersion": 2, "mediaType": imageManifestMediaType, "artifactType": x509ArtifactType,
+		"schemaVersion": 2, "mediaType": imageManifestMediaType, "artifactType": f.evidenceProfile.artifactType,
 		"config":  descriptor{MediaType: emptyConfigMediaType, Digest: f.emptyConfigHash, Size: len(f.emptyConfig)},
-		"layers":  []descriptor{{MediaType: x509CMSMediaType, Digest: digest(payload), Size: len(payload)}},
+		"layers":  []descriptor{{MediaType: f.evidenceProfile.mediaType, Digest: digest(payload), Size: len(payload)}},
 		"subject": descriptor{MediaType: imageManifestMediaType, Digest: f.imageDigest, Size: len(f.imageManifest)},
 	})
 	return manifest, generation, err
@@ -298,7 +354,7 @@ func (f *fixture) evidence() ([]byte, uint64, error) {
 	if err != nil || generation == 0 {
 		return nil, 0, errors.New("invalid fixture generation")
 	}
-	path := filepath.Join(f.directory, fmt.Sprintf("state-%d.cms", generation))
+	path := filepath.Join(f.directory, fmt.Sprintf("state-%d%s", generation, f.evidenceProfile.extension))
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, 0, err
@@ -335,8 +391,8 @@ func (f *fixture) serverCertificate() (tls.Certificate, string, error) {
 		return tls.Certificate{}, "", err
 	}
 	serverTemplate := &x509.Certificate{
-		SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "phase5.invalid"},
-		DNSNames: []string{"phase5.invalid"}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(24 * time.Hour),
+		SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: f.serverName},
+		DNSNames: []string{f.serverName}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(24 * time.Hour),
 		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
 	serverDER, err := x509.CreateCertificate(rand.Reader, serverTemplate, root, serverPublic, rootPrivate)
