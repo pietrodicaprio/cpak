@@ -62,6 +62,10 @@ The current harness proves:
   credentials;
 - detached-stdin install returns `confirmation-required` without blocking even
   when `--yes` is present, and its process exit agrees with versioned JSON;
+- the same warning is exercised through the built-in graphical prompt, a real
+  pseudo-terminal, redirected human output, and versioned JSON; explicit
+  acceptance is recorded only by the two interactive callers, while the human
+  final action, reason code, and process exit agree with JSON;
 - exact-manifest recovery retries the installed-but-unenrolled package in a
   real pseudo-terminal, records explicit confirmation, and does not rewrite
   package state merely to recover enrolment;
@@ -70,8 +74,20 @@ The current harness proves:
   recorded decision after the provider and fixture network are removed;
 - the launched payload is the executable stored in the installed OCI layer,
   returns the exact expected output, and is stopped through the normal CLI;
-- all direct-root administration works without a display or session bus while
-  host state remains untouched.
+- a systemd-equivalent service starts from the enrolled state, keeps running
+  when a later launch is refused, refuses restart while state differs, and
+  restarts after recovery;
+- altered CMS, revoked certificates, administrator denial, blocked reputation,
+  provider outage under every policy mode, signed-to-unsigned transition,
+  generation replay, publisher-key rotation, and stale evidence attached to a
+  changed OCI image all fail with their expected portable decisions and recover
+  without corrupting the installed state;
+- publisher-key rotation receives a distinct SPKI identity and cannot borrow
+  the old publisher's reputation; the updated identity succeeds only after its
+  own established entry is imported;
+- all direct-root administration and binary/service paths work with display,
+  Wayland, Xauthority, desktop-session, XDG runtime, session-bus, portal,
+  keyring, and SSH-agent discovery removed, while host state remains untouched.
 - real unprivileged cpak invocations add and remove the X.509 root and set,
   import, query, and clear reputation data through both `sudo` and `doas`, with
   exact argument and fingerprint policies and no graphical fallback.
@@ -81,24 +97,16 @@ The current harness proves:
   update complete under an exact-origin publisher policy with fresh
   `established` reputation.
 
-The first install/update milestone is
-[Portability run 32411499077](https://github.com/pietrodicaprio/cpak/actions/runs/32411499077)
-at commit `5689688`. The expanded headless lifecycle, including the installed
-binary's offline execution, is
-[Portability run 32415553153](https://github.com/pietrodicaprio/cpak/actions/runs/32415553153)
-at commit `2c78445`. The real privilege-frontend matrix is
-[Portability run 32417008322](https://github.com/pietrodicaprio/cpak/actions/runs/32417008322)
-at commit `c251200`. The real keyless Sigstore install/update gate is the
-successful `application-trust-phase5-sigstore` job in
-[Portability run 32457495922](https://github.com/pietrodicaprio/cpak/actions/runs/32457495922)
-at commit `05b1a2f`. That job uses GitHub Actions OIDC to obtain separate Fulcio
-certificates and Rekor-backed bundles for generations 1 and 2; it exposes no
-X.509 fallback evidence in the fixture.
+The combined runtime gate is green at commit `7b72b3f` in attempt 2 of
+[Portability run 32473129688](https://github.com/pietrodicaprio/cpak/actions/runs/32473129688).
+Both the X.509/CMS lifecycle and the real GitHub Actions OIDC/Fulcio/Rekor
+Sigstore lifecycle pass. This run also records graphical and terminal
+confirmation, non-interactive refusal, human/JSON agreement, binary-only
+offline launch, service restart enforcement, privilege frontends, and the
+negative/recovery matrix described above. The isolated rerun used identical
+source and cleared a transient runner seccomp failure.
 
-It does **not** prove the complete Phase 5 gate. Separate disposable-machine
-runs must still record graphical confirmation, service restart enforcement,
-and the remaining negative/recovery matrix. The pseudo-terminal row proves
-terminal confirmation for X.509 only. The overall run containing the successful
-Sigstore job is intentionally not cited as a green Phase 5 run: its independent
-graphical job failed because the synthetic X11 confirmation did not finish the
-enrolment.
+The runtime harness does not build a historical cpak binary. The frozen ABI 1
+fixture and strict policy decoder prove that ABI 2 is rejected structurally at
+the current compatibility boundary; the project still needs to record whether
+AT-POL-011 requires an additional pinned pre-ABI2 executable for Phase 5.

@@ -1,10 +1,12 @@
 # Application Trust POC Implementation Plan
 
-- Status: active; Phases 0 through 4 complete, Phases 5 and 6 pending
+- Status: active; Phases 0 through 4 complete, Phase 5 runtime gate complete
+  with the historical ABI 1 binary acceptance decision pending, and Phase 6
+  pending
 - Working branch: `poc/application-trust-framework`
 - Pull request policy: no pull request is opened until the complete POC
   satisfies the Definition of Done in this document
-- Last updated: 2026-08-19
+- Last updated: 2026-08-21
 
 ## 1. Purpose
 
@@ -686,30 +688,25 @@ interactive-terminal, and non-interactive positive, negative, update, offline,
 service, and recovery scenarios, and every output surface accurately explains
 the same result.
 
-The X.509 headless milestone is executed at commit `5689688` by
-[Portability run 32411499077](https://github.com/pietrodicaprio/cpak/actions/runs/32411499077):
-real OCI install/update, detached non-interactive confirmation-required, exact
-PTY recovery with accepted consent, and offline explain/audit all pass in the
-private Linux namespace. The expanded headless lifecycle is executed at commit
-`2c78445` by
-[Portability run 32415553153](https://github.com/pietrodicaprio/cpak/actions/runs/32415553153):
-after provider removal and fixture shutdown, the binary installed from the OCI
-layer executes with its exact expected output, stops normally, and remains
-explainable and auditable from the recorded established decision. This does not
-close Phase 5. The privilege-frontend gate is executed at commit `c251200` by
-[Portability run 32417008322](https://github.com/pietrodicaprio/cpak/actions/runs/32417008322):
-real unprivileged cpak invocations complete exact-fingerprint trust-root and
-reputation lifecycles through both `sudo` and `doas`. The Sigstore install and
-update criterion is executed by the successful
-`application-trust-phase5-sigstore` job at commit `05b1a2f` in
-[Portability run 32457495922](https://github.com/pietrodicaprio/cpak/actions/runs/32457495922):
-GitHub Actions OIDC produces distinct real keyless Fulcio/Rekor bundles for
-canonical generations 1 and 2, the fixture serves Sigstore-only OCI referrers,
-cpak verifies them with bundled offline trust and exact repository identity,
-fresh `established` reputation is enforced, and the real install/update path
-passes. The overall workflow is red because its independent graphical job did
-not complete synthetic X11 confirmation; therefore graphical, service, and the
-remaining negative/recovery rows are still required and Phase 5 remains open.
+The combined Phase 5 runtime gate is green at commit `7b72b3f` in attempt 2 of
+[Portability run 32473129688](https://github.com/pietrodicaprio/cpak/actions/runs/32473129688).
+Both `application-trust-phase5` and `application-trust-phase5-sigstore` pass.
+Together they execute real X.509/CMS and keyless Sigstore install/update,
+graphical and pseudo-terminal confirmation, detached non-interactive refusal,
+human/JSON agreement, binary-only offline launch, service start/refusal/restart,
+direct-root/`sudo`/`doas` administration, and the complete negative and recovery
+matrix. The lifecycle includes signed-to-unsigned transition, publisher
+generation replay, publisher-key rotation with isolated reputation, and stale
+evidence bound to a changed immutable image digest. The first attempt exposed a
+transient runner seccomp failure after the same commit's Sigstore job had
+already passed; the isolated rerun passed without changing source.
+
+The only formal Phase 5 acceptance decision still open is AT-POL-011. The
+current ABI 1 fixture and strict decoder dispatch prove that an ABI 1 decoder
+rejects an ABI 2 policy structurally rather than partially applying it. The
+project must decide whether that is sufficient POC evidence or whether Phase 5
+must additionally build and execute a pinned pre-ABI2 cpak binary against an
+ABI 2 policy. Until that choice is recorded, Phase 5 is not marked complete.
 
 ### Phase 6: Publication package and final certification
 
