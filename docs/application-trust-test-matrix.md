@@ -171,7 +171,7 @@ behaviour require the real integration path described in the Evidence column.
 | AT-POL-008 | Origin, publisher, approval, and release revocation precede reputation | `TestAuthorityAppliesReputationOnlyAfterSignatureAndAdministratorPolicy` plus existing trust-policy decision suites | 4-5 | Implemented and executed for administrator release denial and an unapproved rotated publisher, both before reputation lookup |
 | AT-POL-009 | Administrator remains the final authority | `TestAuthorityReputationModesControlEnrolmentAndRecordedEvidence` and privileged provider-store tests | 4-5 | Implemented and executed through the privileged authority, including administrator denial and blocked-reputation refusal |
 | AT-POL-010 | ABI 1 policies retain exact existing semantics | Legacy fixture and existing trust-policy suite remain green; ABI 2 fields are rejected under ABI 1 | 1, 5 | Existing; regression-covered in Phase 4 |
-| AT-POL-011 | ABI 2 is rejected by an ABI 1 decoder instead of partially applied | frozen ABI 1 fixture, strict ABI dispatch, and `TestPolicyV2ValidationRejectsAmbiguousOrUnsafeReputationRules` | 4-5 | Implemented and accepted for the POC; executing an additional pinned pre-ABI2 binary is optional publication hardening |
+| AT-POL-011 | ABI 2 is rejected by an ABI 1 decoder instead of partially applied | ABI 2 Phase 5 lifecycle policies, frozen ABI 1 legacy fixture, strict ABI dispatch, and `TestPolicyV2ValidationRejectsAmbiguousOrUnsafeReputationRules` | 4-5 | Implemented; every POC operating policy is ABI 2, while ABI 1 is retained only for legacy regression coverage; executing a pinned pre-ABI2 binary is optional compatibility hardening |
 
 ## 11. Lifecycle, explainability, and runtime
 
@@ -219,9 +219,10 @@ Sigstore rows marked executed above. The rerun was source-identical: it cleared
 a transient runner seccomp failure after Sigstore had already passed on the
 same commit.
 
-For AT-POL-011, the frozen ABI 1 fixture plus strict decoder dispatch are the
-accepted POC evidence for structural rejection of ABI 2 by the compatibility
-boundary. A pinned pre-ABI2 executable may strengthen the publication package,
+Every trust policy executed by the Phase 5 POC lifecycle uses ABI 2. The frozen
+ABI 1 fixture exists only for legacy regression coverage; together with strict
+ABI dispatch, it proves that ABI 2 is never partially applied under ABI 1
+semantics. A pinned pre-ABI2 executable may strengthen compatibility evidence,
 but it is not required for Phase 5. All Phase 5 rows are complete.
 
 Phase 0 requires at minimum:
