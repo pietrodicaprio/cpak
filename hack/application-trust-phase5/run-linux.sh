@@ -485,6 +485,84 @@ write_x509_generation() {
   printf '%s\n' "$generation" >"$phase5_dir/generation"
 }
 
+write_reputation_policy() {
+  local output_path="$1"
+  local publisher_id="$2"
+  local mode="$3"
+  case "$mode" in
+    off | audit | warn | require-established) ;;
+    *) fail "unsupported reputation mode: $mode" ;;
+  esac
+  python3 - "$output_path" "$publisher_id" "$mode" <<'PY'
+import json
+import pathlib
+import sys
+
+mode = sys.argv[3]
+reputation = {"mode": mode}
+if mode != "off":
+    reputation["provider_id"] = "cpak-phase5"
+policy = {
+    "abi": 2,
+    "require_publisher": True,
+    "require_approval": False,
+    "approved_publisher_ids": [sys.argv[2]],
+    "x509": {"revocation": "allow-unknown"},
+    "reputation": reputation,
+}
+pathlib.Path(sys.argv[1]).write_text(json.dumps(policy) + "\n", encoding="utf-8")
+PY
+}
+
+run_reputation_outage_matrix() {
+  local origin="$1"
+  local publisher_id="$2"
+  local image_digest="$3"
+  local generation mode expected_status expected_action expected_reputation label output
+
+  while read -r generation mode expected_status expected_action expected_reputation; do
+    "$phase5_bin_dir/cpak" remove --branch main "$origin"
+    write_x509_generation "$generation" "$origin" "$image_digest"
+    write_reputation_policy "$phase5_dir/trust-policy-$mode.json" "$publisher_id" "$mode"
+    "$phase5_bin_dir/cpak" system set-trust "$phase5_dir/trust-policy-$mode.json"
+
+    label="reputation-outage-$mode"
+    run_install_decision "$expected_status" "$expected_action" "$label" "$origin"
+    output="$phase5_dir/install-$label.json"
+    python3 - "$output" "$expected_reputation" <<'PY'
+import json
+import pathlib
+import sys
+
+document = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+trust = document.get("trust")
+if not isinstance(trust, list) or len(trust) != 1:
+    raise SystemExit(f"unexpected outage decision envelope: {document!r}")
+reputation = trust[0].get("reputation", {})
+if reputation.get("status") != sys.argv[2]:
+    raise SystemExit(
+        f"reputation status={reputation.get('status')!r}, expected={sys.argv[2]!r}: {reputation!r}"
+    )
+PY
+  done <<'CASES'
+7 off 0 allow not-consulted
+8 audit 0 allow unavailable
+9 warn 23 confirmation-required unavailable
+10 require-established 20 deny unavailable
+CASES
+
+  "$phase5_bin_dir/cpak" remove --branch main "$origin"
+  "$phase5_bin_dir/cpak" system reputation-provider-set "$phase5_dir/reputation-provider.json" \
+    --fingerprint "$provider_key" --yes
+  import_reputation_status 7 established "$publisher_id"
+  write_x509_generation 11 "$origin" "$image_digest"
+  write_reputation_policy "$phase5_dir/trust-policy.json" "$publisher_id" warn
+  "$phase5_bin_dir/cpak" system set-trust "$phase5_dir/trust-policy.json"
+  run_install_decision 0 allow reputation-outage-recovered "$origin"
+
+  printf 'phase5: all offline reputation policy modes and recovery passed\n'
+}
+
 run_install_decision() {
   local expected_status="$1"
   local expected_action="$2"
@@ -774,6 +852,9 @@ PY
   run_service_lifecycle "$origin"
   run_process_negative_lifecycle "$origin" "$publisher_id" "$image_digest"
 
+  "$phase5_bin_dir/cpak" system reputation-provider-clear \
+    --fingerprint "$provider_key" --yes
+  run_reputation_outage_matrix "$origin" "$publisher_id" "$image_digest"
   "$phase5_bin_dir/cpak" system reputation-provider-clear \
     --fingerprint "$provider_key" --yes
   kill "$fixture_pid"
