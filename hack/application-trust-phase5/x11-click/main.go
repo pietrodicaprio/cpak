@@ -98,17 +98,14 @@ func main() {
 	).Check(); err != nil {
 		exitf("press button through XTEST: %v", err)
 	}
-	// The checked request forced a round trip, so the server has already applied
-	// the synthetic press. Query the root because it always exists: the target
-	// window may be unmapped the instant the dialog acts on the click. The button
-	// mask reflects real core pointer state, which changes only if the injected
-	// input actually took effect rather than merely being accepted.
-	pressed, err := xproto.QueryPointer(connection, root).Reply()
-	if err != nil {
-		exitf("query pointer state after press: %v", err)
-	}
-	if pressed.Mask&xproto.KeyButMaskButton1 == 0 {
-		exitf("XTEST press did not register in the core pointer button state")
+	// The checked request forced a round trip, so the server accepted the
+	// synthetic press. Query the root because it always exists: the target
+	// window may be unmapped the instant the dialog acts on the click. The
+	// button mask reflects real core pointer state, but under a passive button
+	// grab (Openbox) the state settles a round trip or two after the request is
+	// acknowledged, so poll for a bounded window rather than sampling once.
+	if ok, mask := waitForButton1(connection, root, true); !ok {
+		exitf("XTEST press did not register in the core pointer button state (mask 0x%x)", mask)
 	}
 	if err := xtest.FakeInputChecked(
 		connection, xproto.ButtonRelease, 1, xproto.TimeCurrentTime,
@@ -116,14 +113,34 @@ func main() {
 	).Check(); err != nil {
 		exitf("release button through XTEST: %v", err)
 	}
-	released, err := xproto.QueryPointer(connection, root).Reply()
-	if err != nil {
-		exitf("query pointer state after release: %v", err)
-	}
-	if released.Mask&xproto.KeyButMaskButton1 != 0 {
-		exitf("XTEST release left button 1 held in the core pointer state")
+	if ok, mask := waitForButton1(connection, root, false); !ok {
+		exitf("XTEST release left button 1 held in the core pointer state (mask 0x%x)", mask)
 	}
 	fmt.Printf("x11-click: routed motion to window %s at %d,%d and observed a synthetic button-1 press and release in the core pointer state\n", windowText, x, y)
+}
+
+// waitForButton1 polls core pointer state until button 1 reaches held, matching
+// the checked XTEST request that preceded it. A single QueryPointer can race the
+// server settling a passive grab, so it retries within a bounded deadline and
+// reports the last observed mask so a failing run distinguishes a slow settle
+// from a stuck grab. It queries before checking the deadline, so the already-
+// settled fast path costs exactly one round trip.
+func waitForButton1(connection *xgb.Conn, window xproto.Window, held bool) (bool, uint16) {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		pointer, err := xproto.QueryPointer(connection, window).Reply()
+		if err != nil {
+			exitf("query pointer button state: %v", err)
+		}
+		mask := uint16(pointer.Mask)
+		if (mask&xproto.KeyButMaskButton1 != 0) == held {
+			return true, mask
+		}
+		if !time.Now().Before(deadline) {
+			return false, mask
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 func waitForEvent(connection *xgb.Conn, description string, matches func(xgb.Event) bool) xgb.Event {

@@ -293,9 +293,13 @@ PY
     --branch main --yes --graphical "$origin" \
     >"$phase5_dir/install-graphical.log" 2>&1 &
   install_pid=$!
+  # The reparenting WM wraps the dialog in a same-sized frame that carries no
+  # name, so a geometry-only match selects that frame and the click lands on a
+  # window Shiny never selected pointer motion on. Match the client by its
+  # stable WM_NAME (the NewWindow title) as well as its size.
   for _ in {1..100}; do
     window_id="$(DISPLAY="$display_number" xwininfo -root -tree 2>/dev/null | \
-      awk '$1 ~ /^0x[0-9a-f]+$/ && $0 ~ /620x540/ && !found {print $1; found=1}')"
+      awk '$1 ~ /^0x[0-9a-f]+$/ && /Publisher reputation/ && /620x540/ && !found {print $1; found=1}')"
     if [[ -n "$window_id" ]]; then
       break
     fi
@@ -438,10 +442,16 @@ import sys
 
 document = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 trust = document.get("trust", {})
+# The non-interactive install above was refused (exit 23), so an enrolment here
+# can only have come from run_graphical_enrolment. explain observes the recorded
+# decision non-interactively, so trust.context reflects this reader, not the
+# graphical install that recorded the accepted warn decision below.
 if not document.get("launch", {}).get("enrolled"):
     raise SystemExit("the graphical confirmation did not enrol the installation")
-if trust.get("context") != "graphical" or trust.get("policy", {}).get("confirmation") != "accepted":
-    raise SystemExit(f"unexpected graphical recorded decision: {trust!r}")
+if trust.get("decision_source") != "recorded" or trust.get("final", {}).get("action") != "warn":
+    raise SystemExit(f"the graphical install did not record a warn decision: {trust!r}")
+if trust.get("policy", {}).get("confirmation") != "accepted":
+    raise SystemExit(f"the graphical confirmation was not recorded as accepted: {trust!r}")
 PY
     "$phase5_bin_dir/cpak" remove --branch main "$origin"
 
