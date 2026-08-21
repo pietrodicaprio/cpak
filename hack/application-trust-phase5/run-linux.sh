@@ -749,6 +749,69 @@ PY
   printf 'phase5: publisher key rotation isolation, refusal, and recovery passed\n'
 }
 
+run_stale_evidence_lifecycle() {
+  local origin="$1"
+  local image_digest="$2"
+  local status
+
+  write_x509_generation 15 "$origin" "$image_digest" publisher-rotated
+  python3 - "$phase5_dir/cpak.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+manifest = json.loads(path.read_text(encoding="utf-8"))
+manifest["description"] = "Manifest changed after the publisher evidence was created"
+path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+PY
+
+  run_update_decision 21 invalid stale-evidence "$origin"
+  python3 - "$phase5_dir/update-stale-evidence.json" <<'PY'
+import json
+import pathlib
+import sys
+
+document = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+result = document.get("trust", [{}])[0]
+if result.get("verification", {}).get("status") != "invalid":
+    raise SystemExit(f"stale publisher evidence was not invalid: {result!r}")
+if result.get("final", {}).get("action") != "invalid":
+    raise SystemExit(f"stale publisher evidence did not fail before policy: {result!r}")
+PY
+
+  set +e
+  timeout 20 "$phase5_bin_dir/cpak" run --branch main "$origin" phase5-fixture \
+    </dev/null >"$phase5_dir/run-stale-evidence.out" 2>"$phase5_dir/run-stale-evidence.err"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 && "$status" -ne 124 ]] || \
+    fail "the package changed under stale publisher evidence was allowed to launch"
+  if ! grep -F 'does not match the integrity anchor it was enrolled with' \
+    "$phase5_dir/run-stale-evidence.err" >/dev/null; then
+    tail -n 80 "$phase5_dir/run-stale-evidence.err" >&2 || true
+    fail "the stale-evidence launch refusal did not report its anchor mismatch"
+  fi
+
+  write_x509_generation 15 "$origin" "$image_digest" publisher-rotated
+  run_update_decision 0 allow stale-evidence-recovered "$origin"
+  set +e
+  timeout 30 "$phase5_bin_dir/cpak" run --branch main "$origin" phase5-fixture \
+    </dev/null >"$phase5_dir/run-stale-evidence-recovered.out" \
+    2>"$phase5_dir/run-stale-evidence-recovered.err"
+  status=$?
+  set -e
+  if [[ "$status" -ne 0 ]]; then
+    tail -n 80 "$phase5_dir/run-stale-evidence-recovered.err" >&2 || true
+    fail "the freshly signed package launch exited $status"
+  fi
+  grep -Fx 'phase5 fixture executed' "$phase5_dir/run-stale-evidence-recovered.out" >/dev/null || \
+    fail "the freshly signed package did not execute its stored payload"
+  "$phase5_bin_dir/cpak" stop --branch main "$origin"
+
+  printf 'phase5: changed package stale-evidence refusal and signed recovery passed\n'
+}
+
 run_process_negative_lifecycle() {
   local origin="$1"
   local publisher_id="$2"
@@ -1028,6 +1091,7 @@ PY
   run_signed_to_unsigned_lifecycle "$origin" "$image_digest"
   run_replayed_generation_lifecycle "$origin" "$image_digest"
   run_publisher_key_rotation_lifecycle "$origin" "$publisher_id" "$image_digest"
+  run_stale_evidence_lifecycle "$origin" "$image_digest"
   "$phase5_bin_dir/cpak" system reputation-provider-clear \
     --fingerprint "$provider_key" --yes
   kill "$fixture_pid"
