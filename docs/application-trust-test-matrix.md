@@ -1,6 +1,6 @@
 # Application Trust POC Test Matrix
 
-- Status: Phases 0 through 4 implemented; Phase 5 in progress; Phase 6 planned
+- Status: Phases 0 through 5 complete; Phase 6 planned
 - Baseline: cpak v2.8.7 (`be29d55`)
 - Last updated: 2026-08-21
 
@@ -171,7 +171,7 @@ behaviour require the real integration path described in the Evidence column.
 | AT-POL-008 | Origin, publisher, approval, and release revocation precede reputation | `TestAuthorityAppliesReputationOnlyAfterSignatureAndAdministratorPolicy` plus existing trust-policy decision suites | 4-5 | Implemented and executed for administrator release denial and an unapproved rotated publisher, both before reputation lookup |
 | AT-POL-009 | Administrator remains the final authority | `TestAuthorityReputationModesControlEnrolmentAndRecordedEvidence` and privileged provider-store tests | 4-5 | Implemented and executed through the privileged authority, including administrator denial and blocked-reputation refusal |
 | AT-POL-010 | ABI 1 policies retain exact existing semantics | Legacy fixture and existing trust-policy suite remain green; ABI 2 fields are rejected under ABI 1 | 1, 5 | Existing; regression-covered in Phase 4 |
-| AT-POL-011 | ABI 2 is rejected by an ABI 1 decoder instead of partially applied | strict ABI dispatch and `TestPolicyV2ValidationRejectsAmbiguousOrUnsafeReputationRules` | 4 | Implemented in current decoder; cross-version binary fixture remains Phase 5 |
+| AT-POL-011 | ABI 2 is rejected by an ABI 1 decoder instead of partially applied | frozen ABI 1 fixture, strict ABI dispatch, and `TestPolicyV2ValidationRejectsAmbiguousOrUnsafeReputationRules` | 4-5 | Implemented and accepted for the POC; executing an additional pinned pre-ABI2 binary is optional publication hardening |
 
 ## 11. Lifecycle, explainability, and runtime
 
@@ -219,11 +219,10 @@ Sigstore rows marked executed above. The rerun was source-identical: it cleared
 a transient runner seccomp failure after Sigstore had already passed on the
 same commit.
 
-AT-POL-011 remains the only formal Phase 5 acceptance decision. The frozen ABI
-1 fixture plus strict decoder dispatch prove structural rejection of ABI 2 by
-the current compatibility boundary. Phase 5 remains open until the project
-records whether this is sufficient for the POC or requires an additional
-pinned pre-ABI2 cpak binary execution.
+For AT-POL-011, the frozen ABI 1 fixture plus strict decoder dispatch are the
+accepted POC evidence for structural rejection of ABI 2 by the compatibility
+boundary. A pinned pre-ABI2 executable may strengthen the publication package,
+but it is not required for Phase 5. All Phase 5 rows are complete.
 
 Phase 0 requires at minimum:
 
