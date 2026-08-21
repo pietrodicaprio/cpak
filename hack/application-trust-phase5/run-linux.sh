@@ -579,6 +579,65 @@ run_install_decision() {
   assert_trust_envelope "$expected_status" "$expected_action" non-interactive install "$output" "$status"
 }
 
+run_update_decision() {
+  local expected_status="$1"
+  local expected_action="$2"
+  local label="$3"
+  local origin="$4"
+  local output="$phase5_dir/update-$label.json"
+  local status
+
+  set +e
+  timeout 20 "$phase5_bin_dir/cpak" update --non-interactive --json "$origin" \
+    </dev/null >"$output" 2>"$phase5_dir/update-$label.err"
+  status=$?
+  set -e
+  assert_trust_envelope "$expected_status" "$expected_action" non-interactive update "$output" "$status"
+}
+
+run_signed_to_unsigned_lifecycle() {
+  local origin="$1"
+  local image_digest="$2"
+  local marker="$phase5_dir/serve-unsigned"
+
+  write_x509_generation 12 "$origin" "$image_digest"
+  : >"$marker"
+  chmod 0600 "$marker"
+  run_update_decision 20 deny signed-to-unsigned "$origin"
+  python3 - "$phase5_dir/update-signed-to-unsigned.json" <<'PY'
+import json
+import pathlib
+import sys
+
+document = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+trust = document.get("trust")
+if not isinstance(trust, list) or len(trust) != 1:
+    raise SystemExit(f"unexpected signed-to-unsigned envelope: {document!r}")
+result = trust[0]
+if result.get("verification", {}).get("status") != "unsigned":
+    raise SystemExit(f"signed-to-unsigned update was not visible as unsigned: {result!r}")
+if result.get("publisher", {}).get("status") != "absent":
+    raise SystemExit(f"signed-to-unsigned update retained a publisher: {result!r}")
+if result.get("policy", {}).get("action") != "deny":
+    raise SystemExit(f"signature policy did not deny the unsigned update: {result!r}")
+PY
+
+  rm -f -- "$marker"
+  run_update_decision 0 allow signed-to-unsigned-recovered "$origin"
+  python3 - "$phase5_dir/update-signed-to-unsigned-recovered.json" <<'PY'
+import json
+import pathlib
+import sys
+
+document = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+result = document.get("trust", [{}])[0]
+if result.get("verification", {}).get("status") != "verified" or result.get("publisher", {}).get("status") != "verified":
+    raise SystemExit(f"restored signed update did not recover cleanly: {result!r}")
+PY
+
+  printf 'phase5: signed-to-unsigned policy refusal and signed recovery passed\n'
+}
+
 run_process_negative_lifecycle() {
   local origin="$1"
   local publisher_id="$2"
@@ -855,6 +914,7 @@ PY
   "$phase5_bin_dir/cpak" system reputation-provider-clear \
     --fingerprint "$provider_key" --yes
   run_reputation_outage_matrix "$origin" "$publisher_id" "$image_digest"
+  run_signed_to_unsigned_lifecycle "$origin" "$image_digest"
   "$phase5_bin_dir/cpak" system reputation-provider-clear \
     --fingerprint "$provider_key" --yes
   kill "$fixture_pid"
@@ -989,7 +1049,7 @@ PY
 
   "$phase5_bin_dir/cpak" system reputation-provider-set "$phase5_dir/reputation-provider.json" \
     --fingerprint "$provider_key" --yes
-  import_reputation_status 4 established "$publisher_id"
+  import_reputation_status 8 established "$publisher_id"
   python3 - "$phase5_dir/trust-policy-sigstore.json" "$publisher_id" <<'PY'
 import json
 import pathlib

@@ -238,6 +238,63 @@ func TestRegistryPublishesOnlyTheSelectedSigstoreProfile(t *testing.T) {
 	}
 }
 
+func TestRegistryUnsignedControlIsImmediateAndFailsClosed(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, "generation"), []byte("3\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "state-3.cms"), []byte("CMS evidence"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	server, err := newFixture(directory, []byte("fixture executable"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := func(artifactType string) *httptest.ResponseRecorder {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		server.serveRegistry(recorder, httptest.NewRequest(
+			http.MethodGet,
+			"/v2/"+repository+"/referrers/"+server.imageDigest+"?artifactType="+url.QueryEscape(artifactType),
+			nil,
+		))
+		return recorder
+	}
+	manifestCount := func(recorder *httptest.ResponseRecorder) int {
+		t.Helper()
+		var index struct {
+			Manifests []descriptor `json:"manifests"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &index); err != nil {
+			t.Fatal(err)
+		}
+		return len(index.Manifests)
+	}
+
+	marker := filepath.Join(directory, unsignedMarker)
+	if err := os.WriteFile(marker, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if recorder := request(x509ArtifactType); recorder.Code != http.StatusOK || manifestCount(recorder) != 0 {
+		t.Fatalf("unsigned referrers response = %d %q", recorder.Code, recorder.Body.String())
+	}
+	if recorder := request(sigstoreArtifactType); recorder.Code != http.StatusOK || manifestCount(recorder) != 0 {
+		t.Fatalf("unselected profile changed under unsigned control = %d %q", recorder.Code, recorder.Body.String())
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	if recorder := request(x509ArtifactType); recorder.Code != http.StatusOK || manifestCount(recorder) != 1 {
+		t.Fatalf("restored referrers response = %d %q", recorder.Code, recorder.Body.String())
+	}
+	if err := os.Mkdir(marker, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if recorder := request(x509ArtifactType); recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("invalid unsigned control did not fail closed: %d %q", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestEvidenceRejectsInvalidGenerationAndOversizedPayload(t *testing.T) {
 	directory := t.TempDir()
 	server, err := newFixture(directory, []byte("fixture executable"))

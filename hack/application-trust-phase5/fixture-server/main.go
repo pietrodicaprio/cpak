@@ -51,6 +51,7 @@ const (
 	sigstoreArtifactType          = "application/vnd.cpak.signature.v1+json"
 	sigstoreBundleMediaType       = "application/vnd.dev.sigstore.bundle.v0.3+json"
 	generationAnnotation          = "dev.cpak.signature.generation"
+	unsignedMarker                = "serve-unsigned"
 	maximumEvidenceSize     int64 = 1 << 20
 	maximumPayloadSize            = 32 << 20
 )
@@ -280,6 +281,17 @@ func (f *fixture) serveReferrers(writer http.ResponseWriter, request *http.Reque
 	}
 	manifests := []descriptor{}
 	if request.URL.Query().Get("artifactType") == f.evidenceProfile.artifactType {
+		unsigned, err := f.serveUnsigned()
+		if err != nil {
+			http.Error(writer, "evidence control unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if unsigned {
+			writeJSON(writer, imageIndexMediaType, map[string]any{
+				"schemaVersion": 2, "mediaType": imageIndexMediaType, "manifests": manifests,
+			})
+			return
+		}
 		artifact, generation, err := f.artifactManifest()
 		if err != nil {
 			http.Error(writer, "evidence unavailable", http.StatusServiceUnavailable)
@@ -294,6 +306,20 @@ func (f *fixture) serveReferrers(writer http.ResponseWriter, request *http.Reque
 	writeJSON(writer, imageIndexMediaType, map[string]any{
 		"schemaVersion": 2, "mediaType": imageIndexMediaType, "manifests": manifests,
 	})
+}
+
+func (f *fixture) serveUnsigned() (bool, error) {
+	info, err := os.Lstat(filepath.Join(f.directory, unsignedMarker))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !info.Mode().IsRegular() {
+		return false, errors.New("unsigned fixture marker is not a regular file")
+	}
+	return true, nil
 }
 
 func (f *fixture) serveOCIManifest(writer http.ResponseWriter, identifier string) {
