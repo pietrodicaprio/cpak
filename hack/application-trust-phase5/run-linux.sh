@@ -255,12 +255,46 @@ PY
     fail "the graphical test display did not become ready"
   fi
 
+  # Xvfb is a bare X server with no window manager. The builtin reputation
+  # prompt sizes and paints itself only after the first size.Event, which the
+  # shiny x11driver derives from a ConfigureNotify. A top-level window mapped at
+  # its final size with no WM never gets that reconfiguration, so the dialog
+  # stays zero-sized and the click hit-tests against an empty layout. A
+  # reparenting WM reconfigures the mapped window and delivers the size.Event.
+  DISPLAY="$display_number" openbox --sm-disable \
+    >"$phase5_dir/openbox.log" 2>&1 &
+  wm_pid=$!
+  for _ in {1..100}; do
+    if DISPLAY="$display_number" xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null | \
+      grep -q 'window id'; then
+      break
+    fi
+    if ! kill -0 "$wm_pid" 2>/dev/null; then
+      python3 - "$phase5_dir/openbox.log" <<'PY'
+import pathlib
+import sys
+print(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")[-4000:], file=sys.stderr)
+PY
+      fail "the graphical window manager stopped"
+    fi
+    sleep 0.1
+  done
+  if ! DISPLAY="$display_number" xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null | \
+    grep -q 'window id'; then
+    python3 - "$phase5_dir/openbox.log" <<'PY'
+import pathlib
+import sys
+print(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")[-4000:], file=sys.stderr)
+PY
+    fail "the graphical window manager did not become ready"
+  fi
+
   DISPLAY="$display_number" "$phase5_bin_dir/cpak" install \
     --branch main --yes --graphical "$origin" \
     >"$phase5_dir/install-graphical.log" 2>&1 &
   install_pid=$!
   for _ in {1..100}; do
-    window_id="$(DISPLAY="$display_number" xwininfo -root -children 2>/dev/null | \
+    window_id="$(DISPLAY="$display_number" xwininfo -root -tree 2>/dev/null | \
       awk '$1 ~ /^0x[0-9a-f]+$/ && $0 ~ /620x540/ {print $1; exit}')"
     if [[ -n "$window_id" ]]; then
       break
@@ -280,6 +314,8 @@ PY
     sleep 0.1
   done
   if kill -0 "$install_pid" 2>/dev/null; then
+    DISPLAY="$display_number" xprop -root _NET_SUPPORTING_WM_CHECK >&2 || true
+    DISPLAY="$display_number" xwininfo -root -tree >&2 || true
     kill "$install_pid" 2>/dev/null || true
     wait "$install_pid" 2>/dev/null || true
     python3 - "$phase5_dir/install-graphical.log" <<'PY'
@@ -294,6 +330,9 @@ PY
   wait "$install_pid"
   status=$?
   set -e
+  kill "$wm_pid" 2>/dev/null || true
+  wait "$wm_pid" 2>/dev/null || true
+  wm_pid=""
   kill "$xvfb_pid" 2>/dev/null || true
   wait "$xvfb_pid" 2>/dev/null || true
   xvfb_pid=""
@@ -691,10 +730,15 @@ inside_namespace() {
   unset SUDO_UID SUDO_GID SUDO_USER
   fixture_pid=""
   xvfb_pid=""
+  wm_pid=""
   cleanup_namespace() {
     if [[ -n "$fixture_pid" ]]; then
       kill "$fixture_pid" 2>/dev/null || true
       wait "$fixture_pid" 2>/dev/null || true
+    fi
+    if [[ -n "$wm_pid" ]]; then
+      kill "$wm_pid" 2>/dev/null || true
+      wait "$wm_pid" 2>/dev/null || true
     fi
     if [[ -n "$xvfb_pid" ]]; then
       kill "$xvfb_pid" 2>/dev/null || true
@@ -737,6 +781,8 @@ inside_namespace() {
   if [[ "$graphical_runtime" == "1" ]]; then
     require_command Xvfb
     require_command xwininfo
+    require_command xprop
+    require_command openbox
   elif [[ -n "$graphical_runtime" ]]; then
     fail "CPAK_PHASE5_GRAPHICAL must be empty or 1"
   fi

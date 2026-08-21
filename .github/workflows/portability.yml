@@ -122,7 +122,7 @@ jobs:
             golang:1.25.8-bookworm \
             bash -euc '
               apt-get update
-              apt-get install -y --no-install-recommends ca-certificates coreutils dbus mount opendoas python3 sudo util-linux x11-utils xvfb
+              apt-get install -y --no-install-recommends ca-certificates coreutils dbus mount openbox opendoas python3 sudo util-linux x11-utils xvfb
               useradd --create-home --uid 1000 --shell /bin/bash phase5
               install -d -o phase5 -g phase5 /opt/cpak-phase5-build
               install -d -o phase5 -g phase5 /cpak-phase5-data
