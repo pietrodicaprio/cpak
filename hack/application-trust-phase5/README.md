@@ -106,7 +106,8 @@ offline launch, service restart enforcement, privilege frontends, and the
 negative/recovery matrix described above. The isolated rerun used identical
 source and cleared a transient runner seccomp failure.
 
-The runtime harness does not build a historical cpak binary. The frozen ABI 1
-fixture and strict policy decoder prove that ABI 2 is rejected structurally at
-the current compatibility boundary; the project still needs to record whether
-AT-POL-011 requires an additional pinned pre-ABI2 executable for Phase 5.
+The runtime harness does not build a historical cpak binary. For AT-POL-011,
+the frozen ABI 1 fixture and strict policy decoder are the accepted POC evidence
+that ABI 2 is rejected structurally at the compatibility boundary. A pinned
+pre-ABI2 executable remains optional publication hardening and is not a Phase 5
+completion blocker.

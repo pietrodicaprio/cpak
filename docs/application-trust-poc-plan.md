@@ -1,8 +1,6 @@
 # Application Trust POC Implementation Plan
 
-- Status: active; Phases 0 through 4 complete, Phase 5 runtime gate complete
-  with the historical ABI 1 binary acceptance decision pending, and Phase 6
-  pending
+- Status: active; Phases 0 through 5 complete, Phase 6 pending
 - Working branch: `poc/application-trust-framework`
 - Pull request policy: no pull request is opened until the complete POC
   satisfies the Definition of Done in this document
@@ -701,12 +699,11 @@ evidence bound to a changed immutable image digest. The first attempt exposed a
 transient runner seccomp failure after the same commit's Sigstore job had
 already passed; the isolated rerun passed without changing source.
 
-The only formal Phase 5 acceptance decision still open is AT-POL-011. The
-current ABI 1 fixture and strict decoder dispatch prove that an ABI 1 decoder
-rejects an ABI 2 policy structurally rather than partially applying it. The
-project must decide whether that is sufficient POC evidence or whether Phase 5
-must additionally build and execute a pinned pre-ABI2 cpak binary against an
-ABI 2 policy. Until that choice is recorded, Phase 5 is not marked complete.
+For AT-POL-011, the project accepts the frozen ABI 1 fixture and strict decoder
+dispatch as sufficient POC evidence that an ABI 1 decoder rejects an ABI 2
+policy structurally rather than partially applying it. Building and executing
+a pinned pre-ABI2 cpak binary remains optional publication hardening and is not
+a Phase 5 completion blocker. Phase 5 is complete.
 
 ### Phase 6: Publication package and final certification
 
