@@ -1105,6 +1105,9 @@ func signedEnrolmentRequestOverBus(enrolment Enrolment, confirmation string) err
 	if confirmationErr := decodeReputationConfirmationError(call.Err); confirmationErr != nil {
 		return confirmationErr
 	}
+	if refusalErr := decodeReputationRefusalError(call.Err); refusalErr != nil {
+		return refusalErr
+	}
 	if unreachableOnBus(call.Err) {
 		return errTransportUnavailable
 	}
@@ -1150,6 +1153,54 @@ func decodeReputationConfirmationError(err error) error {
 	return &ReputationConfirmationRequiredError{
 		Result: wire.Result, Decision: wire.Decision, SignatureMode: wire.SignatureMode,
 		ReputationMode: wire.ReputationMode, Token: token,
+	}
+}
+
+func decodeReputationRefusalError(err error) error {
+	var busErr *dbus.Error
+	if !errors.As(err, &busErr) || busErr.Name != reputationRefusedErrorName || len(busErr.Body) != 1 {
+		return nil
+	}
+	document, ok := busErr.Body[0].(string)
+	if !ok || len(document) > 4096 {
+		return errors.New("system authority returned an invalid reputation refusal")
+	}
+	if err := signature.RejectDuplicateJSONKeys([]byte(document)); err != nil {
+		return errors.New("system authority returned an invalid reputation refusal")
+	}
+	decoder := json.NewDecoder(strings.NewReader(document))
+	decoder.DisallowUnknownFields()
+	wire := reputationConfirmationWire{}
+	if err := decoder.Decode(&wire); err != nil {
+		return errors.New("system authority returned an invalid reputation refusal")
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return errors.New("system authority returned an invalid reputation refusal")
+	}
+	if err := wire.Result.Validate(); err != nil {
+		return errors.New("system authority returned an invalid reputation refusal")
+	}
+	if err := wire.Decision.Validate(); err != nil || wire.Decision.Action != trustpolicy.ActionDeny || wire.Decision.Allowed {
+		return errors.New("system authority returned an invalid reputation refusal")
+	}
+	if !wire.SignatureMode.valid() {
+		return errors.New("system authority returned an invalid reputation refusal")
+	}
+	switch wire.ReputationMode {
+	case trustpolicy.ReputationWarn:
+		if wire.Result.Status != reputation.Blocked {
+			return errors.New("system authority returned an invalid reputation refusal")
+		}
+	case trustpolicy.ReputationRequireEstablished:
+		if wire.Result.Status == reputation.Established {
+			return errors.New("system authority returned an invalid reputation refusal")
+		}
+	default:
+		return errors.New("system authority returned an invalid reputation refusal")
+	}
+	return &ReputationRefusedError{
+		Result: wire.Result, Decision: wire.Decision, SignatureMode: wire.SignatureMode,
+		ReputationMode: wire.ReputationMode,
 	}
 }
 

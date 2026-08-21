@@ -24,6 +24,7 @@ const (
 	InterfaceName = "it.cpak.SystemAuthority1"
 
 	reputationConfirmationErrorName = "it.cpak.Error.ReputationConfirmationRequired"
+	reputationRefusedErrorName      = "it.cpak.Error.ReputationRefused"
 )
 
 type Service struct {
@@ -359,6 +360,17 @@ func enrolmentFailed(err error) *dbus.Error {
 			confirmation.Token,
 			string(wire),
 		})
+	}
+	var refusal *ReputationRefusedError
+	if errors.As(err, &refusal) {
+		wire, encodeErr := json.Marshal(reputationConfirmationWire{
+			Result: refusal.Result, Decision: refusal.Decision,
+			SignatureMode: refusal.SignatureMode, ReputationMode: refusal.ReputationMode,
+		})
+		if encodeErr != nil {
+			return failed(errors.New("encode reputation refusal"))
+		}
+		return dbus.NewError(reputationRefusedErrorName, []any{string(wire)})
 	}
 	return failed(err)
 }

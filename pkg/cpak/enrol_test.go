@@ -705,6 +705,44 @@ func TestReputationWarningUsesOnlyTheDedicatedEnrolmentConfirmation(t *testing.T
 	}
 }
 
+func TestReputationRefusalPreservesTheAuthorityDecision(t *testing.T) {
+	cp := newSignatureCpak(t)
+	useEnrolmentAuthority(t)
+	registry := newSignatureRegistry()
+	digest := contentDigest([]byte("the image behind a blocked reputation result"))
+	attachSigned(t, registry, digest, 1, []byte("a verified publisher bundle"))
+	app := installedFromRegistry(t, cp, registry, digest)
+	useSignatureVerifier(t, func(_ []byte, state signature.State) (signature.Verified, error) {
+		return signature.Verified{State: state, Identity: publisherIdentity(testOrigin)}, nil
+	})
+	publisher, _ := signature.NormalizeOIDCIdentity(publisherIdentity(testOrigin))
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	refusal := &systemauthority.ReputationRefusedError{
+		SignatureMode: systemauthority.SignaturesOptional, ReputationMode: trustpolicy.ReputationWarn,
+		Result: reputation.Result{
+			ProviderID: "cpak-poc", PublisherID: publisher.ID, Status: reputation.Blocked,
+			IssuedAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour), Sequence: 5, ReasonCode: "publisher-blocked",
+		},
+		Decision: trustpolicy.ReputationDecision{Allowed: false, Action: trustpolicy.ActionDeny, ReasonCode: "publisher-blocked", Reason: "publisher reputation is blocked"},
+	}
+	recordAnchor = func(integrity.Anchor, *types.Override, *systemauthority.SignedState) error { return refusal }
+
+	enrolment := cp.EnrolPublishedApplication(app, publishedTestPackage(t))
+	if enrolment.Outcome != EnrolmentUnrecordable || enrolment.Reputation == nil || enrolment.ReputationDecision == nil ||
+		enrolment.Reputation.Status != reputation.Blocked || enrolment.ReputationMode != trustpolicy.ReputationWarn {
+		t.Fatalf("blocked enrolment lost the authority decision: %+v", enrolment)
+	}
+	result, err := enrolment.applicationTrustResultAt(applicationtrust.OperationInstall, applicationtrust.ContextNonInteractive, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Reputation.Status != string(reputation.Blocked) || result.Policy.ReputationMode != string(trustpolicy.ReputationWarn) ||
+		result.Policy.Action != applicationtrust.PolicyDeny || result.Final.Action != applicationtrust.FinalDeny ||
+		result.Final.ExitCode != applicationtrust.ExitDenied || result.Final.ReasonCode != "publisher-blocked" {
+		t.Fatalf("blocked portable result=%+v", result)
+	}
+}
+
 func TestChangedReputationWarningRequiresANewConfirmation(t *testing.T) {
 	cp := newSignatureCpak(t)
 	useEnrolmentAuthority(t)

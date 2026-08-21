@@ -452,6 +452,13 @@ func (c *Cpak) enrolApplication(app types.Application, published PublishedPackag
 			}
 			err = confirmationFailure
 		}
+		var reputationRefusal *systemauthority.ReputationRefusedError
+		if errors.As(err, &reputationRefusal) {
+			enrolment.Reputation = &reputationRefusal.Result
+			enrolment.ReputationDecision = &reputationRefusal.Decision
+			enrolment.SignatureMode = reputationRefusal.SignatureMode
+			enrolment.ReputationMode = reputationRefusal.ReputationMode
+		}
 		if errors.Is(err, systemauthority.ErrSignatureRequired) {
 			return unsignedEnrolment(enrolment, err)
 		}
