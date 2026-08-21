@@ -131,3 +131,54 @@ jobs:
               runuser -u phase5 -- env GOFLAGS=-buildvcs=false CPAK_PHASE5_EXEC_ROOT=/opt/cpak-phase5-build CPAK_PHASE5_DATA_ROOT=/cpak-phase5-data CPAK_PHASE5_FRONTEND_USER=phase5 CPAK_PHASE5_GRAPHICAL=1 \
                 ./hack/application-trust-phase5/run-linux.sh --sudo-namespace
             '
+
+  application-trust-phase5-sigstore:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+        with:
+          cosign-release: v3.0.6
+      - run: |
+          printf '%s\n%s\n' "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL" | \
+          docker run --rm --interactive --privileged \
+            --security-opt apparmor=unconfined \
+            --security-opt seccomp=unconfined \
+            --env CPAK_PHASE5_SIGSTORE_ORIGIN="github.com/$GITHUB_REPOSITORY" \
+            --mount type=volume,destination=/cpak-phase5-data \
+            --volume "$(command -v cosign):/usr/local/bin/cosign:ro" \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            --workdir /workspace \
+            golang:1.25.8-bookworm \
+            bash -euc '
+              exec 3<&0
+              exec </dev/null
+              {
+                apt-get update
+                apt-get install -y --no-install-recommends ca-certificates coreutils dbus mount opendoas python3 sudo util-linux
+                useradd --create-home --uid 1000 --shell /bin/bash phase5
+                install -d -o phase5 -g phase5 /opt/cpak-phase5-build
+                install -d -o phase5 -g phase5 /cpak-phase5-data
+              } 3<&-
+              IFS= read -r oidc_token <&3
+              IFS= read -r oidc_url <&3
+              if IFS= read -r unexpected_oidc_input <&3; then
+                echo "phase5: unexpected multiline OIDC input" >&2
+                exit 1
+              fi
+              exec 3<&-
+              install -d -m 0700 -o phase5 -g phase5 /cpak-phase5-oidc
+              umask 077
+              printf "%s\n" "$oidc_token" >/cpak-phase5-oidc/token
+              printf "%s\n" "$oidc_url" >/cpak-phase5-oidc/url
+              oidc_token=
+              oidc_url=
+              chown phase5:phase5 /cpak-phase5-oidc/token /cpak-phase5-oidc/url
+              printf "phase5 ALL=(root) NOPASSWD: /usr/bin/unshare *\n" >/etc/sudoers.d/phase5
+              chmod 0440 /etc/sudoers.d/phase5
+              runuser -u phase5 -- env GOFLAGS=-buildvcs=false CPAK_PHASE5_EXEC_ROOT=/opt/cpak-phase5-build CPAK_PHASE5_DATA_ROOT=/cpak-phase5-data CPAK_PHASE5_FRONTEND_USER=phase5 CPAK_PHASE5_SIGSTORE_ORIGIN="$CPAK_PHASE5_SIGSTORE_ORIGIN" CPAK_PHASE5_OIDC_TOKEN_FILE=/cpak-phase5-oidc/token CPAK_PHASE5_OIDC_URL_FILE=/cpak-phase5-oidc/url \
+                ./hack/application-trust-phase5/run-linux.sh --sudo-namespace
+            '
