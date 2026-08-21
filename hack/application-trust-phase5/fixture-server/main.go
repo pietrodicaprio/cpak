@@ -52,15 +52,17 @@ const (
 	sigstoreBundleMediaType       = "application/vnd.dev.sigstore.bundle.v0.3+json"
 	generationAnnotation          = "dev.cpak.signature.generation"
 	unsignedMarker                = "serve-unsigned"
+	updatedImageMarker            = "serve-updated-image"
 	maximumEvidenceSize     int64 = 1 << 20
 	maximumPayloadSize            = 32 << 20
 )
 
 type metadata struct {
-	Origin      string `json:"origin"`
-	Image       string `json:"image"`
-	ImageDigest string `json:"image_digest"`
-	TLSRoot     string `json:"tls_root"`
+	Origin             string `json:"origin"`
+	Image              string `json:"image"`
+	ImageDigest        string `json:"image_digest"`
+	UpdatedImageDigest string `json:"updated_image_digest"`
+	TLSRoot            string `json:"tls_root"`
 }
 
 type descriptor struct {
@@ -83,6 +85,8 @@ type fixture struct {
 	layerDigest     string
 	imageManifest   []byte
 	imageDigest     string
+	updatedManifest []byte
+	updatedDigest   string
 	emptyConfig     []byte
 	emptyConfigHash string
 }
@@ -134,7 +138,7 @@ func main() {
 
 	if err = writeMetadata(*directory, metadata{
 		Origin: server.origin, Image: registryListener.Addr().String() + "/" + repository + ":main",
-		ImageDigest: server.imageDigest, TLSRoot: rootPath,
+		ImageDigest: server.imageDigest, UpdatedImageDigest: server.updatedDigest, TLSRoot: rootPath,
 	}); err != nil {
 		manifestListener.Close()
 		registryListener.Close()
@@ -176,14 +180,20 @@ func newFixture(directory string, payload []byte) (*fixture, error) {
 	}
 	configDigest := digest(config)
 	layerDigest := digest(layer)
-	manifest, err := json.Marshal(map[string]any{
+	image := map[string]any{
 		"schemaVersion": 2,
 		"mediaType":     imageManifestMediaType,
 		"config":        descriptor{MediaType: "application/vnd.oci.image.config.v1+json", Digest: configDigest, Size: len(config)},
 		"layers":        []descriptor{{MediaType: imageLayerMediaType, Digest: layerDigest, Size: len(layer)}},
-	})
+	}
+	manifest, err := json.Marshal(image)
 	if err != nil {
 		return nil, fmt.Errorf("encode image manifest: %w", err)
+	}
+	image["annotations"] = map[string]string{"dev.cpak.fixture.revision": "2"}
+	updatedManifest, err := json.Marshal(image)
+	if err != nil {
+		return nil, fmt.Errorf("encode updated image manifest: %w", err)
 	}
 	empty := []byte("{}")
 	return &fixture{
@@ -193,6 +203,7 @@ func newFixture(directory string, payload []byte) (*fixture, error) {
 		config:          config, configDigest: configDigest,
 		layer: layer, layerDigest: layerDigest,
 		imageManifest: manifest, imageDigest: digest(manifest),
+		updatedManifest: updatedManifest, updatedDigest: digest(updatedManifest),
 		emptyConfig: empty, emptyConfigHash: digest(empty),
 	}, nil
 }
@@ -275,7 +286,12 @@ func (f *fixture) serveRegistry(writer http.ResponseWriter, request *http.Reques
 }
 
 func (f *fixture) serveReferrers(writer http.ResponseWriter, request *http.Request, subject string) {
-	if subject != f.imageDigest {
+	imageManifest, imageDigest, err := f.selectedImage()
+	if err != nil {
+		http.Error(writer, "image control unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if subject != imageDigest {
 		http.NotFound(writer, request)
 		return
 	}
@@ -292,7 +308,7 @@ func (f *fixture) serveReferrers(writer http.ResponseWriter, request *http.Reque
 			})
 			return
 		}
-		artifact, generation, err := f.artifactManifest()
+		artifact, generation, err := f.artifactManifest(imageManifest, imageDigest)
 		if err != nil {
 			http.Error(writer, "evidence unavailable", http.StatusServiceUnavailable)
 			return
@@ -323,11 +339,29 @@ func (f *fixture) serveUnsigned() (bool, error) {
 }
 
 func (f *fixture) serveOCIManifest(writer http.ResponseWriter, identifier string) {
-	if identifier == "main" || identifier == f.imageDigest {
+	if identifier == "main" {
+		manifest, manifestDigest, err := f.selectedImage()
+		if err != nil {
+			http.Error(writer, "image control unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		writeManifest(writer, manifest, manifestDigest)
+		return
+	}
+	if identifier == f.imageDigest {
 		writeManifest(writer, f.imageManifest, f.imageDigest)
 		return
 	}
-	artifact, _, err := f.artifactManifest()
+	if identifier == f.updatedDigest {
+		writeManifest(writer, f.updatedManifest, f.updatedDigest)
+		return
+	}
+	imageManifest, imageDigest, err := f.selectedImage()
+	if err != nil {
+		http.Error(writer, "image control unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	artifact, _, err := f.artifactManifest(imageManifest, imageDigest)
 	if err == nil && identifier == digest(artifact) {
 		writeManifest(writer, artifact, identifier)
 		return
@@ -357,7 +391,7 @@ func (f *fixture) serveBlob(writer http.ResponseWriter, identifier string) {
 	http.Error(writer, "not found", http.StatusNotFound)
 }
 
-func (f *fixture) artifactManifest() ([]byte, uint64, error) {
+func (f *fixture) artifactManifest(imageManifest []byte, imageDigest string) ([]byte, uint64, error) {
 	payload, generation, err := f.evidence()
 	if err != nil {
 		return nil, 0, err
@@ -366,9 +400,23 @@ func (f *fixture) artifactManifest() ([]byte, uint64, error) {
 		"schemaVersion": 2, "mediaType": imageManifestMediaType, "artifactType": f.evidenceProfile.artifactType,
 		"config":  descriptor{MediaType: emptyConfigMediaType, Digest: f.emptyConfigHash, Size: len(f.emptyConfig)},
 		"layers":  []descriptor{{MediaType: f.evidenceProfile.mediaType, Digest: digest(payload), Size: len(payload)}},
-		"subject": descriptor{MediaType: imageManifestMediaType, Digest: f.imageDigest, Size: len(f.imageManifest)},
+		"subject": descriptor{MediaType: imageManifestMediaType, Digest: imageDigest, Size: len(imageManifest)},
 	})
 	return manifest, generation, err
+}
+
+func (f *fixture) selectedImage() ([]byte, string, error) {
+	info, err := os.Lstat(filepath.Join(f.directory, updatedImageMarker))
+	if errors.Is(err, os.ErrNotExist) {
+		return f.imageManifest, f.imageDigest, nil
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, "", errors.New("updated image fixture marker is not a regular file")
+	}
+	return f.updatedManifest, f.updatedDigest, nil
 }
 
 func (f *fixture) evidence() ([]byte, uint64, error) {
