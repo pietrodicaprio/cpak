@@ -66,6 +66,30 @@ func TestReputationConfirmationCrossesDBusAsValidatedStructuredData(t *testing.T
 	}
 }
 
+func TestReputationRefusalCrossesDBusAsValidatedStructuredData(t *testing.T) {
+	result := authorityReputationResult(testNormalizedPublisher(t).ID, reputation.Blocked)
+	decision := trustpolicy.ReputationDecision{Allowed: false, Action: trustpolicy.ActionDeny, ReasonCode: "publisher-blocked", Reason: "publisher reputation is blocked"}
+	local := &ReputationRefusedError{
+		Result: result, Decision: decision, SignatureMode: SignaturesRequired,
+		ReputationMode: trustpolicy.ReputationWarn,
+	}
+	decoded := decodeReputationRefusalError(enrolmentFailed(local))
+	var remote *ReputationRefusedError
+	if !errors.As(decoded, &remote) || !errors.Is(decoded, ErrTrustRefused) || remote.Result.Status != result.Status ||
+		remote.Decision.Action != trustpolicy.ActionDeny || remote.SignatureMode != local.SignatureMode || remote.ReputationMode != local.ReputationMode {
+		t.Fatalf("decoded refusal = %#v", decoded)
+	}
+
+	invalid := dbus.NewError(reputationRefusedErrorName, []any{`{"result":{"status":"blocked"},"unexpected":true}`})
+	if err := decodeReputationRefusalError(invalid); err == nil || errors.Is(err, ErrTrustRefused) {
+		t.Fatalf("invalid authority response was accepted: %v", err)
+	}
+	local.ReputationMode = trustpolicy.ReputationAudit
+	if err := decodeReputationRefusalError(enrolmentFailed(local)); err == nil || errors.Is(err, ErrTrustRefused) {
+		t.Fatalf("an impossible audit-mode refusal was accepted: %v", err)
+	}
+}
+
 func TestReputationConfirmationExpiresAndCannotMoveToAnotherEnrolment(t *testing.T) {
 	store := &reputationConfirmationStore{random: deterministicConfirmationRandom}
 	enrolment := Enrolment{Anchor: testAnchor(), Signature: testSignedState(1)}

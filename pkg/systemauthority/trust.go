@@ -70,6 +70,25 @@ func (e *ReputationConfirmationRequiredError) Unwrap() error {
 	return ErrReputationConfirmationRequired
 }
 
+// ReputationRefusedError carries the authority-evaluated provider result and
+// the policy decision that refused an enrolment. Callers need those facts to emit
+// the same portable decision as the authority instead of reconstructing a
+// generic administrator denial after the privilege boundary.
+type ReputationRefusedError struct {
+	Result         reputation.Result
+	Decision       trustpolicy.ReputationDecision
+	SignatureMode  SignaturePolicy
+	ReputationMode trustpolicy.ReputationMode
+}
+
+func (e *ReputationRefusedError) Error() string {
+	return fmt.Sprintf("%s: %s", ErrTrustRefused, e.Decision.Reason)
+}
+
+func (e *ReputationRefusedError) Unwrap() error {
+	return ErrTrustRefused
+}
+
 // verifyApproval is the counter-signature check, and it is deliberately not
 // implemented here. What it has to prove is that an identity other than the
 // publisher signed the exact state this enrolment records, which is the origin,
@@ -296,7 +315,10 @@ func (l AnchorLedger) admitReputation(policy trustpolicy.Policy, enrolment *Enro
 		}
 	}
 	if !decision.Allowed {
-		return fmt.Errorf("%w: %s", ErrTrustRefused, decision.Reason)
+		return &ReputationRefusedError{
+			Result: result, Decision: decision, SignatureMode: enrolment.SignatureMode,
+			ReputationMode: enrolment.ReputationMode,
+		}
 	}
 	enrolment.Reputation = &result
 	enrolment.ReputationDecision = &decision
