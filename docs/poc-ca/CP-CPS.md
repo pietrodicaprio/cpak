@@ -62,9 +62,12 @@ the CMS or signed-state formats.
 ## Issuance, revocation, and expiry
 
 The POC tool performs local issuance only; it exposes no enrolment protocol or
-network service. The generated CRL is an empty test CRL valid for seven days.
-No OCSP responder exists. Revocation is evaluated only from administrator-
-supplied offline CRLs according to cpak policy.
+network service. It generates an empty test CRL valid for seven days and a
+separate, clearly named negative-test CRL that revokes exactly the disposable
+publisher leaf. The latter exists only to demonstrate fail-closed revocation
+and must not be installed as ordinary trust material. No OCSP responder exists.
+Revocation is evaluated only from administrator-supplied offline CRLs according
+to cpak policy.
 
 The POC does not implement certificate renewal, compromise response, audit-log
 retention, subscriber identity proofing, or production key ceremonies. A

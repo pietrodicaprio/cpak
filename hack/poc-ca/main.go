@@ -147,6 +147,13 @@ func run(arguments []string, now time.Time) error {
 	if err = writePEM(filepath.Join(*output, "publisher.crl.pem"), "X509 CRL", crl, 0o644); err != nil {
 		return err
 	}
+	revokedCRL, err := revokedPublisherCRL(now, codeCA, publisher.certificate)
+	if err != nil {
+		return err
+	}
+	if err = writePEM(filepath.Join(*output, "publisher-revoked.crl.pem"), "X509 CRL", revokedCRL, 0o644); err != nil {
+		return err
+	}
 
 	fingerprints := make(map[string]string, len(certificates))
 	for name, certificate := range certificates {
@@ -251,11 +258,30 @@ func create(template, parent *x509.Certificate, public any, signer crypto.Signer
 	return issued{certificate: certificate}, nil
 }
 
-func emptyCRL(now time.Time, issuer issued) ([]byte, error) {
+// reasonKeyCompromise is the RFC 5280 CRL entry reason code marking a revoked
+// certificate's key as compromised.
+const reasonKeyCompromise = 1
+
+func signCRL(now time.Time, issuer issued, number *big.Int, entries []x509.RevocationListEntry) ([]byte, error) {
 	return x509.CreateRevocationList(rand.Reader, &x509.RevocationList{
-		SignatureAlgorithm: issuer.certificate.SignatureAlgorithm,
-		Number:             big.NewInt(1), ThisUpdate: now.Add(-5 * time.Minute), NextUpdate: now.Add(7 * 24 * time.Hour),
+		SignatureAlgorithm:        issuer.certificate.SignatureAlgorithm,
+		Number:                    number,
+		ThisUpdate:                now.Add(-5 * time.Minute),
+		NextUpdate:                now.Add(7 * 24 * time.Hour),
+		RevokedCertificateEntries: entries,
 	}, issuer.certificate, issuer.key)
+}
+
+func emptyCRL(now time.Time, issuer issued) ([]byte, error) {
+	return signCRL(now, issuer, big.NewInt(1), nil)
+}
+
+func revokedPublisherCRL(now time.Time, issuer issued, publisher *x509.Certificate) ([]byte, error) {
+	return signCRL(now, issuer, big.NewInt(2), []x509.RevocationListEntry{{
+		SerialNumber:   publisher.SerialNumber,
+		RevocationTime: now.Add(-1 * time.Minute),
+		ReasonCode:     reasonKeyCompromise,
+	}})
 }
 
 func serialNumber() (*big.Int, error) {

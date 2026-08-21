@@ -70,8 +70,23 @@ func TestGeneratedProfilesSeparateRootIntermediatePublisherAndTSA(t *testing.T) 
 			t.Fatalf("decrypt %s: %v", name, err)
 		}
 	}
-	if _, err := x509.ParseRevocationList(readPEM(t, filepath.Join(output, "publisher.crl.pem"), "X509 CRL")); err != nil {
+	empty, err := x509.ParseRevocationList(readPEM(t, filepath.Join(output, "publisher.crl.pem"), "X509 CRL"))
+	if err != nil {
 		t.Fatalf("parse generated CRL: %v", err)
+	}
+	if empty.Number.Int64() != 1 || len(empty.RevokedCertificateEntries) != 0 || empty.CheckSignatureFrom(codeCA) != nil {
+		t.Fatalf("empty publisher CRL = %+v", empty)
+	}
+	revoked, err := x509.ParseRevocationList(readPEM(t, filepath.Join(output, "publisher-revoked.crl.pem"), "X509 CRL"))
+	if err != nil {
+		t.Fatalf("parse generated revoked CRL: %v", err)
+	}
+	if revoked.Number.Int64() != 2 || len(revoked.RevokedCertificateEntries) != 1 || revoked.CheckSignatureFrom(codeCA) != nil {
+		t.Fatalf("revoked publisher CRL = %+v", revoked)
+	}
+	entry := revoked.RevokedCertificateEntries[0]
+	if entry.SerialNumber.Cmp(publisher.SerialNumber) != 0 || !entry.RevocationTime.Equal(now.Add(-time.Minute)) || entry.ReasonCode != reasonKeyCompromise {
+		t.Fatalf("revoked publisher entry = %+v", entry)
 	}
 }
 
