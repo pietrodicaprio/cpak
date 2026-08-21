@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/x509"
 	"encoding/pem"
 	"os"
@@ -29,6 +30,7 @@ func TestGeneratedProfilesSeparateRootIntermediatePublisherAndTSA(t *testing.T) 
 	root := readCertificate(t, filepath.Join(output, "root.pem"))
 	codeCA := readCertificate(t, filepath.Join(output, "code-signing-intermediate.pem"))
 	publisher := readCertificate(t, filepath.Join(output, "publisher.pem"))
+	publisherRotated := readCertificate(t, filepath.Join(output, "publisher-rotated.pem"))
 	timestampCA := readCertificate(t, filepath.Join(output, "timestamping-intermediate.pem"))
 	tsa := readCertificate(t, filepath.Join(output, "tsa.pem"))
 
@@ -50,7 +52,17 @@ func TestGeneratedProfilesSeparateRootIntermediatePublisherAndTSA(t *testing.T) 
 	if publisher.CheckSignatureFrom(root) == nil {
 		t.Fatal("publisher was signed directly by the root")
 	}
-	for _, name := range []string{"root-key.pem", "code-signing-intermediate-key.pem", "timestamping-intermediate-key.pem", "publisher-key.pem", "tsa-key.pem"} {
+	if publisherRotated.IsCA || publisherRotated.KeyUsage != x509.KeyUsageDigitalSignature || len(publisherRotated.ExtKeyUsage) != 1 || publisherRotated.ExtKeyUsage[0] != x509.ExtKeyUsageCodeSigning || publisherRotated.CheckSignatureFrom(codeCA) != nil {
+		t.Fatalf("rotated publisher profile = %+v", publisherRotated)
+	}
+	if bytes.Equal(publisherRotated.RawSubjectPublicKeyInfo, publisher.RawSubjectPublicKeyInfo) || publisherRotated.SerialNumber.Cmp(publisher.SerialNumber) == 0 {
+		t.Fatal("rotated publisher shares a key or serial with the original publisher")
+	}
+	rotatedChain := readCertificate(t, filepath.Join(output, "publisher-rotated-chain.pem"))
+	if !bytes.Equal(rotatedChain.Raw, codeCA.Raw) {
+		t.Fatalf("rotated publisher chain = %+v", rotatedChain)
+	}
+	for _, name := range []string{"root-key.pem", "code-signing-intermediate-key.pem", "timestamping-intermediate-key.pem", "publisher-key.pem", "publisher-rotated-key.pem", "tsa-key.pem"} {
 		info, err := os.Stat(filepath.Join(output, name))
 		if err != nil {
 			t.Fatal(err)
