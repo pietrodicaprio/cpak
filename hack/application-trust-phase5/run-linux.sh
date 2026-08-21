@@ -269,6 +269,12 @@ run_graphical_enrolment() {
   if kill -0 "$install_pid" 2>/dev/null; then
     kill "$install_pid" 2>/dev/null || true
     wait "$install_pid" 2>/dev/null || true
+    python3 - "$phase5_dir/install-graphical.log" <<'PY'
+import pathlib
+import sys
+
+print(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")[-4000:], file=sys.stderr)
+PY
     fail "the graphical enrolment did not finish after confirmation"
   fi
   set +e
