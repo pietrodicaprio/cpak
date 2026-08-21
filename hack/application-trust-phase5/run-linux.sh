@@ -101,6 +101,54 @@ if final.get("action") != expected_action or not final.get("reason_code"):
 PY
 }
 
+assert_human_trust_projection() {
+  local machine_output="$1"
+  local human_output="$2"
+  local actual_status="$3"
+  python3 - "$machine_output" "$human_output" "$actual_status" <<'PY'
+import json
+import pathlib
+import sys
+
+machine = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+human = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8", errors="replace")
+actual_status = int(sys.argv[3])
+result = machine.get("trust", [{}])[0]
+final = result.get("final", {})
+if actual_status != final.get("exit_code"):
+    raise SystemExit(
+        f"human/JSON exit disagreement: human={actual_status}, JSON={final.get('exit_code')!r}"
+    )
+
+markers = (
+    "Application trust for ",
+    "Publisher:",
+    "Evidence:",
+    "Trust:",
+    "Reputation:",
+    "Policy:",
+)
+lines = [line for line in human.splitlines() if any(marker in line for marker in markers)]
+for marker in markers:
+    matching = [line for line in lines if marker in line]
+    if len(matching) != 1:
+        raise SystemExit(f"human projection has {len(matching)} lines for {marker!r}: {lines!r}")
+projection = "\n".join(lines)
+for expected in (str(final.get("action", "")), str(final.get("reason_code", ""))):
+    if not expected or expected not in projection:
+        raise SystemExit(f"human projection omitted final value {expected!r}: {projection!r}")
+if "\x00" in projection or "\x1b" in projection:
+    raise SystemExit(f"human projection contains terminal controls: {projection!r}")
+lower = projection.lower()
+for forbidden in ("software is safe", "application is safe", "trusted application", "trusted publisher"):
+    if forbidden in lower:
+        raise SystemExit(f"human projection makes a positive safety claim {forbidden!r}: {projection!r}")
+for line in lines:
+    if len(line.encode("utf-8")) > 1024:
+        raise SystemExit(f"human projection line is unbounded: {len(line.encode('utf-8'))} bytes")
+PY
+}
+
 verify_x509() {
   local expected_status="$1"
   local expected_action="$2"
@@ -999,6 +1047,14 @@ PY
   set -e
   assert_trust_envelope 23 confirmation-required non-interactive install \
     "$phase5_dir/install-non-interactive.json" "$status"
+
+  set +e
+  timeout 20 "$phase5_bin_dir/cpak" install --branch main --yes --non-interactive "$origin" \
+    </dev/null >"$phase5_dir/install-non-interactive-human.log" 2>&1
+  status=$?
+  set -e
+  assert_human_trust_projection "$phase5_dir/install-non-interactive.json" \
+    "$phase5_dir/install-non-interactive-human.log" "$status"
 
   if [[ "$graphical_runtime" == "1" ]]; then
     run_graphical_enrolment "$origin"
