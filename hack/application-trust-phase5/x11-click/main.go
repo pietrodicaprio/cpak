@@ -6,9 +6,11 @@ import (
 	"math"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/jezek/xgb"
 	"github.com/jezek/xgb/xproto"
+	"github.com/jezek/xgb/xtest"
 )
 
 func main() {
@@ -41,41 +43,51 @@ func main() {
 	if x >= int(geometry.Width) || y >= int(geometry.Height) {
 		exitf("coordinates %d,%d are outside %dx%d window", x, y, geometry.Width, geometry.Height)
 	}
+	for attempt := 0; ; attempt++ {
+		attributes, attributeErr := xproto.GetWindowAttributes(connection, window).Reply()
+		if attributeErr != nil {
+			exitf("read window attributes: %v", attributeErr)
+		}
+		if attributes.MapState == xproto.MapStateViewable {
+			break
+		}
+		if attempt == 99 {
+			exitf("window did not become viewable")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	setup := xproto.Setup(connection)
 	root := setup.DefaultScreen(connection).Root
-	translated, err := xproto.TranslateCoordinates(connection, window, root, 0, 0).Reply()
+	if err := xtest.Init(connection); err != nil {
+		exitf("initialize XTEST: %v", err)
+	}
+	if err := xproto.WarpPointerChecked(
+		connection, xproto.WindowNone, window, 0, 0, 0, 0, int16(x), int16(y),
+	).Check(); err != nil {
+		exitf("move pointer into window: %v", err)
+	}
+	pointer, err := xproto.QueryPointer(connection, window).Reply()
 	if err != nil {
-		exitf("translate window coordinates: %v", err)
+		exitf("query pointer position: %v", err)
 	}
-
-	press := xproto.ButtonPressEvent{
-		Detail:     1,
-		Time:       xproto.TimeCurrentTime,
-		Root:       root,
-		Event:      window,
-		RootX:      translated.DstX + int16(x),
-		RootY:      translated.DstY + int16(y),
-		EventX:     int16(x),
-		EventY:     int16(y),
-		SameScreen: true,
+	if !pointer.SameScreen || pointer.WinX != int16(x) || pointer.WinY != int16(y) {
+		exitf("pointer reached %d,%d instead of %d,%d", pointer.WinX, pointer.WinY, x, y)
 	}
-	// A zero event mask sends to the client that created this exact window.
-	// Selecting by mask can choose a different client when a frame helper has
-	// also inspected the window on the disposable display.
-	if err := xproto.SendEventChecked(
-		connection, false, window, 0, string(press.Bytes()),
+	if err := xtest.FakeInputChecked(
+		connection, xproto.ButtonPress, 1, xproto.TimeCurrentTime,
+		root, pointer.RootX, pointer.RootY, 0,
 	).Check(); err != nil {
-		exitf("send button press: %v", err)
+		exitf("press button through XTEST: %v", err)
 	}
-
-	release := xproto.ButtonReleaseEvent(press)
-	if err := xproto.SendEventChecked(
-		connection, false, window, 0, string(release.Bytes()),
+	if err := xtest.FakeInputChecked(
+		connection, xproto.ButtonRelease, 1, xproto.TimeCurrentTime,
+		root, pointer.RootX, pointer.RootY, 0,
 	).Check(); err != nil {
-		exitf("send button release: %v", err)
+		exitf("release button through XTEST: %v", err)
 	}
 	connection.Sync()
+	fmt.Printf("x11-click: delivered verified pointer input to window %s at %d,%d\n", windowText, x, y)
 }
 
 func exitf(format string, arguments ...any) {
