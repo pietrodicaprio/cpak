@@ -699,11 +699,14 @@ evidence bound to a changed immutable image digest. The first attempt exposed a
 transient runner seccomp failure after the same commit's Sigstore job had
 already passed; the isolated rerun passed without changing source.
 
-For AT-POL-011, the project accepts the frozen ABI 1 fixture and strict decoder
-dispatch as sufficient POC evidence that an ABI 1 decoder rejects an ABI 2
-policy structurally rather than partially applying it. Building and executing
-a pinned pre-ABI2 cpak binary remains optional publication hardening and is not
-a Phase 5 completion blocker. Phase 5 is complete.
+The POC trust-policy ABI is ABI 2. Every operational policy in the Phase 5
+lifecycle uses `"abi": 2`, including the X.509/CMS, Sigstore, reputation-mode,
+administrator-denial, key-rotation, and recovery paths. ABI 1 is retained only
+as a frozen legacy regression fixture; it is not a POC operating policy. For
+AT-POL-011, strict ABI dispatch proves that ABI 2 cannot be partially applied as
+ABI 1. Building and executing a pinned pre-ABI2 cpak binary remains optional
+compatibility hardening and is not a Phase 5 completion blocker. Phase 5 is
+complete.
 
 ### Phase 6: Publication package and final certification
 
