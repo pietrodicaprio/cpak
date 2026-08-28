@@ -79,7 +79,7 @@ func TestReadPayloadRequiresABoundedExecutableELF(t *testing.T) {
 
 func TestManifestEndpointServesOnlyTheFixtureManifest(t *testing.T) {
 	directory := t.TempDir()
-	want := []byte(`{"manifest_version":"2.0"}`)
+	want := []byte(`{"manifest_version":"3.0"}`)
 	if err := os.WriteFile(filepath.Join(directory, "cpak.json"), want, 0600); err != nil {
 		t.Fatal(err)
 	}

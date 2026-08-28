@@ -5,8 +5,10 @@
 package cpak
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -28,7 +30,6 @@ import (
 	"github.com/mirkobrombin/cpak/pkg/oci"
 	"github.com/mirkobrombin/cpak/pkg/runtimeproto"
 	"github.com/mirkobrombin/cpak/pkg/systembroker"
-	"github.com/mirkobrombin/cpak/pkg/tools"
 	"github.com/mirkobrombin/cpak/pkg/types"
 	"golang.org/x/sys/unix"
 )
@@ -112,7 +113,7 @@ func (c *Cpak) prepareContainer(app types.Application, policy launchPolicy, scop
 	if err != nil {
 		return types.Container{}, err
 	}
-	policyHash, err := containerLaunchPolicyHash(containerRuntimePolicyVersion, identity.LaunchRoot, override, components, addons)
+	policyHash, err := containerLaunchPolicyHash(containerRuntimeVersion(instance), identity.LaunchRoot, override, components, addons)
 	if err != nil {
 		return types.Container{}, err
 	}
@@ -137,10 +138,7 @@ func (c *Cpak) prepareContainer(app types.Application, policy launchPolicy, scop
 
 		// If the container is not running, we clean it up and create a new one
 		// by escaping the if statement
-		if container.PolicyHash != policyHash || !containerProcessRunning(container) || !containerDesktopBusAlive(container) || !c.containerLayerMountAlive(container) {
-			container.Pid, err = getPidFromEnvContainerId(container.CpakId)
-		}
-		if container.PolicyHash != policyHash || !containerProcessRunning(container) || !containerDesktopBusAlive(container) || !c.containerLayerMountAlive(container) {
+		if container.PolicyHash != policyHash || !containerProcessRunning(container) || !containerDesktopBusAlive(container) || !containerBluetoothBusAlive(container) || !containerX11BridgeAlive(container) || !c.containerLayerMountAlive(container) {
 			logger.Println("Container cannot be reused, cleaning it up:", container.CpakId)
 			if containerProcessRunning(container) {
 				terminateContainerProcess(container)
@@ -202,6 +200,17 @@ func (c *Cpak) prepareContainer(app types.Application, policy launchPolicy, scop
 			_ = c.releaseFVSMount(container.FVSLayerMountId, container.FVSManagerSocketPath)
 		}
 	}()
+	if applicationHasNestedDependencies(app) {
+		// This capability is useful only to an application that can ask cpak to
+		// run one of its declared dependencies. Containers without one get
+		// neither a token nor the host service socket.
+		container.NestedToken, err = newNestedToken()
+		if err != nil {
+			os.RemoveAll(c.GetInStoreDir("containers", container.CpakId))
+			os.RemoveAll(container.StatePath)
+			return types.Container{}, err
+		}
+	}
 	if len(systemBrokerShims(override)) > 0 {
 		container.SystemBrokerSocketPath, container.SystemBrokerTokenPath, err = createSystemBrokerRuntime(container.StatePath)
 		if err != nil {
@@ -210,17 +219,6 @@ func (c *Cpak) prepareContainer(app types.Application, policy launchPolicy, scop
 			return types.Container{}, err
 		}
 		if err = writeSystemBrokerToken(container.SystemBrokerTokenPath); err != nil {
-			cleanupSystemBrokerRuntime(container)
-			os.RemoveAll(c.GetInStoreDir("containers", container.CpakId))
-			os.RemoveAll(container.StatePath)
-			return types.Container{}, err
-		}
-		// The capability this container presents when it asks to run one of its
-		// declared dependencies. It is minted here, beside the container it
-		// belongs to, so the service can resolve it back to this application
-		// instead of believing whatever a caller claims to be.
-		container.NestedToken, err = newNestedToken()
-		if err != nil {
 			cleanupSystemBrokerRuntime(container)
 			os.RemoveAll(c.GetInStoreDir("containers", container.CpakId))
 			os.RemoveAll(container.StatePath)
@@ -250,10 +248,53 @@ func (c *Cpak) prepareContainer(app types.Application, policy launchPolicy, scop
 		container.SystemBrokerSocketPath = ""
 		container.SystemBrokerTokenPath = ""
 	}
-	if override.FilePicker.Enabled() {
+	if override.FilePicker.Enabled() || override.SessionBus.Enabled() {
 		container.DesktopBusSocketPath = filepath.Join(container.StatePath, "desktop-bus.sock")
-		container.DesktopBusProxyPid, err = startDesktopBusProxy(container, override.SocketSessionBus)
+		container.DesktopBusProxyPid, err = startDesktopBusProxy(container, override)
 		if err != nil {
+			cleanupDesktopBusProxy(container)
+			cleanupSystemBrokerRuntime(container)
+			os.RemoveAll(c.GetInStoreDir("containers", container.CpakId))
+			os.RemoveAll(container.StatePath)
+			return types.Container{}, err
+		}
+		container.DesktopBusProxyStartTime, err = processStartTime(container.DesktopBusProxyPid)
+		if err != nil {
+			_ = syscall.Kill(container.DesktopBusProxyPid, syscall.SIGTERM)
+			cleanupDesktopBusProxy(container)
+			cleanupSystemBrokerRuntime(container)
+			os.RemoveAll(c.GetInStoreDir("containers", container.CpakId))
+			os.RemoveAll(container.StatePath)
+			return types.Container{}, fmt.Errorf("identify desktop bus proxy: %w", err)
+		}
+	}
+	if override.Bluetooth {
+		container.BluetoothBusSocketPath = filepath.Join(container.StatePath, "bluetooth-bus.sock")
+		container.BluetoothBusProxyPid, err = startBluetoothBusProxy(container)
+		if err != nil {
+			cleanupBluetoothBusProxy(container)
+			cleanupDesktopBusProxy(container)
+			cleanupSystemBrokerRuntime(container)
+			os.RemoveAll(c.GetInStoreDir("containers", container.CpakId))
+			os.RemoveAll(container.StatePath)
+			return types.Container{}, err
+		}
+		container.BluetoothBusProxyStartTime, err = processStartTime(container.BluetoothBusProxyPid)
+		if err != nil {
+			_ = syscall.Kill(container.BluetoothBusProxyPid, syscall.SIGTERM)
+			cleanupBluetoothBusProxy(container)
+			cleanupDesktopBusProxy(container)
+			cleanupSystemBrokerRuntime(container)
+			os.RemoveAll(c.GetInStoreDir("containers", container.CpakId))
+			os.RemoveAll(container.StatePath)
+			return types.Container{}, fmt.Errorf("identify Bluetooth bus proxy: %w", err)
+		}
+	}
+	if override.DisplayX11 {
+		container, err = startX11Bridge(container)
+		if err != nil {
+			cleanupX11Bridge(container)
+			cleanupBluetoothBusProxy(container)
 			cleanupDesktopBusProxy(container)
 			cleanupSystemBrokerRuntime(container)
 			os.RemoveAll(c.GetInStoreDir("containers", container.CpakId))
@@ -264,8 +305,9 @@ func (c *Cpak) prepareContainer(app types.Application, policy launchPolicy, scop
 
 	err = store.NewContainer(container)
 	if err != nil {
+		cleanupX11Bridge(container)
+		cleanupBluetoothBusProxy(container)
 		cleanupDesktopBusProxy(container)
-		stopSystemBroker(container.SystemBrokerPid)
 		cleanupSystemBrokerRuntime(container)
 		os.RemoveAll(c.GetInStoreDir("containers", container.CpakId))
 		os.RemoveAll(container.StatePath)
@@ -273,6 +315,12 @@ func (c *Cpak) prepareContainer(app types.Application, policy launchPolicy, scop
 	}
 	logger.Println("Container created:", container.CpakId)
 	if err = store.Close(); err != nil {
+		cleanupX11Bridge(container)
+		cleanupBluetoothBusProxy(container)
+		cleanupDesktopBusProxy(container)
+		cleanupSystemBrokerRuntime(container)
+		os.RemoveAll(c.GetInStoreDir("containers", container.CpakId))
+		os.RemoveAll(container.StatePath)
 		return types.Container{}, err
 	}
 	store = nil
@@ -281,6 +329,12 @@ func (c *Cpak) prepareContainer(app types.Application, policy launchPolicy, scop
 	if err != nil {
 		c.CleanupContainer(container)
 		return types.Container{}, err
+	}
+	container.ProcessStartTime, err = processStartTime(container.Pid)
+	if err != nil {
+		terminateContainerProcess(container)
+		c.CleanupContainer(container)
+		return types.Container{}, fmt.Errorf("identify container process: %w", err)
 	}
 	if override.FilePicker.Enabled() {
 		err = c.mountPersistentFileGrants(app.Origin, container)
@@ -294,7 +348,7 @@ func (c *Cpak) prepareContainer(app types.Application, policy launchPolicy, scop
 		c.CleanupContainer(container)
 		return types.Container{}, err
 	}
-	if err = store.SetContainerRuntime(container.CpakId, container.Pid, container.CgroupPath); err != nil {
+	if err = store.SetContainerRuntime(container.CpakId, container.Pid, container.ProcessStartTime, container.CgroupPath); err != nil {
 		c.CleanupContainer(container)
 		return types.Container{}, err
 	}
@@ -332,6 +386,14 @@ func (c *Cpak) lockContainerScope(scope string) (func(), error) {
 }
 
 const containerRuntimePolicyVersion = 6
+const loginSessionRuntimePolicyVersion = 7
+
+func containerRuntimeVersion(instance string) int {
+	if isSessionInstance(instance) {
+		return loginSessionRuntimePolicyVersion
+	}
+	return containerRuntimePolicyVersion
+}
 
 const openURIMimeApps = `[Default Applications]
 x-scheme-handler/http=cpak-open-uri.desktop;
@@ -380,6 +442,10 @@ func containerLaunchPolicyHash(runtimeVersion int, launchRoot string, override t
 // responsible for setting up the pivot root, mounting the layers and
 // replacing itself with the init process inside native Linux namespaces.
 func (c *Cpak) StartContainer(container types.Container, app types.Application, components, addons []types.Application, config *oci.ConfigFile, override types.Override) (rootfs string, pid int, cgroupPath string, err error) {
+	network, err := resolveUserNetwork(override.Network)
+	if err != nil {
+		return "", 0, "", err
+	}
 	if override.OpenURI {
 		if err = ensureOpenURIMimeApps(os.Environ()); err != nil {
 			return "", 0, "", err
@@ -403,6 +469,12 @@ func (c *Cpak) StartContainer(container types.Container, app types.Application, 
 	if container.DesktopBusSocketPath != "" {
 		overrideMounts = withoutMount(overrideMounts, hostSessionBusPath())
 	}
+	if container.BluetoothBusSocketPath != "" {
+		overrideMounts = withoutMount(overrideMounts, hostSystemBusPath())
+	}
+	if container.X11SocketPath != "" {
+		overrideMounts = withoutMount(overrideMounts, "/tmp/.X11-unix")
+	}
 	filesystemArgs := []string{}
 	for _, permission := range override.Filesystem {
 		encoded, encodeErr := types.EncodeFilesystemPermission(permission)
@@ -419,7 +491,6 @@ func (c *Cpak) StartContainer(container types.Container, app types.Application, 
 	}
 	cmds = append(cmds, "--user-uid", strconv.Itoa(os.Getuid()))
 	cmds = append(cmds, "--app-id", app.CpakId)
-	cmds = append(cmds, "--nested-token", container.NestedToken)
 	machineID, err := c.applicationMachineID(app.CpakId)
 	if err != nil {
 		return "", 0, "", err
@@ -458,6 +529,9 @@ func (c *Cpak) StartContainer(container types.Container, app types.Application, 
 	if override.FsHost {
 		cmds = append(cmds, "--mount-host-root")
 	}
+	if isSessionInstance(container.Instance) {
+		cmds = append(cmds, "--login-session")
+	}
 	if override.DeviceDri || override.DeviceAll {
 		cmds = append(cmds, "--nvidia")
 	}
@@ -466,6 +540,9 @@ func (c *Cpak) StartContainer(container types.Container, app types.Application, 
 	}
 	if applicationPtraceAllowed(override) {
 		cmds = append(cmds, "--allow-ptrace")
+	}
+	if network != nil {
+		cmds = append(cmds, "--nameserver", slirpNameserver)
 	}
 
 	// Mount the main cpak binary into a known location inside the container
@@ -501,6 +578,9 @@ func (c *Cpak) StartContainer(container types.Container, app types.Application, 
 		guestBusPath := hostSessionBusPath()
 		cmds = append(cmds, "--extra-links", container.DesktopBusSocketPath+":"+guestBusPath)
 	}
+	for _, link := range privateDesktopLinks(container) {
+		cmds = append(cmds, "--extra-links", link)
+	}
 	containerEnv := append([]string{}, config.Config.Env...)
 	containerEnv = append(containerEnv, override.Env...)
 	containerEnv = applyAddonEnvironment(containerEnv, addons)
@@ -525,13 +605,20 @@ func (c *Cpak) StartContainer(container types.Container, app types.Application, 
 		containerEnv = setEnvironmentValue(containerEnv, "DBUS_SESSION_BUS_ADDRESS", "unix:path="+hostSessionBusPath())
 		containerEnv = setEnvironmentValue(containerEnv, "GTK_USE_PORTAL", "1")
 	}
+	if container.BluetoothBusSocketPath != "" {
+		containerEnv = setEnvironmentValue(containerEnv, "DBUS_SYSTEM_BUS_ADDRESS", "unix:path="+hostSystemBusPath())
+	}
+	if container.X11SocketPath != "" {
+		containerEnv = setEnvironmentValue(containerEnv, "DISPLAY", container.X11Display)
+		containerEnv = setEnvironmentValue(containerEnv, "XAUTHORITY", x11AuthorityTarget)
+	}
 	containerEnv = setEnvironmentValue(containerEnv, "PATH", buildContainerPath(containerEnv))
 	for _, envVar := range containerEnv {
 		cmds = append(cmds, "--env", envVar)
 	}
 	// After the environment the package asked for, so that the address of the
 	// service is cpak's to decide and not something a publisher can name.
-	serviceSocketArgs, err := serviceSocketArguments()
+	serviceSocketArgs, err := nestedServiceArguments(app, container.NestedToken)
 	if err != nil {
 		return "", 0, "", err
 	}
@@ -552,22 +639,76 @@ func (c *Cpak) StartContainer(container types.Container, app types.Application, 
 	defer readyReader.Close()
 	defer readyWriter.Close()
 
-	cmd := nativeNamespaceCommand(cpakBinary, cmds, namespaceOptions{
-		IsolateNetwork: !override.Network,
-		ShareProcesses: override.Process,
-		IsolateCgroup:  true,
-	})
+	var networkExitReader, networkExitWriter *os.File
+	if network != nil {
+		networkExitReader, networkExitWriter, err = os.Pipe()
+		if err != nil {
+			return "", 0, "", fmt.Errorf("create network lifecycle pipe: %w", err)
+		}
+		defer networkExitReader.Close()
+		defer networkExitWriter.Close()
+	}
+
+	cmd := nativeNamespaceCommand(cpakBinary, cmds, containerNamespaceOptions(override))
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = append(os.Environ(), containerEnv...)
 	cmd.Env = append(cmd.Env, "CPAK_CONTAINER_ID="+container.CpakId)
 	cmd.ExtraFiles = []*os.File{readyWriter}
+	if networkExitWriter != nil {
+		cmd.ExtraFiles = append(cmd.ExtraFiles, networkExitWriter)
+	}
 
 	if err = cmd.Start(); err != nil {
 		return "", 0, "", fmt.Errorf("start container namespace: %w", err)
 	}
 	_ = readyWriter.Close()
+	if networkExitWriter != nil {
+		_ = networkExitWriter.Close()
+	}
+
+	var networkReady <-chan error
+	var networkExited <-chan error
+	if network != nil {
+		helperReadyReader, helperReadyWriter, pipeErr := os.Pipe()
+		if pipeErr != nil {
+			_ = cmd.Process.Kill()
+			return "", 0, "", fmt.Errorf("create network readiness pipe: %w", pipeErr)
+		}
+		helper := network.command(cmd.Process.Pid, helperReadyWriter, networkExitReader)
+		helper.Stdout = os.Stdout
+		helper.Stderr = os.Stderr
+		if err = helper.Start(); err != nil {
+			helperReadyReader.Close()
+			helperReadyWriter.Close()
+			_ = cmd.Process.Kill()
+			return "", 0, "", fmt.Errorf("start network helper: %w", err)
+		}
+		_ = helperReadyWriter.Close()
+		_ = networkExitReader.Close()
+
+		readyResult := make(chan error, 1)
+		go func() {
+			defer helperReadyReader.Close()
+			buffer := []byte{0}
+			_, readErr := io.ReadFull(helperReadyReader, buffer)
+			if readErr == nil && buffer[0] != 1 {
+				readErr = fmt.Errorf("invalid network readiness response")
+			}
+			readyResult <- readErr
+		}()
+		exitResult := make(chan error, 1)
+		go func() {
+			waitErr := helper.Wait()
+			exitResult <- waitErr
+			if syscall.Kill(cmd.Process.Pid, 0) == nil {
+				_ = cmd.Process.Kill()
+			}
+		}()
+		networkReady = readyResult
+		networkExited = exitResult
+	}
 
 	ready := make(chan error, 1)
 	go func() {
@@ -581,20 +722,40 @@ func (c *Cpak) StartContainer(container types.Container, app types.Application, 
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
 
-	select {
-	case err = <-ready:
-		if err != nil {
+	containerReady := false
+	networkIsReady := network == nil
+	timeout := time.NewTimer(20 * time.Second)
+	defer timeout.Stop()
+	for !containerReady || !networkIsReady {
+		select {
+		case err = <-ready:
+			if err != nil {
+				_ = cmd.Process.Kill()
+				return "", 0, "", fmt.Errorf("container failed before readiness: %w", err)
+			}
+			containerReady = true
+			ready = nil
+		case err = <-networkReady:
+			if err != nil {
+				_ = cmd.Process.Kill()
+				return "", 0, "", fmt.Errorf("network helper failed before readiness: %w", err)
+			}
+			networkIsReady = true
+			networkReady = nil
+		case err = <-networkExited:
+			if err == nil {
+				err = fmt.Errorf("network helper exited before readiness")
+			}
+			return "", 0, "", err
+		case err = <-exited:
+			if err == nil {
+				err = fmt.Errorf("container init exited before readiness")
+			}
+			return "", 0, "", err
+		case <-timeout.C:
 			_ = cmd.Process.Kill()
-			return "", 0, "", fmt.Errorf("container failed before readiness: %w", err)
+			return "", 0, "", fmt.Errorf("container readiness timed out")
 		}
-	case err = <-exited:
-		if err == nil {
-			err = fmt.Errorf("container init exited before readiness")
-		}
-		return "", 0, "", err
-	case <-time.After(20 * time.Second):
-		_ = cmd.Process.Kill()
-		return "", 0, "", fmt.Errorf("container readiness timed out")
 	}
 
 	pid = cmd.Process.Pid
@@ -607,6 +768,14 @@ func (c *Cpak) StartContainer(container types.Container, app types.Application, 
 		return "", 0, "", fmt.Errorf("container init is not running: %w", err)
 	}
 	return
+}
+
+func containerNamespaceOptions(override types.Override) namespaceOptions {
+	return namespaceOptions{
+		IsolateNetwork: true,
+		ShareProcesses: override.Process,
+		IsolateCgroup:  true,
+	}
 }
 
 func applicationPtraceAllowed(override types.Override) bool {
@@ -657,18 +826,15 @@ func (c *Cpak) StopContainerInstance(app types.Application, instance string) (er
 }
 
 func terminateContainerProcess(container types.Container) {
-	pid := container.Pid
-	if exact, err := getPidFromEnvContainerId(container.CpakId); err == nil {
-		pid = exact
-	}
-	if pid <= 0 || syscall.Kill(pid, 0) != nil {
+	pid, ok := verifiedContainerProcess(container)
+	if !ok {
 		return
 	}
 	logger.Println("Stopping container process:", pid)
 	_ = syscall.Kill(pid, syscall.SIGTERM)
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if !containerProcessRunning(container) {
+		if !sameContainerProcess(container, pid) {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -711,12 +877,9 @@ func (c *Cpak) StopInstance(origin, version, branch, commit, release, instance s
 // ExecInContainer submits a command to the init process already running inside
 // the container namespaces.
 func (c *Cpak) ExecInContainer(app types.Application, override types.Override, container types.Container, command []string) (err error) {
-	pidToEnter := container.Pid
-	if pidToEnter == 0 {
-		pidToEnter, err = getPidFromEnvContainerId(container.CpakId)
-		if err != nil {
-			return fmt.Errorf("container process %s not found: %w", container.CpakId, err)
-		}
+	pidToEnter, ok := verifiedContainerProcess(container)
+	if !ok {
+		return fmt.Errorf("container process %s is not the recorded process", container.CpakId)
 	}
 
 	addons, err := c.resolveEnabledAddons(app)
@@ -833,6 +996,13 @@ func containerEnvironment(app types.Application, override types.Override, contai
 		envVars = setEnvironmentValue(envVars, "DBUS_SESSION_BUS_ADDRESS", "unix:path="+hostSessionBusPath())
 		envVars = setEnvironmentValue(envVars, "GTK_USE_PORTAL", "1")
 	}
+	if container.BluetoothBusSocketPath != "" {
+		envVars = setEnvironmentValue(envVars, "DBUS_SYSTEM_BUS_ADDRESS", "unix:path="+hostSystemBusPath())
+	}
+	if container.X11SocketPath != "" {
+		envVars = setEnvironmentValue(envVars, "DISPLAY", container.X11Display)
+		envVars = setEnvironmentValue(envVars, "XAUTHORITY", x11AuthorityTarget)
+	}
 	return envVars, nil
 }
 
@@ -904,15 +1074,14 @@ func openURIEnvironment(environment []string) []string {
 }
 
 func (c *Cpak) applicationMachineID(applicationID string) (string, error) {
-	if strings.TrimSpace(applicationID) == "" {
-		return "", errors.New("create application machine ID: application ID is empty")
+	path, err := c.applicationIdentityPath(applicationID)
+	if err != nil {
+		return "", fmt.Errorf("create application machine ID: %w", err)
 	}
-	digest := sha256.Sum256([]byte(applicationID))
-	directory := c.GetInStoreDir("identities")
+	directory := filepath.Dir(path)
 	if err := os.MkdirAll(directory, 0700); err != nil {
 		return "", fmt.Errorf("create application identity directory: %w", err)
 	}
-	path := filepath.Join(directory, hex.EncodeToString(digest[:])+".machine-id")
 	read := func() (string, error) {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -968,6 +1137,14 @@ func (c *Cpak) applicationMachineID(applicationID string) (string, error) {
 		return "", fmt.Errorf("write application machine ID: %w", err)
 	}
 	return value, nil
+}
+
+func (c *Cpak) applicationIdentityPath(applicationID string) (string, error) {
+	if strings.TrimSpace(applicationID) == "" {
+		return "", errors.New("application ID is empty")
+	}
+	digest := sha256.Sum256([]byte(applicationID))
+	return c.GetInStoreDir("identities", hex.EncodeToString(digest[:])+".machine-id"), nil
 }
 
 func ensureOpenURIMimeApps(environment []string) error {
@@ -1065,23 +1242,8 @@ func (c *Cpak) dependencyLinks(app types.Application) ([]string, error) {
 	return links, nil
 }
 
-// getPidFromEnvContainerId returns the pid of the process with the given containerId
-// by looking at the environment variables of all the processes.
-func getPidFromEnvContainerId(containerCpakId string) (pid int, err error) {
-	env := "CPAK_CONTAINER_ID=" + containerCpakId
-	pid, err = tools.GetPidFromEnv(env)
-	if err != nil {
-		err = fmt.Errorf("no process with containerId %s found", containerCpakId)
-		return
-	}
-	if isVerbose {
-		logger.Println("PID found:", pid)
-	}
-	return
-}
-
 func containerProcessRunning(container types.Container) bool {
-	if container.Pid <= 0 || syscall.Kill(container.Pid, 0) != nil {
+	if _, ok := verifiedContainerProcess(container); !ok {
 		return false
 	}
 	execSocketPath := container.ExecSocketPath
@@ -1091,18 +1253,85 @@ func containerProcessRunning(container types.Container) bool {
 	return socketIsLive(execSocketPath)
 }
 
+func verifiedContainerProcess(container types.Container) (int, bool) {
+	if container.Pid <= 0 || !sameContainerProcess(container, container.Pid) {
+		return 0, false
+	}
+	return container.Pid, true
+}
+
+func sameContainerProcess(container types.Container, pid int) bool {
+	if pid <= 0 || syscall.Kill(pid, 0) != nil {
+		return false
+	}
+	marker := "CPAK_CONTAINER_ID=" + container.CpakId
+	environment, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "environ"))
+	if err != nil || !nulSeparatedValue(environment, marker) {
+		return false
+	}
+	if container.ProcessStartTime == 0 {
+		return true
+	}
+	started, err := processStartTime(pid)
+	return err == nil && started == container.ProcessStartTime
+}
+
+func nulSeparatedValue(data []byte, expected string) bool {
+	for _, value := range bytes.Split(data, []byte{0}) {
+		if string(value) == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func processStartTime(pid int) (uint64, error) {
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return 0, err
+	}
+	end := bytes.LastIndexByte(data, ')')
+	if end < 0 {
+		return 0, errors.New("invalid process stat")
+	}
+	fields := strings.Fields(string(data[end+1:]))
+	if len(fields) <= 19 {
+		return 0, errors.New("incomplete process stat")
+	}
+	started, err := strconv.ParseUint(fields[19], 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse process start time: %w", err)
+	}
+	return started, nil
+}
+
+func sameRecordedProcess(pid int, recordedStart uint64) bool {
+	if pid <= 0 || recordedStart == 0 || syscall.Kill(pid, 0) != nil {
+		return false
+	}
+	started, err := processStartTime(pid)
+	return err == nil && started == recordedStart
+}
+
 func containerDesktopBusAlive(container types.Container) bool {
 	if container.DesktopBusSocketPath == "" {
 		return true
 	}
-	return container.DesktopBusProxyPid > 0 && syscall.Kill(container.DesktopBusProxyPid, 0) == nil && socketIsLive(container.DesktopBusSocketPath)
+	return sameRecordedProcess(container.DesktopBusProxyPid, container.DesktopBusProxyStartTime) && socketIsLive(container.DesktopBusSocketPath)
+}
+
+func containerBluetoothBusAlive(container types.Container) bool {
+	if container.BluetoothBusSocketPath == "" {
+		return true
+	}
+	return sameRecordedProcess(container.BluetoothBusProxyPid, container.BluetoothBusProxyStartTime) && socketIsLive(container.BluetoothBusSocketPath)
 }
 
 // CleanupContainer removes the container with the given id.
 func (c *Cpak) CleanupContainer(container types.Container) (err error) {
+	cleanupX11Bridge(container)
+	cleanupBluetoothBusProxy(container)
 	cleanupDesktopBusProxy(container)
-	stopLegacyHostExecServer(container.HostExecPid)
-	stopSystemBroker(container.SystemBrokerPid)
 	cleanupSystemBrokerRuntime(container)
 	cleanupCgroup(container.CpakId, container.CgroupPath)
 	if releaseErr := c.cleanupFVSMount(container.FVSLayerMountId, container.FVSLayerMountPath, container.FVSManagerSocketPath); releaseErr != nil {
@@ -1129,11 +1358,7 @@ func (c *Cpak) CleanupContainer(container types.Container) (err error) {
 	return
 }
 
-func startDesktopBusProxy(container types.Container, allowSessionBus bool) (int, error) {
-	cpakBinary, err := getCpakBinary()
-	if err != nil {
-		return 0, err
-	}
+func startDesktopBusProxy(container types.Container, override types.Override) (int, error) {
 	upstream := os.Getenv("DBUS_SESSION_BUS_ADDRESS")
 	if upstream == "" {
 		upstream = "unix:path=" + hostSessionBusPath()
@@ -1142,16 +1367,47 @@ func startDesktopBusProxy(container types.Container, allowSessionBus bool) (int,
 		"desktop-bus-proxy",
 		"--socket-path", container.DesktopBusSocketPath,
 		"--upstream-address", upstream,
-		"--broker-socket-path", container.SystemBrokerSocketPath,
-		"--token-file", container.SystemBrokerTokenPath,
 	}
-	if allowSessionBus {
-		arguments = append(arguments, "--allow-session-bus")
+	if override.SessionBus.Enabled() {
+		policy, encodeErr := json.Marshal(override.SessionBus)
+		if encodeErr != nil {
+			return 0, fmt.Errorf("encode desktop bus policy: %w", encodeErr)
+		}
+		arguments = append(arguments, "--policy", base64.RawURLEncoding.EncodeToString(policy))
+	}
+	if override.FilePicker.Enabled() {
+		arguments = append(arguments,
+			"--file-picker",
+			"--broker-socket-path", container.SystemBrokerSocketPath,
+			"--token-file", container.SystemBrokerTokenPath,
+		)
+	}
+	return startBusProxy(container.LogPath, container.DesktopBusSocketPath, "desktop bus", arguments)
+}
+
+func startBluetoothBusProxy(container types.Container) (int, error) {
+	info, err := os.Stat(hostSystemBusPath())
+	if err != nil || info.Mode()&os.ModeSocket == 0 {
+		return 0, errors.New("Bluetooth requires a host system bus")
+	}
+	arguments := []string{
+		"desktop-bus-proxy",
+		"--bluetooth",
+		"--socket-path", container.BluetoothBusSocketPath,
+		"--upstream-address", "unix:path=" + hostSystemBusPath(),
+	}
+	return startBusProxy(container.LogPath, container.BluetoothBusSocketPath, "Bluetooth bus", arguments)
+}
+
+func startBusProxy(logPath, socketPath, name string, arguments []string) (int, error) {
+	cpakBinary, err := getCpakBinary()
+	if err != nil {
+		return 0, err
 	}
 	command := exec.Command(cpakBinary, arguments...)
-	logFile, err := os.OpenFile(container.LogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
-		return 0, fmt.Errorf("open desktop bus log: %w", err)
+		return 0, fmt.Errorf("open %s log: %w", name, err)
 	}
 	defer logFile.Close()
 	command.Stdin = nil
@@ -1159,19 +1415,19 @@ func startDesktopBusProxy(container types.Container, allowSessionBus bool) (int,
 	command.Stderr = logFile
 	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err = command.Start(); err != nil {
-		return 0, fmt.Errorf("start desktop bus proxy: %w", err)
+		return 0, fmt.Errorf("start %s proxy: %w", name, err)
 	}
 	pid := command.Process.Pid
 	_ = command.Process.Release()
-	if err = waitForSocket(container.DesktopBusSocketPath, 3*time.Second); err != nil {
+	if err = waitForSocket(socketPath, 3*time.Second); err != nil {
 		_ = syscall.Kill(pid, syscall.SIGTERM)
-		return 0, fmt.Errorf("start desktop bus proxy: %w", err)
+		return 0, fmt.Errorf("start %s proxy: %w", name, err)
 	}
 	return pid, nil
 }
 
 func cleanupDesktopBusProxy(container types.Container) {
-	if container.DesktopBusProxyPid > 0 {
+	if sameRecordedProcess(container.DesktopBusProxyPid, container.DesktopBusProxyStartTime) {
 		_ = syscall.Kill(container.DesktopBusProxyPid, syscall.SIGTERM)
 	}
 	if container.DesktopBusSocketPath != "" {
@@ -1179,8 +1435,35 @@ func cleanupDesktopBusProxy(container types.Container) {
 	}
 }
 
+func cleanupBluetoothBusProxy(container types.Container) {
+	if sameRecordedProcess(container.BluetoothBusProxyPid, container.BluetoothBusProxyStartTime) {
+		_ = syscall.Kill(container.BluetoothBusProxyPid, syscall.SIGTERM)
+	}
+	if container.BluetoothBusSocketPath != "" {
+		_ = os.Remove(container.BluetoothBusSocketPath)
+	}
+}
+
 func hostSessionBusPath() string {
 	return filepath.Join("/run/user", strconv.Itoa(os.Getuid()), "bus")
+}
+
+func hostSystemBusPath() string {
+	return "/run/dbus/system_bus_socket"
+}
+
+func privateDesktopLinks(container types.Container) []string {
+	links := []string{}
+	if container.BluetoothBusSocketPath != "" {
+		links = append(links, container.BluetoothBusSocketPath+":"+hostSystemBusPath())
+	}
+	if container.X11SocketPath != "" {
+		links = append(links,
+			container.X11SocketPath+":"+container.X11SocketTarget,
+			container.X11AuthorityPath+":"+x11AuthorityTarget,
+		)
+	}
+	return links
 }
 
 func withoutMount(mounts []string, excluded string) []string {
@@ -1194,14 +1477,22 @@ func withoutMount(mounts []string, excluded string) []string {
 }
 
 func (c *Cpak) privateApplicationHome(applicationID string) (string, error) {
-	if strings.TrimSpace(applicationID) == "" || strings.ContainsAny(applicationID, "/\\\x00") {
-		return "", errors.New("application ID is invalid")
+	dataPath, err := c.applicationDataPath(applicationID)
+	if err != nil {
+		return "", err
 	}
-	path := c.GetInStoreDir("application-data", applicationID, "home")
+	path := filepath.Join(dataPath, "home")
 	if err := securePrivateDirectory(path); err != nil {
 		return "", fmt.Errorf("prepare private application home: %w", err)
 	}
 	return path, nil
+}
+
+func (c *Cpak) applicationDataPath(applicationID string) (string, error) {
+	if strings.TrimSpace(applicationID) == "" || applicationID == "." || applicationID == ".." || strings.ContainsAny(applicationID, "/\\\x00") {
+		return "", errors.New("application ID is invalid")
+	}
+	return c.GetInStoreDir("application-data", applicationID), nil
 }
 
 // filesystemIncludesHostHome answers whether an application already holds the
@@ -1230,43 +1521,23 @@ func filesystemIncludesHostHome(override types.Override) bool {
 }
 
 func (c *Cpak) cleanupNestedContainer(container types.Container) {
-	if container.Pid != 0 {
-		_ = syscall.Kill(container.Pid, syscall.SIGTERM)
-		deadline := time.Now().Add(time.Second)
-		for time.Now().Before(deadline) {
-			if _, err := getPidFromEnvContainerId(container.CpakId); err != nil {
-				break
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
-	}
+	terminateContainerProcess(container)
 	if err := c.CleanupContainer(container); err != nil {
 		logger.Printf("Cannot clean nested container %s: %v", container.CpakId, err)
 	}
 }
 
-// getCpakBinary returns the path to the cpak binary.
+// getCpakBinary returns the canonical path to the running executable. The
+// result is used to re-enter cpak outside the container root, so it must not be
+// selected from argv, PATH or another location writable by a package.
 func getCpakBinary() (cpakBinary string, err error) {
-	if strings.ContainsRune(os.Args[0], os.PathSeparator) {
-		cpakBinary, err = filepath.Abs(os.Args[0])
-		if err != nil {
-			return "", fmt.Errorf("resolve cpak executable path: %w", err)
-		}
-		if _, statErr := os.Stat(cpakBinary); statErr == nil {
-			resolved, resolveErr := filepath.EvalSymlinks(cpakBinary)
-			if resolveErr == nil {
-				cpakBinary = resolved
-			}
-			return cpakBinary, nil
-		}
-	}
 	cpakBinary, err = os.Executable()
 	if err != nil {
 		return "", fmt.Errorf("locate cpak executable: %w", err)
 	}
-	resolved, resolveErr := filepath.EvalSymlinks(cpakBinary)
-	if resolveErr == nil {
-		cpakBinary = resolved
+	cpakBinary, err = filepath.EvalSymlinks(cpakBinary)
+	if err != nil {
+		return "", fmt.Errorf("resolve cpak executable: %w", err)
 	}
 	return cpakBinary, nil
 }
@@ -1643,24 +1914,4 @@ func systemBrokerContainerPaths(permissions []types.FilesystemPermission) ([]sys
 		paths = append(paths, systembroker.ContainerPathGrant{Path: resolved, ReadOnly: permission.Access == "read-only"})
 	}
 	return paths, nil
-}
-
-func stopSystemBroker(pid int) {
-	if pid == 0 {
-		return
-	}
-	process, err := os.FindProcess(pid)
-	if err == nil {
-		_ = process.Signal(syscall.SIGTERM)
-	}
-}
-
-func stopLegacyHostExecServer(pid int) {
-	if pid == 0 {
-		return
-	}
-	process, err := os.FindProcess(pid)
-	if err == nil {
-		_ = process.Signal(syscall.SIGTERM)
-	}
 }

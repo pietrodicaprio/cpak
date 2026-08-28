@@ -45,6 +45,24 @@ func TestOverrideAdditionsReportsFilePickerCapabilities(t *testing.T) {
 	}
 }
 
+func TestOverrideAdditionsReportsSessionBusWidening(t *testing.T) {
+	before := Override{SessionBus: DBusPolicy{Talk: []DBusCallGrant{{
+		Name: "org.example.Player", Path: "/org/example/Player", Interface: "org.example.Player", Members: []string{"Play"},
+	}}}}
+	after := before
+	after.SessionBus.Talk = []DBusCallGrant{{
+		Name: "org.example.Player", Path: "/org/example/Player", Interface: "org.example.Player", Members: []string{"Play", "Stop"},
+	}}
+
+	additions := before.Additions(after)
+	if len(additions) != 1 || additions[0] != "sessionBus" {
+		t.Fatalf("unexpected additions: %v", additions)
+	}
+	if additions = after.Additions(before); len(additions) != 0 {
+		t.Fatalf("narrowing a session bus policy was reported as an addition: %v", additions)
+	}
+}
+
 func TestDecodeFilePickerGrantJSON(t *testing.T) {
 	grant, err := DecodeFilePickerGrantJSON([]byte(`{"openFile":true,"openFolder":true,"saveFile":true,"persistent":true,"containingFolder":true}`))
 	if err != nil {
@@ -84,6 +102,30 @@ func TestUngrantedPermissionsTellsFalseApartFromAbsent(t *testing.T) {
 	for _, optional := range []string{"filesystem", "hostActions", "env", "fsExtra"} {
 		if named[optional] {
 			t.Fatalf("%s is omitted when empty and must not be reported", optional)
+		}
+	}
+}
+
+func TestUngrantedPermissionsSkipsManifestV3RemovedPermissions(t *testing.T) {
+	missing, err := UngrantedPermissions([]byte(`{"manifest_version":"3.0","override":{}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	named := map[string]bool{}
+	for _, key := range missing {
+		named[key] = true
+	}
+	for _, removed := range []string{"socketX11", "socketSessionBus", "socketSystemBus", "socketAtSpiBus", "socketBluetooth"} {
+		if named[removed] {
+			t.Fatalf("manifest v3 was told it omits removed permission %s", removed)
+		}
+	}
+	if !named["network"] {
+		t.Fatalf("a supported permission the manifest never mentions was not reported: %v", missing)
+	}
+	for _, supported := range []string{"displayX11", "bluetooth"} {
+		if !named[supported] {
+			t.Fatalf("manifest v3 was not told it omits supported permission %s: %v", supported, missing)
 		}
 	}
 }

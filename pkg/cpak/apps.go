@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/mirkobrombin/cpak/pkg/logger"
@@ -352,7 +351,7 @@ func (c *Cpak) updateApplication(app types.Application, deps updateDeps, approve
 	if err = c.bindBuiltLayers(pulled, layers); err != nil {
 		return failedUpdate(result, err)
 	}
-	manifestDigest, err := manifestIdentityDigest(manifest)
+	manifestDigest, err := ManifestIdentityDigest(manifest)
 	if err != nil {
 		return failedUpdate(result, err)
 	}
@@ -552,14 +551,7 @@ func (c *Cpak) stopApplicationContainers(app types.Application) (err error) {
 	}
 
 	for _, container := range containers {
-		pid := container.Pid
-		if pid == 0 {
-			pid, _ = getPidFromEnvContainerId(container.CpakId)
-		}
-		if pid != 0 {
-			logger.Println("Stopping container process:", pid)
-			syscall.Kill(pid, syscall.SIGTERM)
-		}
+		terminateContainerProcess(container)
 		if cleanupErr := c.CleanupContainer(container); cleanupErr != nil {
 			logger.Printf("Warning: error during container cleanup %s: %v", container.CpakId, cleanupErr)
 		}

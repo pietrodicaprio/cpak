@@ -19,6 +19,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -88,7 +89,9 @@ type SpawnCmd struct {
 	PrivateHome        string   `cli:"private-home" help:"persistent private application home"`
 	IdleTime           int      `cli:"idle-time" help:"idle timeout in minutes"`
 	MountHostRoot      bool     `cli:"mount-host-root" help:"mount the host root read-only at /run/host"`
+	LoginSession       bool     `cli:"login-session" help:"mount host login session state read-only"`
 	Nvidia             bool     `cli:"nvidia" help:"mount the host NVIDIA userspace driver"`
+	Nameserver         string   `cli:"nameserver" help:"replace resolv.conf with this nameserver"`
 	UserNamespaces     bool     `cli:"user-namespaces" help:"allow application-created user namespaces"`
 	AllowPtrace        bool     `cli:"allow-ptrace" help:"allow tracing inside the private process namespace"`
 	BuildLayer         bool     `cli:"build-layer" help:"build a managed layer and exit"`
@@ -136,7 +139,7 @@ func (c *SpawnCmd) Run() error {
 		if err = c.pivotRoot(c.Rootfs); err != nil {
 			return err
 		}
-		return c.installRuntimePackages(c.RuntimePackage, c.RuntimeInstaller, c.RuntimeDestination)
+		return c.installRuntimePackagesInSandbox(c.RuntimePackage, c.RuntimeInstaller, c.RuntimeDestination)
 	}
 	machineIDGrant, err := c.injectMachineID(c.Rootfs, c.MachineId)
 	if err != nil {
@@ -151,9 +154,16 @@ func (c *SpawnCmd) Run() error {
 	if err != nil {
 		return err
 	}
+	if c.LoginSession {
+		sessionGrants, sessionErr := c.setupLoginSessionState(c.Rootfs)
+		if sessionErr != nil {
+			return sessionErr
+		}
+		grants = append(grants, sessionGrants...)
+	}
 	grants = append(grants, machineIDGrant)
 
-	configurationGrants, refreshDynamicLinker, err := c.injectConfigurationFiles(c.Rootfs, c.Nvidia)
+	configurationGrants, refreshDynamicLinker, err := c.injectConfigurationFiles(c.Rootfs, c.Nvidia, c.Nameserver)
 	if err != nil {
 		return err
 	}
@@ -208,6 +218,11 @@ func (c *SpawnCmd) Run() error {
 		return err
 	}
 	defer grantMounts.Close()
+	if refreshDynamicLinker {
+		if err = refreshDynamicLinkerCache(c.Rootfs); err != nil {
+			return err
+		}
+	}
 
 	err = c.pivotRoot(c.Rootfs)
 	if err != nil {
@@ -219,7 +234,7 @@ func (c *SpawnCmd) Run() error {
 		layersPath = c.LowerDir
 	}
 	_envVars := setEnvironmentVariables(c.ContainerId, c.Rootfs, finalEnvVarsForContainer, c.StateDir, layersPath, c.Layers)
-	err = c.serveInit(listener, grantListener, grantMounts, _envVars, append([]sandbox.PathGrant{{Path: "/", ReadOnly: true}}, grants...), time.Duration(c.IdleTime)*time.Minute, refreshDynamicLinker)
+	err = c.serveInit(listener, grantListener, grantMounts, _envVars, append([]sandbox.PathGrant{{Path: "/", ReadOnly: true}}, grants...), time.Duration(c.IdleTime)*time.Minute)
 	if err != nil {
 		return err
 	}
@@ -294,6 +309,9 @@ func setEnvironmentVariables(containerId, rootFs string, envVars []string, state
 // run one of its declared dependencies. It used to hold the application
 // identifier, which is public metadata and therefore proved nothing.
 func (c *SpawnCmd) createCpakFile(token string, rootFs string) error {
+	if token == "" {
+		return nil
+	}
 	c.spawnVerbose("Creating cpak file")
 
 	_, err := prepareRootfsDirectory(rootFs, "/tmp")
@@ -404,6 +422,11 @@ func (c *SpawnCmd) setupMountPoints(userUid int, rootFs string, overrideMounts [
 	if err != nil {
 		return nil, fmt.Errorf("mount:/tmp: an error occurred while spawning the namespace: %s", err)
 	}
+	runtimeGrant, err := setupUserRuntimeDirectory(userUid, rootFs)
+	if err != nil {
+		return nil, err
+	}
+	grants = append(grants, runtimeGrant)
 	deviceGrants, err := c.setupBaseDevices(rootFs)
 	if err != nil {
 		return nil, err
@@ -511,6 +534,66 @@ func (c *SpawnCmd) setupMountPoints(userUid int, rootFs string, overrideMounts [
 	}
 	if mounted {
 		grants = append(grants, serviceGrant)
+	}
+	return grants, nil
+}
+
+func setupUserRuntimeDirectory(userUid int, rootFs string) (sandbox.PathGrant, error) {
+	if userUid < 0 {
+		return sandbox.PathGrant{}, fmt.Errorf("invalid user uid: %d", userUid)
+	}
+	runtimePath := filepath.Join("/run/user", strconv.Itoa(userUid))
+	destination, err := prepareRootfsDirectory(rootFs, runtimePath)
+	if err != nil {
+		return sandbox.PathGrant{}, fmt.Errorf("mkdir:%s: an error occurred while spawning the namespace: %w", runtimePath, err)
+	}
+	if err = syscall.Mount("tmpfs", destination, "tmpfs", syscall.MS_NOSUID|syscall.MS_NODEV, "mode=0700"); err != nil {
+		return sandbox.PathGrant{}, fmt.Errorf("mount:%s: an error occurred while spawning the namespace: %w", runtimePath, err)
+	}
+	return sandbox.PathGrant{Path: runtimePath}, nil
+}
+
+type loginSessionStateMount struct {
+	source string
+	target string
+}
+
+func loginSessionStateMounts(hostRoot string) ([]loginSessionStateMount, error) {
+	targets := []string{"/run/systemd/sessions", "/run/systemd/seats", "/run/systemd/users"}
+	mounts := make([]loginSessionStateMount, 0, len(targets))
+	for _, target := range targets {
+		source := filepath.Join(hostRoot, strings.TrimPrefix(target, "/"))
+		info, err := os.Lstat(source)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("inspect login session state %s: %w", source, err)
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("login session state is not a directory: %s", source)
+		}
+		mounts = append(mounts, loginSessionStateMount{source: source, target: target})
+	}
+	return mounts, nil
+}
+
+func (c *SpawnCmd) setupLoginSessionState(rootFs string) ([]sandbox.PathGrant, error) {
+	mounts, err := loginSessionStateMounts("/")
+	if err != nil {
+		return nil, err
+	}
+	grants := make([]sandbox.PathGrant, 0, len(mounts))
+	for _, mount := range mounts {
+		c.spawnVerbose("Mounting login session state: ", mount.target)
+		destination, err := prepareRootfsDirectory(rootFs, mount.target)
+		if err != nil {
+			return nil, fmt.Errorf("prepare login session state %s: %w", mount.target, err)
+		}
+		if err = tools.MountBindReadOnlyPrepared(mount.source, destination, true); err != nil {
+			return nil, fmt.Errorf("mount login session state %s: %w", mount.target, err)
+		}
+		grants = append(grants, sandbox.PathGrant{Path: mount.target, ReadOnly: true})
 	}
 	return grants, nil
 }
@@ -875,9 +958,12 @@ func (c *SpawnCmd) setupBaseDevices(rootFs string) ([]sandbox.PathGrant, error) 
 	return grants, nil
 }
 
-func (c *SpawnCmd) injectConfigurationFiles(rootFs string, includeNvidia bool) ([]sandbox.PathGrant, bool, error) {
+func (c *SpawnCmd) injectConfigurationFiles(rootFs string, includeNvidia bool, nameserver string) ([]sandbox.PathGrant, bool, error) {
 	grants := []sandbox.PathGrant{}
 	var err error
+	if nameserver != "" && net.ParseIP(nameserver) == nil {
+		return nil, false, fmt.Errorf("invalid nameserver %q", nameserver)
+	}
 	nvidiaMounts := []cpak.NvidiaMount{}
 	if includeNvidia {
 		nvidiaMounts, err = cpak.GetNvidiaMounts(rootFs)
@@ -897,6 +983,10 @@ func (c *SpawnCmd) injectConfigurationFiles(rootFs string, includeNvidia bool) (
 
 	for _, conf := range files {
 		content, readErr := os.ReadFile(conf)
+		if conf == "/etc/resolv.conf" && nameserver != "" {
+			content = []byte("nameserver " + nameserver + "\n")
+			readErr = nil
+		}
 		if os.IsNotExist(readErr) {
 			continue
 		}
@@ -1085,6 +1175,17 @@ func (c *SpawnCmd) installRuntimePackages(packages, installers, destinations []s
 		first = last
 	}
 	return nil
+}
+
+var applyBuildLayerSeccomp = func() error {
+	return sandbox.ApplySeccomp(false, false)
+}
+
+func (c *SpawnCmd) installRuntimePackagesInSandbox(packages, installers, destinations []string) error {
+	if err := applyBuildLayerSeccomp(); err != nil {
+		return fmt.Errorf("apply build layer seccomp: %w", err)
+	}
+	return c.installRuntimePackages(packages, installers, destinations)
 }
 
 func installRuntimeFile(root, artifact, destination string) error {
@@ -1358,15 +1459,30 @@ func (c *SpawnCmd) setupGrantRoot(rootFs string) (sandbox.PathGrant, error) {
 	return sandbox.PathGrant{Path: filegrant.GuestRoot}, nil
 }
 
-func (c *SpawnCmd) serveInit(listener *net.UnixListener, grantListener net.Listener, grantMounts *grantMountWorker, envVars []string, grants []sandbox.PathGrant, idleTimeout time.Duration, refreshDynamicLinker bool) error {
-	if refreshDynamicLinker {
-		c.spawnVerbose("Reconfiguring dynamic linker run-time bindings")
+func refreshDynamicLinkerCache(rootFs string) error {
+	if _, err := os.Stat("/sbin/ldconfig"); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("inspect host ldconfig: %w", err)
 	}
-	if _, err := os.Stat("/sbin/ldconfig"); refreshDynamicLinker && err == nil {
-		l := exec.Command("/sbin/ldconfig")
-		if err = l.Run(); err != nil {
-			return fmt.Errorf("ldconfig: an error occurred while spawning the namespace: %s", err)
-		}
+	command := exec.Command("/sbin/ldconfig", "-r", rootFs)
+	command.Env = []string{"LANG=C", "LC_ALL=C", "PATH=/usr/sbin:/usr/bin:/sbin:/bin"}
+	if err := command.Run(); err != nil {
+		return fmt.Errorf("refresh dynamic linker cache: %w", err)
+	}
+	return nil
+}
+
+func setContainerHostname() error {
+	if err := syscall.Sethostname([]byte("cpak")); err != nil {
+		return fmt.Errorf("set container hostname: %w", err)
+	}
+	return nil
+}
+
+func (c *SpawnCmd) serveInit(listener *net.UnixListener, grantListener net.Listener, grantMounts *grantMountWorker, envVars []string, grants []sandbox.PathGrant, idleTimeout time.Duration) error {
+	if err := setContainerHostname(); err != nil {
+		return err
 	}
 	for _, env := range envVars {
 		if strings.HasPrefix(env, "CPAK_") {
@@ -1579,34 +1695,7 @@ func (c *SpawnCmd) handleRuntimeConnection(connection *net.UnixConn, baseEnv []s
 	args = append(args, landlockArguments(grants)...)
 	args = append(args, "--")
 	args = append(args, request.Args...)
-	command := exec.Command(cpakInContainerPath, args...)
-	command.Env = append(append([]string{}, baseEnv...), request.Env...)
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	// Whether a nested command may run as root is a property of the container,
-	// decided when it was created. Taking it from the request would let anyone
-	// who can reach the socket ask for it.
-	// The application always gets a user namespace of its own, and asRoot only
-	// decides which identity it holds inside it.
-	//
-	// It used to decide whether there was one at all, and that was the whole of
-	// what separated the application from the container's init. The file grant
-	// worker runs on a thread that unshared its mount namespace before the
-	// pivot, so it keeps a root that is still the host's for the life of the
-	// container, reachable as /proc/1/task/<tid>/root. Sharing a user namespace
-	// and credentials with init made that path readable: measured, an ordinary
-	// application gets EPERM there and an asRoot one enumerated the host's root
-	// directory. A nested namespace has no capability in its parent, so the
-	// traversal is refused whichever identity the application was given.
-	command.SysProcAttr.Cloneflags = syscall.CLONE_NEWUSER
-	command.SysProcAttr.GidMappingsEnableSetgroups = false
-	if c.AllowRoot {
-		command.SysProcAttr.UidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: 0, Size: 1}}
-		command.SysProcAttr.GidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: 0, Size: 1}}
-	} else {
-		command.SysProcAttr.UidMappings = []syscall.SysProcIDMap{{ContainerID: 1000, HostID: 0, Size: 1}}
-		command.SysProcAttr.GidMappings = []syscall.SysProcIDMap{{ContainerID: 1000, HostID: 0, Size: 1}}
-		command.SysProcAttr.Credential = &syscall.Credential{Uid: 1000, Gid: 1000}
-	}
+	command := c.applicationCommand(args, append(append([]string{}, baseEnv...), request.Env...))
 	stdin, err := command.StdinPipe()
 	if err != nil {
 		_ = writer.Write(runtimeproto.FrameExit, runtimeproto.EncodeExit(125))
@@ -1659,6 +1748,38 @@ func (c *SpawnCmd) handleRuntimeConnection(connection *net.UnixConn, baseEnv []s
 	default:
 	}
 	_, _ = io.Copy(io.Discard, connection)
+}
+
+func (c *SpawnCmd) applicationCommand(args, env []string) *exec.Cmd {
+	command := exec.Command(cpakInContainerPath, args...)
+	command.Env = env
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Whether a nested command may run as root is a property of the container,
+	// decided when it was created. Taking it from the request would let anyone
+	// who can reach the socket ask for it.
+	// The application always gets a user namespace of its own, and asRoot only
+	// decides which identity it holds inside it.
+	//
+	// It used to decide whether there was one at all, and that was the whole of
+	// what separated the application from the container's init. The file grant
+	// worker runs on a thread that unshared its mount namespace before the
+	// pivot, so it keeps a root that is still the host's for the life of the
+	// container, reachable as /proc/1/task/<tid>/root. Sharing a user namespace
+	// and credentials with init made that path readable: measured, an ordinary
+	// application gets EPERM there and an asRoot one enumerated the host's root
+	// directory. A nested namespace has no capability in its parent, so the
+	// traversal is refused whichever identity the application was given.
+	command.SysProcAttr.Cloneflags = syscall.CLONE_NEWUSER
+	command.SysProcAttr.GidMappingsEnableSetgroups = false
+	if c.AllowRoot {
+		command.SysProcAttr.UidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: 0, Size: 1}}
+		command.SysProcAttr.GidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: 0, Size: 1}}
+	} else {
+		command.SysProcAttr.UidMappings = []syscall.SysProcIDMap{{ContainerID: 1000, HostID: 0, Size: 1}}
+		command.SysProcAttr.GidMappings = []syscall.SysProcIDMap{{ContainerID: 1000, HostID: 0, Size: 1}}
+		command.SysProcAttr.Credential = &syscall.Credential{Uid: 1000, Gid: 1000}
+	}
+	return command
 }
 
 func landlockArguments(grants []sandbox.PathGrant) []string {

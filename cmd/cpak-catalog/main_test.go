@@ -6,13 +6,17 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/mirkobrombin/cpak/pkg/bootstrap"
@@ -90,6 +94,82 @@ func TestLoadPackageManifest(t *testing.T) {
 	}
 }
 
+func TestBuildCatalogOmitsLoginSessions(t *testing.T) {
+	const origin = "github.com/example/desktop"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		base := "http://" + request.Host
+		switch request.URL.Path {
+		case "/index.json":
+			_, _ = writer.Write([]byte(`{"Desktop":{"` + origin + `":{"name":"Desktop","description":"Desktop session","manifest":"` + base + `/desktop.json"}}}`))
+		case "/desktop.json":
+			_, _ = writer.Write([]byte(`{"branch":"main","description":"Desktop session"}`))
+		case "/repos/example/desktop/commits/main":
+			_, _ = writer.Write([]byte(`{"sha":"0123456789abcdef0123456789abcdef01234567"}`))
+		case "/repos/example/desktop/contents/cpak.json":
+			_, _ = writer.Write([]byte(`{"manifest_version":"3.0","name":"Desktop","description":"Desktop session","version":"1.0.0","image":"ghcr.io/example/desktop@sha256:` + strings.Repeat("a", 64) + `","binaries":["/usr/bin/desktop"],"sessions":[{"id":"dev.example.desktop","name":"Desktop","description":"Desktop session","kind":"desktop","entrypoint":"/usr/bin/desktop","override":{}}],"override":{}}`))
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := buildCatalog(context.Background(), server.Client(), server.URL+"/index.json", server.URL, "v2.9.1", map[string]string{"amd64": "a", "arm64": "b"}, privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := result.Packages[origin]; exists {
+		t.Fatal("the signed installer catalog included a login session")
+	}
+}
+
+func TestSignedManifestDigestRequiresPinnedCode(t *testing.T) {
+	manifest := &types.CpakManifest{
+		ManifestVersion: "2.0",
+		Name:            "Demo",
+		Description:     "Demo application",
+		Image:           "ghcr.io/containerpak/demo:main",
+		Binaries:        []string{"/usr/bin/demo"},
+	}
+	if _, err := signedManifestDigest(manifest); err == nil {
+		t.Fatal("a signed installer accepted a mutable image tag")
+	}
+	manifest.Image = "ghcr.io/containerpak/demo@sha256:" + strings.Repeat("a", 64)
+	if _, err := signedManifestDigest(manifest); err != nil {
+		t.Fatal(err)
+	}
+	manifest.Dependencies = []types.Dependency{{Origin: "github.com/containerpak/runtime"}}
+	if _, err := signedManifestDigest(manifest); !errors.Is(err, errUnsupportedSignedInstaller) {
+		t.Fatal("a signed installer accepted an unbound dependency graph")
+	}
+}
+
+func TestSignedCatalogOmitsUnsupportedPackageShapes(t *testing.T) {
+	manifest := &types.CpakManifest{
+		ManifestVersion: "3.0",
+		Name:            "Desktop",
+		Description:     "Desktop session",
+		Image:           "ghcr.io/containerpak/desktop@sha256:" + strings.Repeat("a", 64),
+		Binaries:        []string{"/usr/bin/desktop"},
+		Sessions:        []types.Session{{ID: "dev.example.desktop"}},
+	}
+	digest, err := signedCatalogManifestDigest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if digest != "" {
+		t.Fatal("the signed installer catalog included a login session")
+	}
+	manifest.Sessions = nil
+	manifest.Image = "ghcr.io/containerpak/desktop:main"
+	if _, err = signedCatalogManifestDigest(manifest); err == nil {
+		t.Fatal("the signed installer catalog ignored a mutable image")
+	}
+}
+
 func TestFetchRetriesTemporaryFailures(t *testing.T) {
 	attempts := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -124,11 +204,11 @@ func TestSummarizePermissions(t *testing.T) {
 		Network: true,
 	}
 	want := []bootstrap.Permission{
-		{Name: "Display", Detail: "X11, Wayland"},
+		{Name: "Display", Detail: "X11 (no input or screen isolation), Wayland"},
 		{Name: "Audio", Detail: "PulseAudio"},
 		{Name: "Devices", Detail: "all devices"},
 		{Name: "Notifications", Detail: "desktop notifications"},
-		{Name: "Files", Detail: "home, read write"},
+		{Name: "Files", Detail: "home, read write; can run code on the host through startup files"},
 		{Name: "Network", Detail: "internet and local network"},
 	}
 	if got := summarizePermissions(override); !reflect.DeepEqual(got, want) {

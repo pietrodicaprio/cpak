@@ -1,6 +1,7 @@
 # Application Trust POC Test Matrix
 
-- Status: Phases 0 through 5 complete; Phase 6 planned
+- Status: Phases 0 through 5 complete on the prior baseline; upstream
+  integration recertification in progress; Phase 6 blocked
 - Baseline: cpak v2.8.7 (`be29d55`)
 - Last updated: 2026-08-21
 
@@ -218,6 +219,13 @@ binary-only, service, offline, negative, recovery, X.509/CMS, and real keyless
 Sigstore rows marked executed above. The rerun was source-identical: it cleared
 a transient runner seccomp failure after Sigstore had already passed on the
 same commit.
+
+The dedicated `integration/application-trust-e86fa23` branch now carries the
+17 upstream commits after `be29d55`, Manifest v3 Phase 5 fixtures, and semantic
+resolutions for the 14 trust-sensitive conflicts. Local Linux test, race, and
+vet evidence is recorded in `application-trust-upstream-integration.md`.
+Phase 6 remains blocked until both Phase 5 CI jobs pass again at the integrated
+commit.
 
 Every trust policy executed by the Phase 5 POC lifecycle uses ABI 2. The frozen
 ABI 1 fixture exists only for legacy regression coverage; together with strict

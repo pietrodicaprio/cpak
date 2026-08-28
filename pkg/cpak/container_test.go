@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -324,6 +327,15 @@ func TestEnsureOpenURIMimeAppsWritesDesktopSpecificDefaults(t *testing.T) {
 }
 
 func TestGetCpakBinaryUsesTheRunningExecutable(t *testing.T) {
+	originalArg := os.Args[0]
+	spoofed := filepath.Join(t.TempDir(), "cpak")
+	if err := os.WriteFile(spoofed, []byte("not the running executable"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	os.Args[0] = spoofed
+	t.Cleanup(func() { os.Args[0] = originalArg })
+	t.Setenv("PATH", filepath.Dir(spoofed))
+
 	got, err := getCpakBinary()
 	if err != nil {
 		t.Fatal(err)
@@ -332,9 +344,50 @@ func TestGetCpakBinaryUsesTheRunningExecutable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, _ = filepath.EvalSymlinks(want)
+	want, err = filepath.EvalSymlinks(want)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got != want {
 		t.Fatalf("cpak binary: got %q, want %q", got, want)
+	}
+}
+
+func TestTerminateContainerProcessRejectsAnUnrelatedPersistedPID(t *testing.T) {
+	command := exec.Command("sleep", "30")
+	command.Env = append(os.Environ(), "CPAK_CONTAINER_ID=other-container")
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = command.Process.Kill()
+		_, _ = command.Process.Wait()
+	})
+
+	started, err := processStartTime(command.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminateContainerProcess(types.Container{
+		CpakId:           "expected-container",
+		Pid:              command.Process.Pid,
+		ProcessStartTime: started,
+	})
+	if err = syscall.Kill(command.Process.Pid, 0); err != nil {
+		t.Fatalf("an unrelated process was signalled: %v", err)
+	}
+}
+
+func TestRecordedProcessRequiresTheSameStartTime(t *testing.T) {
+	started, err := processStartTime(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameRecordedProcess(os.Getpid(), started) {
+		t.Fatal("the current process did not match its recorded start time")
+	}
+	if sameRecordedProcess(os.Getpid(), started+1) {
+		t.Fatal("a stale process start time was accepted")
 	}
 }
 
@@ -410,6 +463,51 @@ func TestContainerEnvironmentUsesThePrivateDesktopBusForFileSelection(t *testing
 	}
 }
 
+func TestContainerEnvironmentUsesPrivateX11AndBluetoothEndpoints(t *testing.T) {
+	app := types.Application{Config: `{"config":{"Env":["DISPLAY=:0","XAUTHORITY=/home/user/.Xauthority","DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket"]}}`}
+	container := types.Container{
+		CpakId:                 "container-id",
+		BluetoothBusSocketPath: "/tmp/cpak/bluetooth.sock",
+		X11SocketPath:          "/tmp/cpak/x11.sock",
+		X11Display:             ":42",
+	}
+	environment, err := containerEnvironment(app, resolvedOverride(app), container)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{
+		"DBUS_SYSTEM_BUS_ADDRESS=unix:path=" + hostSystemBusPath(),
+		"DISPLAY=:42",
+		"XAUTHORITY=" + x11AuthorityTarget,
+	} {
+		if !slicesContain(environment, value) {
+			t.Fatalf("private desktop endpoint %q is missing from %v", value, environment)
+		}
+	}
+	for _, value := range []string{"DISPLAY=:0", "XAUTHORITY=/home/user/.Xauthority"} {
+		if slicesContain(environment, value) {
+			t.Fatalf("host desktop endpoint %q survived in %v", value, environment)
+		}
+	}
+}
+
+func TestPrivateDesktopLinksMountOnlyProxyEndpoints(t *testing.T) {
+	container := types.Container{
+		BluetoothBusSocketPath: "/var/lib/cpak/state/bluetooth.sock",
+		X11SocketPath:          "/var/lib/cpak/state/x11.sock",
+		X11SocketTarget:        "/tmp/.X11-unix/X42",
+		X11AuthorityPath:       "/var/lib/cpak/state/xauthority",
+	}
+	want := []string{
+		"/var/lib/cpak/state/bluetooth.sock:/run/dbus/system_bus_socket",
+		"/var/lib/cpak/state/x11.sock:/tmp/.X11-unix/X42",
+		"/var/lib/cpak/state/xauthority:/run/cpak/xauthority",
+	}
+	if got := privateDesktopLinks(container); !reflect.DeepEqual(got, want) {
+		t.Fatalf("private desktop links: got %v, want %v", got, want)
+	}
+}
+
 func TestPrivateApplicationHomeIsPersistentAndRestricted(t *testing.T) {
 	cp := Cpak{Options: Options{StorePath: t.TempDir()}}
 	path, err := cp.privateApplicationHome("application-id")
@@ -429,6 +527,13 @@ func TestPrivateApplicationHomeIsPersistentAndRestricted(t *testing.T) {
 	}
 	if filesystemIncludesHostHome(types.Override{}) || !filesystemIncludesHostHome(types.Override{Filesystem: []types.FilesystemPermission{{Path: "home", Access: "read-only"}}}) {
 		t.Fatal("host home permission detection is invalid")
+	}
+}
+
+func TestApplicationDataPathRejectsParentDirectory(t *testing.T) {
+	cp := Cpak{Options: Options{StorePath: t.TempDir()}}
+	if _, err := cp.applicationDataPath(".."); err == nil {
+		t.Fatal("parent directory accepted as an application ID")
 	}
 }
 
@@ -612,6 +717,7 @@ func slicesContain(entries []string, want string) bool {
 func TestContainerEnvironmentAppliesTheHostLocaleOverTheManifest(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("LANG", "pt_BR.UTF-8")
+	t.Setenv("LC_ALL", "pt_BR.UTF-8")
 	app := types.Application{
 		Origin:         "github.com/containerpak/bottles",
 		Version:        "66.1",

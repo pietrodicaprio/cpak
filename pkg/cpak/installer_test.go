@@ -6,6 +6,7 @@ package cpak
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,44 +15,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mirkobrombin/cpak/pkg/filegrant"
 	"github.com/mirkobrombin/cpak/pkg/types"
 )
-
-func TestFindIconPrefersScalableIcon(t *testing.T) {
-	layerDir := t.TempDir()
-	pngPath := filepath.Join(layerDir, "usr/share/icons/hicolor/128x128/apps/example.png")
-	svgPath := filepath.Join(layerDir, "usr/share/icons/hicolor/scalable/apps/example.svg")
-	for _, path := range []string{pngPath, svgPath} {
-		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte("icon"), 0644); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	if got := findIcon(layerDir, "example"); got != svgPath {
-		t.Fatalf("expected scalable icon %q, got %q", svgPath, got)
-	}
-}
-
-func TestFindIconIgnoresFilesThatAreNotIcons(t *testing.T) {
-	layerDir := t.TempDir()
-	sourcesPath := filepath.Join(layerDir, "etc/apt/sources.list.d/vscode.sources")
-	iconPath := filepath.Join(layerDir, "usr/share/pixmaps/vscode.png")
-	for _, path := range []string{sourcesPath, iconPath} {
-		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte("data"), 0644); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	if got := findIcon(layerDir, "vscode"); got != iconPath {
-		t.Fatalf("expected image %q, got %q", iconPath, got)
-	}
-}
 
 func TestExportBinaryForwardsFlagArguments(t *testing.T) {
 	c := newTestCpak(t)
@@ -73,6 +39,34 @@ func TestExportBinaryForwardsFlagArguments(t *testing.T) {
 	}
 	if !strings.Contains(string(content), "'@/usr/local/bin/umu-run' -- \"$@\"") {
 		t.Fatalf("export does not preserve child flags: %q", content)
+	}
+}
+
+func TestRepositoryOriginNormalizesOnlyTheHost(t *testing.T) {
+	got, err := normalizeRepositoryOrigin("GITHUB.COM/containerpak/demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "github.com/containerpak/demo" {
+		t.Fatalf("normalized origin: got %q", got)
+	}
+	for _, origin := range []string{
+		"github.com/Containerpak/demo",
+		"github.com/containerpak/Demo",
+		"github.com/../demo",
+		"github.com/containerpak/..",
+	} {
+		if _, err := normalizeRepositoryOrigin(origin); err == nil {
+			t.Fatalf("accepted ambiguous origin %q", origin)
+		}
+	}
+}
+
+func TestExportBinaryRefusesAnOriginOutsideTheExportRoot(t *testing.T) {
+	c := newTestCpak(t)
+	app := types.Application{Origin: "attacker.example/../.."}
+	if err := c.exportBinary(app, "/usr/bin/.profile"); err == nil {
+		t.Fatal("an origin containing traversal was exported")
 	}
 }
 
@@ -258,6 +252,150 @@ func TestRemoveDesktopAliasChecksPackageIdentity(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("owned alias was not removed: %v", err)
+	}
+}
+
+func TestRemoveResolvesTheInstalledBranch(t *testing.T) {
+	cp := newTestCpak(t)
+	useEnrolmentAuthority(t)
+	app := types.Application{
+		CpakId: "demo-master",
+		Name:   "demo",
+		Origin: testOrigin,
+		Branch: "master",
+	}
+	seedApplication(t, cp, app)
+	home, err := cp.privateApplicationHome(app.CpakId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(home, "state")
+	if err = os.WriteFile(state, []byte("kept"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err = cp.Remove(app.Origin, "", "", ""); err != nil {
+		t.Fatalf("remove installed branch: %v", err)
+	}
+	if apps := storedApplications(t, cp); len(apps) != 0 {
+		t.Fatalf("installed applications: %+v", apps)
+	}
+	if _, err = os.Stat(state); err != nil {
+		t.Fatalf("persistent application data was removed: %v", err)
+	}
+}
+
+func TestRemoveRequiresASelectorForMultipleInstallations(t *testing.T) {
+	cp := newTestCpak(t)
+	for _, branch := range []string{"master", "stable"} {
+		seedApplication(t, cp, types.Application{
+			CpakId: "demo-" + branch,
+			Name:   "demo",
+			Origin: testOrigin,
+			Branch: branch,
+		})
+	}
+
+	err := cp.Remove(testOrigin, "", "", "")
+	if err == nil || !strings.Contains(err.Error(), "multiple installations") {
+		t.Fatalf("remove error: %v", err)
+	}
+	if apps := storedApplications(t, cp); len(apps) != 2 {
+		t.Fatalf("installed applications after rejected removal: %+v", apps)
+	}
+}
+
+func TestPurgeRemovesPersistentApplicationData(t *testing.T) {
+	cp := newTestCpak(t)
+	useEnrolmentAuthority(t)
+	app := types.Application{
+		CpakId: "demo-master",
+		Name:   "demo",
+		Origin: testOrigin,
+		Branch: "master",
+	}
+	seedApplication(t, cp, app)
+	home, err := cp.privateApplicationHome(app.CpakId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(home, "state"), []byte("purge"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = cp.applicationMachineID(app.CpakId); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := cp.applicationIdentityPath(app.CpakId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := filepath.Join(t.TempDir(), "document")
+	if err = os.WriteFile(selected, []byte("document"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	grant, err := filegrant.Resolve(app.Origin, selected, filegrant.AccessReadOnly, filegrant.LifetimePersistent, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grants := filegrant.Store{Directory: filepath.Join(cp.Options.StorePath, "grants")}
+	if err = grants.Add(grant); err != nil {
+		t.Fatal(err)
+	}
+
+	if err = cp.Purge(app.Origin, "", "", ""); err != nil {
+		t.Fatalf("purge installed application: %v", err)
+	}
+	dataPath, err := cp.applicationDataPath(app.CpakId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{dataPath, identity} {
+		if _, err = os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("purged path still exists: %s", path)
+		}
+	}
+	storedGrants, err := grants.Load(app.Origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(storedGrants) != 0 {
+		t.Fatalf("persistent grants remain: %+v", storedGrants)
+	}
+}
+
+func TestPurgeKeepsOriginGrantsForAnotherInstallation(t *testing.T) {
+	cp := newTestCpak(t)
+	useEnrolmentAuthority(t)
+	for _, branch := range []string{"master", "stable"} {
+		seedApplication(t, cp, types.Application{
+			CpakId: "demo-" + branch,
+			Name:   "demo",
+			Origin: testOrigin,
+			Branch: branch,
+		})
+	}
+	selected := filepath.Join(t.TempDir(), "document")
+	if err := os.WriteFile(selected, []byte("document"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	grant, err := filegrant.Resolve(testOrigin, selected, filegrant.AccessReadOnly, filegrant.LifetimePersistent, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grants := filegrant.Store{Directory: filepath.Join(cp.Options.StorePath, "grants")}
+	if err = grants.Add(grant); err != nil {
+		t.Fatal(err)
+	}
+
+	if err = cp.Purge(testOrigin, "master", "", ""); err != nil {
+		t.Fatalf("purge one installed branch: %v", err)
+	}
+	storedGrants, err := grants.Load(testOrigin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(storedGrants) != 1 || storedGrants[0] != grant {
+		t.Fatalf("persistent grants for remaining installation: %+v", storedGrants)
 	}
 }
 
@@ -462,10 +600,6 @@ func TestResolveDependenciesAnswersWithEveryPulledInManifest(t *testing.T) {
 	runtime.Name = "runtime"
 	runtime.Override = types.Override{FsHost: true}
 
-	// The runtime declares the library back, which is a loop an answer must
-	// come out of.
-	runtime.Dependencies = []types.Dependency{{Origin: "github.com/user/library", Branch: "main"}}
-
 	manifest := newTestManifest()
 	manifest.Dependencies = []types.Dependency{{Origin: "github.com/user/library", Branch: "main"}}
 
@@ -496,6 +630,57 @@ func TestResolveDependenciesAnswersWithEveryPulledInManifest(t *testing.T) {
 	}
 	if len(fetched) != 2 {
 		t.Fatalf("the manifests were fetched %d times, want once each: %v", len(fetched), fetched)
+	}
+}
+
+func TestResolveDependenciesRejectsACycle(t *testing.T) {
+	cp := newTestCpak(t)
+	library := newTestManifest()
+	library.Dependencies = []types.Dependency{{Origin: testOrigin, Branch: "main"}}
+	manifest := newTestManifest()
+	manifest.Dependencies = []types.Dependency{{Origin: "github.com/user/library", Branch: "main"}}
+
+	fetch := func(origin, branch, release, commit string) (*types.CpakManifest, error) {
+		if origin == "github.com/user/library" {
+			return library, nil
+		}
+		return manifest, nil
+	}
+	if _, err := cp.resolveDependencies(testOrigin, manifest, fetch, map[string]bool{}); err == nil || !strings.Contains(err.Error(), "dependency cycle") {
+		t.Fatalf("dependency cycle returned %v", err)
+	}
+}
+
+func TestResolveDependenciesBoundsTheGraph(t *testing.T) {
+	cp := newTestCpak(t)
+	manifest := newTestManifest()
+	for index := 0; index <= maxDependencyCount; index++ {
+		manifest.Dependencies = append(manifest.Dependencies, types.Dependency{
+			Origin: fmt.Sprintf("github.com/user/dependency%d", index),
+			Branch: "main",
+		})
+	}
+	fetch := func(origin, branch, release, commit string) (*types.CpakManifest, error) {
+		return newTestManifest(), nil
+	}
+	if _, err := cp.resolveDependencies(testOrigin, manifest, fetch, map[string]bool{}); err == nil || !strings.Contains(err.Error(), "maximum") {
+		t.Fatalf("oversized dependency graph returned %v", err)
+	}
+}
+
+func TestInstallRejectsASelfDependencyBeforePullingIt(t *testing.T) {
+	cp := newTestCpak(t)
+	manifest := newTestManifest()
+	manifest.Dependencies = []types.Dependency{{Origin: testOrigin, Branch: "main"}}
+	err := cp.InstallCpakWithOptions(testOrigin, manifest, "main", "", "", InstallOptions{
+		ResolvedDependencies: []ResolvedDependency{{
+			Origin:   testOrigin,
+			Branch:   "main",
+			Manifest: manifest,
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "dependency cycle") {
+		t.Fatalf("self dependency returned %v", err)
 	}
 }
 

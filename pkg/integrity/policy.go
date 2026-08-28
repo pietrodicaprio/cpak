@@ -5,22 +5,116 @@
 package integrity
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/mirkobrombin/cpak/pkg/types"
 )
 
+const (
+	PolicySchemaWithoutSerial              = 1
+	PolicySchemaWithoutSessionBus          = 2
+	PolicySchemaWithoutDesktopCapabilities = 3
+	CurrentPolicySchema                    = 4
+)
+
 // PolicyRoot hashes what an application is allowed to do. Lists whose order
 // carries no meaning are sorted first; the environment is left as it stands
 // because a later assignment wins over an earlier one.
 func PolicyRoot(override types.Override) (string, error) {
+	return PolicyRootForSchema(override, CurrentPolicySchema)
+}
+
+// PolicyRootForSchema derives a root using the policy shape recorded in an
+// enrolment. New policies always use CurrentPolicySchema.
+func PolicyRootForSchema(override types.Override, schema int) (string, error) {
+	canonical := canonicalPolicy(override)
+	switch schema {
+	case PolicySchemaWithoutSerial:
+		if canonical.DeviceSerial {
+			return "", errors.New("serial devices are not part of this policy schema")
+		}
+		if canonical.SessionBus.Enabled() {
+			return "", errors.New("session bus rules are not part of this policy schema")
+		}
+		encoded, err := json.Marshal(canonical)
+		if err != nil {
+			return "", err
+		}
+		withoutSerial := bytes.Replace(encoded, []byte(`,"deviceSerial":false`), nil, 1)
+		if len(withoutSerial) == len(encoded) {
+			return "", errors.New("serial device field is missing from the current policy schema")
+		}
+		withoutSessionBus := bytes.Replace(withoutSerial, []byte(`,"sessionBus":{}`), nil, 1)
+		if len(withoutSessionBus) == len(withoutSerial) {
+			return "", errors.New("session bus field is missing from the current policy schema")
+		}
+		withoutDesktopCapabilities, err := removeDesktopCapabilityFields(withoutSessionBus)
+		if err != nil {
+			return "", err
+		}
+		return digestJSON("policy", withoutDesktopCapabilities), nil
+	case PolicySchemaWithoutSessionBus:
+		if canonical.SessionBus.Enabled() {
+			return "", errors.New("session bus rules are not part of this policy schema")
+		}
+		encoded, err := json.Marshal(canonical)
+		if err != nil {
+			return "", err
+		}
+		withoutSessionBus := bytes.Replace(encoded, []byte(`,"sessionBus":{}`), nil, 1)
+		if len(withoutSessionBus) == len(encoded) {
+			return "", errors.New("session bus field is missing from the current policy schema")
+		}
+		withoutDesktopCapabilities, err := removeDesktopCapabilityFields(withoutSessionBus)
+		if err != nil {
+			return "", err
+		}
+		return digestJSON("policy", withoutDesktopCapabilities), nil
+	case PolicySchemaWithoutDesktopCapabilities:
+		if canonical.DisplayX11 || canonical.Bluetooth {
+			return "", errors.New("desktop capabilities are not part of this policy schema")
+		}
+		encoded, err := json.Marshal(canonical)
+		if err != nil {
+			return "", err
+		}
+		withoutDesktopCapabilities, err := removeDesktopCapabilityFields(encoded)
+		if err != nil {
+			return "", err
+		}
+		return digestJSON("policy", withoutDesktopCapabilities), nil
+	case CurrentPolicySchema:
+		return digest("policy", canonical)
+	default:
+		return "", fmt.Errorf("unsupported policy schema %d", schema)
+	}
+}
+
+func removeDesktopCapabilityFields(encoded []byte) ([]byte, error) {
+	withoutDisplay := bytes.Replace(encoded, []byte(`,"displayX11":false`), nil, 1)
+	if len(withoutDisplay) == len(encoded) {
+		return nil, errors.New("X11 display field is missing from the current policy schema")
+	}
+	withoutBluetooth := bytes.Replace(withoutDisplay, []byte(`,"bluetooth":false`), nil, 1)
+	if len(withoutBluetooth) == len(withoutDisplay) {
+		return nil, errors.New("Bluetooth field is missing from the current policy schema")
+	}
+	return withoutBluetooth, nil
+}
+
+func canonicalPolicy(override types.Override) types.Override {
 	canonical := override
 	canonical.Filesystem = sortedPermissions(override.Filesystem)
 	canonical.HostActions = sortedActions(override.HostActions)
+	canonical.SessionBus = types.CanonicalDBusPolicy(override.SessionBus)
 	canonical.FsExtra = sorted(override.FsExtra)
 	canonical.AllowedHostCommands = sorted(override.AllowedHostCommands)
-	return digest("policy", canonical)
+	return canonical
 }
 
 // Restricts reports whether candidate grants no more than current. Two policies
@@ -43,6 +137,7 @@ func Restricts(current, candidate types.Override) bool {
 	candidate = candidate.WithMigratedFilesystem()
 	for _, pair := range [][2]bool{
 		{candidate.SocketX11, current.SocketX11},
+		{candidate.DisplayX11, current.DisplayX11},
 		{candidate.SocketWayland, current.SocketWayland},
 		{candidate.SocketPulseAudio, current.SocketPulseAudio},
 		{candidate.SocketSessionBus, current.SocketSessionBus},
@@ -52,6 +147,7 @@ func Restricts(current, candidate types.Override) bool {
 		{candidate.SocketGpgAgent, current.SocketGpgAgent},
 		{candidate.SocketAtSpiBus, current.SocketAtSpiBus},
 		{candidate.SocketBluetooth, current.SocketBluetooth},
+		{candidate.Bluetooth, current.Bluetooth},
 		{candidate.DeviceDri, current.DeviceDri},
 		{candidate.DeviceKvm, current.DeviceKvm},
 		{candidate.DeviceShm, current.DeviceShm},
@@ -102,6 +198,9 @@ func Restricts(current, candidate types.Override) bool {
 		return false
 	}
 	if !actionsCovered(current.HostActions, candidate.HostActions) {
+		return false
+	}
+	if !types.DBusPolicyRestricts(current.SessionBus, candidate.SessionBus) {
 		return false
 	}
 	if !permissionsCovered(current.Filesystem, candidate.Filesystem) {

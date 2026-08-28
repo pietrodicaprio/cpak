@@ -220,7 +220,7 @@ func TestUpdateBranchInstallRefreshesRecord(t *testing.T) {
 	if apps[0].ImageDigest != "sha256:1111111111111111111111111111111111111111111111111111111111111111" {
 		t.Fatalf("expected the resolved image digest, got %q", apps[0].ImageDigest)
 	}
-	wantManifestDigest, err := manifestIdentityDigest(stub.manifest)
+	wantManifestDigest, err := ManifestIdentityDigest(stub.manifest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +255,7 @@ func TestUpdateBranchInstallUpToDate(t *testing.T) {
 		t.Fatalf("expected refreshed exports without a restart, got %d exports and %d stops", stub.exported, stub.stopped)
 	}
 	apps := storedApplications(t, c)
-	wantManifestDigest, err := manifestIdentityDigest(stub.manifest)
+	wantManifestDigest, err := ManifestIdentityDigest(stub.manifest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +300,7 @@ func TestUpdateWithStaleEvidenceCannotInheritTheOldTrustedState(t *testing.T) {
 	app.Branch = "main"
 	app.Image = oldManifest.Image
 	app.ImageDigest = oldDigest
-	app.ManifestDigest, err = manifestIdentityDigest(oldManifest)
+	app.ManifestDigest, err = ManifestIdentityDigest(oldManifest)
 	if err != nil {
 		t.Fatal(err)
 	}

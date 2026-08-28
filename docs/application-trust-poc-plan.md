@@ -1,10 +1,11 @@
 # Application Trust POC Implementation Plan
 
-- Status: active; Phases 0 through 5 complete, Phase 6 pending
+- Status: active; Phases 0 through 5 complete on the prior baseline; upstream
+  baseline integration and Phase 5 recertification in progress; Phase 6 blocked
 - Working branch: `poc/application-trust-framework`
 - Pull request policy: no pull request is opened until the complete POC
   satisfies the Definition of Done in this document
-- Last updated: 2026-08-21
+- Last updated: 2026-08-28
 
 ## 1. Purpose
 
@@ -707,6 +708,20 @@ AT-POL-011, strict ABI dispatch proves that ABI 2 cannot be partially applied as
 ABI 1. Building and executing a pinned pre-ABI2 cpak binary remains optional
 compatibility hardening and is not a Phase 5 completion blocker. Phase 5 is
 complete.
+
+### Pre-Phase 6 upstream baseline recertification
+
+Phase 6 must not start from the earlier certified baseline. The dedicated
+`integration/application-trust-e86fa23` branch merges the 17 upstream commits
+between `be29d55` and `e86fa23` into the POC while preserving the earlier POC
+branch as its certification reference. The integration is documented in
+`application-trust-upstream-integration.md`.
+
+This gate is complete only when conflict-specific regressions, the complete
+Linux test and race suites, vet, Manifest v3 Phase 5 fixtures, the X.509/CMS
+lifecycle, and a fresh GitHub OIDC/Fulcio/Rekor lifecycle all pass at the same
+integrated commit. Until then, the earlier Phase 5 result remains valid for the
+isolated design but does not certify the current cpak security baseline.
 
 ### Phase 6: Publication package and final certification
 

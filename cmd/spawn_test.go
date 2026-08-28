@@ -8,17 +8,30 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"errors"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/mirkobrombin/cpak/pkg/sandbox"
 	"github.com/mirkobrombin/cpak/pkg/types"
 )
+
+func TestCreateCpakFileSkipsContainersWithoutNestedDependencies(t *testing.T) {
+	root := t.TempDir()
+	if err := (&SpawnCmd{}).createCpakFile("", root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "tmp", ".cpak")); !os.IsNotExist(err) {
+		t.Fatalf("empty capability left a nested marker: %v", err)
+	}
+}
 
 func TestWriteNvidiaLoaderConfigurationUsesSoname(t *testing.T) {
 	root := t.TempDir()
@@ -65,6 +78,40 @@ func TestBaseSandboxGrantsLimitProcWritesToNestedSandboxes(t *testing.T) {
 	}
 }
 
+func TestLoginSessionStateMountsIncludeAvailableSystemdState(t *testing.T) {
+	hostRoot := t.TempDir()
+	for _, path := range []string{"run/systemd/sessions", "run/systemd/users"} {
+		if err := os.MkdirAll(filepath.Join(hostRoot, path), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := loginSessionStateMounts(hostRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []loginSessionStateMount{
+		{source: filepath.Join(hostRoot, "run/systemd/sessions"), target: "/run/systemd/sessions"},
+		{source: filepath.Join(hostRoot, "run/systemd/users"), target: "/run/systemd/users"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("login session state mounts: got %+v, want %+v", got, want)
+	}
+}
+
+func TestLoginSessionStateMountsRejectSymlinks(t *testing.T) {
+	hostRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(hostRoot, "run/systemd"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(hostRoot, "run/systemd/sessions")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loginSessionStateMounts(hostRoot); err == nil {
+		t.Fatal("symbolic logind state directory was accepted")
+	}
+}
+
 func TestPrepareRootfsBindTargetReusesAnExistingMount(t *testing.T) {
 	rootfs := t.TempDir()
 	source := filepath.Join(t.TempDir(), "service.sock")
@@ -99,6 +146,62 @@ func TestSetEnvironmentVariablesIdentifiesContainer(t *testing.T) {
 	}
 	if !reflect.DeepEqual(env, want) {
 		t.Fatalf("environment: got %v, want %v", env, want)
+	}
+}
+
+func TestRefreshDynamicLinkerCacheDoesNotExecuteTheImageHelper(t *testing.T) {
+	if _, err := os.Stat("/sbin/ldconfig"); os.IsNotExist(err) {
+		t.Skip("host ldconfig is unavailable")
+	}
+	root := t.TempDir()
+	for _, directory := range []string{"etc", "sbin", "var/cache"} {
+		if err := os.MkdirAll(filepath.Join(root, directory), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "etc/ld.so.conf"), nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(root, "image-helper-ran")
+	payload := []byte("#!/bin/sh\ntouch " + marker + "\n")
+	if err := os.WriteFile(filepath.Join(root, "sbin/ldconfig"), payload, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := refreshDynamicLinkerCache(root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("the image helper ran: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "etc/ld.so.cache")); err != nil {
+		t.Fatalf("the trusted helper did not refresh the cache: %v", err)
+	}
+}
+
+func TestContainerHostnameIsStableAndPrivate(t *testing.T) {
+	if os.Getenv("CPAK_HOSTNAME_TEST") == "1" {
+		if err := setContainerHostname(); err != nil {
+			t.Fatal(err)
+		}
+		if hostname, err := os.Hostname(); err != nil || hostname != "cpak" {
+			t.Fatalf("container hostname: got %q, error %v", hostname, err)
+		}
+		return
+	}
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("unshare", "--user", "--map-root-user", "--uts", os.Args[0], "-test.run=^TestContainerHostnameIsStableAndPrivate$")
+	command.Env = append(os.Environ(), "CPAK_HOSTNAME_TEST=1")
+	if output, err := command.CombinedOutput(); err != nil {
+		if bytes.Contains(output, []byte("Operation not permitted")) {
+			t.Skip("user namespaces are unavailable")
+		}
+		t.Fatalf("hostname subprocess: %v\n%s", err, output)
+	}
+	if current, err := os.Hostname(); err != nil || current != hostname {
+		t.Fatalf("host hostname changed: got %q, want %q, error %v", current, hostname, err)
 	}
 }
 
@@ -294,6 +397,41 @@ func TestInstallRuntimePackagesRejectsInstallerMismatch(t *testing.T) {
 	}
 	if err := command.installRuntimePackages([]string{"one"}, []string{"file"}, []string{"/opt/one", "/opt/two"}); err == nil {
 		t.Fatal("runtime package and destination count mismatch was accepted")
+	}
+}
+
+func TestBuildLayerAppliesSeccompBeforeRunningAnInstaller(t *testing.T) {
+	original := applyBuildLayerSeccomp
+	t.Cleanup(func() { applyBuildLayerSeccomp = original })
+	want := errors.New("seccomp refused")
+	called := false
+	applyBuildLayerSeccomp = func() error {
+		called = true
+		return want
+	}
+
+	err := (&SpawnCmd{}).installRuntimePackagesInSandbox([]string{"package.deb"}, []string{"dpkg"}, nil)
+	if !called || !errors.Is(err, want) {
+		t.Fatalf("build layer seccomp: called=%v, err=%v", called, err)
+	}
+}
+
+func TestApplicationCommandsAlwaysUseANestedUserNamespace(t *testing.T) {
+	for _, allowRoot := range []bool{false, true} {
+		command := (&SpawnCmd{AllowRoot: allowRoot}).applicationCommand([]string{"launch", "--", "/bin/true"}, []string{"LANG=C"})
+		if command.SysProcAttr.Cloneflags&syscall.CLONE_NEWUSER == 0 {
+			t.Fatalf("allow root %t: application shares the container init user namespace", allowRoot)
+		}
+		if len(command.SysProcAttr.UidMappings) != 1 || len(command.SysProcAttr.GidMappings) != 1 {
+			t.Fatalf("allow root %t: incomplete identity mapping: %+v", allowRoot, command.SysProcAttr)
+		}
+	}
+}
+
+func TestConfigurationFilesRejectAnInvalidNameserverBeforeMounting(t *testing.T) {
+	_, _, err := (&SpawnCmd{}).injectConfigurationFiles(t.TempDir(), false, "not-an-address")
+	if err == nil || !strings.Contains(err.Error(), "invalid nameserver") {
+		t.Fatalf("got %v, want an invalid nameserver error", err)
 	}
 }
 

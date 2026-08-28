@@ -4,7 +4,11 @@
  */
 package types
 
-const ManifestSchemaURL = "https://raw.githubusercontent.com/Containerpak/cpak/v2/schema/manifest-v2.json"
+const (
+	ManifestV2SchemaURL = "https://raw.githubusercontent.com/Containerpak/cpak/v2/schema/manifest-v2.json"
+	ManifestV3SchemaURL = "https://raw.githubusercontent.com/Containerpak/cpak/v2/schema/manifest-v3.json"
+	ManifestSchemaURL   = ManifestV3SchemaURL
+)
 
 // CpakManifest is the struct that represents the manifest of an application.
 type CpakManifest struct {
@@ -12,7 +16,7 @@ type CpakManifest struct {
 	Schema string `json:"$schema,omitempty" jsonschema:"format=uri,description=JSON Schema used by editors"`
 
 	// ManifestVersion is the version of the manifest schema (e.g. "1.0").
-	ManifestVersion string `json:"manifest_version" jsonschema:"enum=1.0,enum=2.0,description=Manifest schema version"`
+	ManifestVersion string `json:"manifest_version" jsonschema:"enum=1.0,enum=2.0,enum=3.0,description=Manifest schema version"`
 
 	// Name is the name of the application.
 	Name string `json:"name" jsonschema:"minLength=1,description=Application name"`
@@ -36,6 +40,9 @@ type CpakManifest struct {
 
 	// DesktopEntries is the list of exported desktop entries of the application.
 	DesktopEntries []string `json:"desktop_entries,omitempty" jsonschema:"description=.desktop entry files"`
+
+	// FormFactors identifies the device shapes supported by the application.
+	FormFactors []string `json:"form_factors,omitempty" jsonschema:"minItems=1,uniqueItems=true,enum=desktop,enum=phone,enum=tablet,enum=tv,enum=watch,description=Device form factors supported by the application"`
 
 	// Sessions are login sessions which can be registered with a display manager.
 	Sessions []Session `json:"sessions,omitempty" jsonschema:"description=Desktop and kiosk login sessions"`
@@ -62,8 +69,9 @@ type CpakManifest struct {
 
 	RuntimeSources []RuntimeSource `json:"runtime_sources,omitempty" jsonschema:"description=External artifacts fetched at install time"`
 
-	legacyFilesystemFields []string
-	filesystemDeclared     bool
+	legacyFilesystemFields  []string
+	filesystemDeclared      bool
+	manifestV3RemovedFields []string
 }
 
 func (m *CpakManifest) SetLegacyFilesystemFields(fields []string) {
@@ -80,6 +88,14 @@ func (m *CpakManifest) SetFilesystemDeclared(declared bool) {
 
 func (m CpakManifest) FilesystemDeclared() bool {
 	return m.filesystemDeclared
+}
+
+func (m *CpakManifest) SetManifestV3RemovedFields(fields []string) {
+	m.manifestV3RemovedFields = append([]string{}, fields...)
+}
+
+func (m CpakManifest) ManifestV3RemovedFields() []string {
+	return append([]string{}, m.manifestV3RemovedFields...)
 }
 
 type RuntimeSource struct {

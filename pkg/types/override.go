@@ -13,16 +13,18 @@ import (
 )
 
 type Override struct {
-	SocketX11        bool `json:"socketX11" jsonschema:"description=Mount /tmp/.X11-unix/,default=false" flag:"socketX11,bool"`
+	SocketX11        bool `json:"socketX11" jsonschema:"description=Unsupported legacy raw X11 socket access,default=false" flag:"socketX11,bool"`
+	DisplayX11       bool `json:"displayX11" jsonschema:"description=Run an isolated X11 compatibility display,default=false" flag:"displayX11,bool"`
 	SocketWayland    bool `json:"socketWayland" jsonschema:"description=Mount Wayland socket,default=false" flag:"socketWayland,bool"`
 	SocketPulseAudio bool `json:"socketPulseAudio" jsonschema:"description=Mount PulseAudio socket,default=false" flag:"socketPulseAudio,bool"`
-	SocketSessionBus bool `json:"socketSessionBus" jsonschema:"description=Mount session DBus socket,default=false" flag:"socketSessionBus,bool"`
-	SocketSystemBus  bool `json:"socketSystemBus" jsonschema:"description=Mount system DBus socket,default=false" flag:"socketSystemBus,bool"`
+	SocketSessionBus bool `json:"socketSessionBus" jsonschema:"description=Unsupported legacy raw session bus access,default=false" flag:"socketSessionBus,bool"`
+	SocketSystemBus  bool `json:"socketSystemBus" jsonschema:"description=Unsupported legacy raw system bus access,default=false" flag:"socketSystemBus,bool"`
 	SocketSshAgent   bool `json:"socketSshAgent" jsonschema:"description=Mount SSH agent socket,default=false" flag:"socketSshAgent,bool"`
 	SocketCups       bool `json:"socketCups" jsonschema:"description=Mount CUPS socket,default=false" flag:"socketCups,bool"`
 	SocketGpgAgent   bool `json:"socketGpgAgent" jsonschema:"description=Mount GPG agent socket,default=false" flag:"socketGpgAgent,bool"`
 	SocketAtSpiBus   bool `json:"socketAtSpiBus" jsonschema:"description=Mount AT-SPI bus socket,default=false" flag:"socketAtSpiBus,bool"`
 	SocketBluetooth  bool `json:"socketBluetooth" jsonschema:"description=Mount Bluetooth socket,default=false" flag:"socketBluetooth,bool"`
+	Bluetooth        bool `json:"bluetooth" jsonschema:"description=Expose the general BlueZ API through a private proxy,default=false" flag:"bluetooth,bool"`
 
 	DeviceDri   bool `json:"deviceDri" jsonschema:"description=Expose /dev/dri,default=false" flag:"deviceDri,bool"`
 	DeviceKvm   bool `json:"deviceKvm" jsonschema:"description=Expose /dev/kvm,default=false" flag:"deviceKvm,bool"`
@@ -46,6 +48,7 @@ type Override struct {
 	HostApplications bool              `json:"hostApplications" jsonschema:"description=Expose and launch host desktop applications,default=false" flag:"hostApplications,bool"`
 	HostActions      []HostActionGrant `json:"hostActions,omitempty" jsonschema:"description=Typed host service capabilities"`
 	FilePicker       FilePickerGrant   `json:"filePicker,omitempty" jsonschema:"description=Native file chooser capabilities"`
+	SessionBus       DBusPolicy        `json:"sessionBus,omitempty" jsonschema:"description=Filtered session bus policy"`
 
 	Filesystem []FilesystemPermission `json:"filesystem,omitempty" jsonschema:"description=Host filesystem permissions"`
 
@@ -95,9 +98,9 @@ func ValidateFilePickerGrant(grant FilePickerGrant) error {
 //
 // It used to hand out the session bus, the system bus, X11, Wayland, PulseAudio,
 // CUPS, AT-SPI, the GPU, KVM, shared memory and the network to anything that
-// stayed quiet. The session bus alone is the whole sandbox: with it the proxy in
-// pkg/desktopbus stops filtering, and a name away sits org.freedesktop.systemd1
-// and a StartTransientUnit that runs a process outside the container. A
+// stayed quiet. The session bus alone was the whole sandbox: a name away sat
+// org.freedesktop.systemd1 and a StartTransientUnit that ran a process outside
+// the container. A
 // permission nobody asked for is not a default, it is a grant, and a package
 // that needs one can say so in one line.
 //
@@ -108,6 +111,7 @@ func ValidateFilePickerGrant(grant FilePickerGrant) error {
 func NewOverride() Override {
 	return Override{
 		SocketX11:           false,
+		DisplayX11:          false,
 		SocketWayland:       false,
 		SocketPulseAudio:    false,
 		SocketSessionBus:    false,
@@ -116,6 +120,7 @@ func NewOverride() Override {
 		SocketCups:          false,
 		SocketGpgAgent:      false,
 		SocketAtSpiBus:      false,
+		Bluetooth:           false,
 		DeviceDri:           false,
 		DeviceKvm:           false,
 		DeviceShm:           false,
@@ -284,6 +289,9 @@ func (o Override) Additions(next Override) []string {
 			if key == "filePicker" && filePickerHasAdditions(o.FilePicker, next.FilePicker) {
 				changes = append(changes, key)
 			}
+			if key == "sessionBus" && !DBusPolicyRestricts(o.SessionBus, next.SessionBus) {
+				changes = append(changes, key)
+			}
 		}
 	}
 	return changes
@@ -311,7 +319,8 @@ func filePickerHasAdditions(current, next FilePickerGrant) bool {
 // actions, are absent by design and are not reported.
 func UngrantedPermissions(raw []byte) ([]string, error) {
 	var manifest struct {
-		Override map[string]json.RawMessage `json:"override"`
+		ManifestVersion string                     `json:"manifest_version"`
+		Override        map[string]json.RawMessage `json:"override"`
 	}
 	if err := json.Unmarshal(raw, &manifest); err != nil {
 		return nil, err
@@ -328,9 +337,21 @@ func UngrantedPermissions(raw []byte) ([]string, error) {
 		if key == "" || strings.Contains(options, "omitempty") {
 			continue
 		}
+		if manifest.ManifestVersion == "3.0" && manifestV3RemovedPermission(key) {
+			continue
+		}
 		if _, written := manifest.Override[key]; !written {
 			missing = append(missing, key)
 		}
 	}
 	return missing, nil
+}
+
+func manifestV3RemovedPermission(key string) bool {
+	switch key {
+	case "socketX11", "socketSessionBus", "socketSystemBus", "socketAtSpiBus", "socketBluetooth":
+		return true
+	default:
+		return false
+	}
 }

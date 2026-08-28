@@ -1,0 +1,679 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/Containerpak/cpak/v2/schema/manifest-v3.json",
+  "$defs": {
+    "AddonExports": {
+      "properties": {
+        "path": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "Directories prepended to PATH"
+        },
+        "library_path": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "Directories prepended to runtime and compiler library paths"
+        },
+        "include_path": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "Directories prepended to CPATH"
+        },
+        "pkg_config_path": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "Directories prepended to PKG_CONFIG_PATH"
+        },
+        "cmake_prefix_path": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "Directories prepended to CMAKE_PREFIX_PATH"
+        },
+        "environment": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "Environment entries in NAME=value form"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "AddonProvider": {
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*$",
+          "description": "Provider identifier within its slot"
+        },
+        "slot": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*$",
+          "description": "Capability supplied by this package"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "exclusive",
+            "multiple"
+          ],
+          "description": "Whether one or several providers may be active"
+        },
+        "exports": {
+          "$ref": "#/$defs/AddonExports",
+          "description": "Runtime paths and environment supplied by the provider"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id",
+        "slot",
+        "mode"
+      ]
+    },
+    "DBusCallGrant": {
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 255,
+          "description": "Well-known destination name"
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 255,
+          "description": "Exact object path"
+        },
+        "interface": {
+          "type": "string",
+          "maxLength": 255,
+          "description": "Exact interface name"
+        },
+        "members": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "maxItems": 64,
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "Method names allowed on the interface"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "name",
+        "path",
+        "interface",
+        "members"
+      ]
+    },
+    "DBusPolicy": {
+      "properties": {
+        "talk": {
+          "items": {
+            "$ref": "#/$defs/DBusCallGrant"
+          },
+          "type": "array",
+          "maxItems": 64,
+          "description": "Exact session bus calls the application may make"
+        },
+        "own": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "description": "Session bus names the application may own"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "Dependency": {
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Installed dependency identifier"
+        },
+        "origin": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Dependency repository origin"
+        },
+        "branch": {
+          "type": "string",
+          "description": "Dependency branch"
+        },
+        "release": {
+          "type": "string",
+          "description": "Dependency release"
+        },
+        "commit": {
+          "type": "string",
+          "description": "Dependency commit"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "nested",
+            "layer"
+          ],
+          "description": "Dependency integration mode"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "origin"
+      ]
+    },
+    "FilePickerGrant": {
+      "properties": {
+        "openFile": {
+          "type": "boolean",
+          "description": "Select an existing host file",
+          "default": false
+        },
+        "openFolder": {
+          "type": "boolean",
+          "description": "Select an existing host folder",
+          "default": false
+        },
+        "saveFile": {
+          "type": "boolean",
+          "description": "Select a host destination for a new file",
+          "default": false
+        },
+        "persistent": {
+          "type": "boolean",
+          "description": "Offer persistent grants",
+          "default": false
+        },
+        "containingFolder": {
+          "type": "boolean",
+          "description": "Offer the containing folder as context",
+          "default": false
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "FilesystemPermission": {
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^(?:home(?:/.*)?|host|xdg-(?:desktop|documents|download|music|pictures|public-share|templates|videos)|/.*)$",
+          "description": "Host path or portable home host and XDG scope"
+        },
+        "access": {
+          "type": "string",
+          "enum": [
+            "read-only",
+            "read-write"
+          ],
+          "description": "Filesystem access mode"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "path",
+        "access"
+      ]
+    },
+    "HostActionGrant": {
+      "properties": {
+        "provider": {
+          "type": "string",
+          "enum": [
+            "containers"
+          ],
+          "description": "Built-in host service provider"
+        },
+        "capabilities": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "minItems": 1,
+          "description": "Provider capabilities"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "provider",
+        "capabilities"
+      ]
+    },
+    "Override": {
+      "properties": {
+        "displayX11": {
+          "type": "boolean",
+          "description": "Run an isolated X11 compatibility display",
+          "default": false
+        },
+        "socketWayland": {
+          "type": "boolean",
+          "description": "Mount Wayland socket",
+          "default": false
+        },
+        "socketPulseAudio": {
+          "type": "boolean",
+          "description": "Mount PulseAudio socket",
+          "default": false
+        },
+        "socketSshAgent": {
+          "type": "boolean",
+          "description": "Mount SSH agent socket",
+          "default": false
+        },
+        "socketCups": {
+          "type": "boolean",
+          "description": "Mount CUPS socket",
+          "default": false
+        },
+        "socketGpgAgent": {
+          "type": "boolean",
+          "description": "Mount GPG agent socket",
+          "default": false
+        },
+        "bluetooth": {
+          "type": "boolean",
+          "description": "Expose the general BlueZ API through a private proxy",
+          "default": false
+        },
+        "deviceDri": {
+          "type": "boolean",
+          "description": "Expose /dev/dri",
+          "default": false
+        },
+        "deviceKvm": {
+          "type": "boolean",
+          "description": "Expose /dev/kvm",
+          "default": false
+        },
+        "deviceShm": {
+          "type": "boolean",
+          "description": "Expose /dev/shm",
+          "default": false
+        },
+        "deviceAlsa": {
+          "type": "boolean",
+          "description": "Expose ALSA devices",
+          "default": false
+        },
+        "deviceVideo": {
+          "type": "boolean",
+          "description": "Expose video devices",
+          "default": false
+        },
+        "deviceFuse": {
+          "type": "boolean",
+          "description": "Expose FUSE devices",
+          "default": false
+        },
+        "deviceTun": {
+          "type": "boolean",
+          "description": "Expose TUN/TAP",
+          "default": false
+        },
+        "deviceUsb": {
+          "type": "boolean",
+          "description": "Expose USB devices",
+          "default": false
+        },
+        "deviceSerial": {
+          "type": "boolean",
+          "description": "Expose USB and CDC serial ports",
+          "default": false
+        },
+        "deviceInput": {
+          "type": "boolean",
+          "description": "Expose input devices",
+          "default": false
+        },
+        "deviceTTY": {
+          "type": "boolean",
+          "description": "Expose the controlling terminal",
+          "default": false
+        },
+        "deviceAll": {
+          "type": "boolean",
+          "description": "Expose all /dev",
+          "default": false
+        },
+        "notification": {
+          "type": "boolean",
+          "description": "Enable desktop notifications",
+          "default": false
+        },
+        "openURI": {
+          "type": "boolean",
+          "description": "Allow opening external URIs",
+          "default": false
+        },
+        "hostApplications": {
+          "type": "boolean",
+          "description": "Expose and launch host desktop applications",
+          "default": false
+        },
+        "hostActions": {
+          "items": {
+            "$ref": "#/$defs/HostActionGrant"
+          },
+          "type": "array",
+          "description": "Typed host service capabilities"
+        },
+        "filePicker": {
+          "$ref": "#/$defs/FilePickerGrant",
+          "description": "Native file chooser capabilities"
+        },
+        "sessionBus": {
+          "$ref": "#/$defs/DBusPolicy",
+          "description": "Filtered session bus policy"
+        },
+        "filesystem": {
+          "items": {
+            "$ref": "#/$defs/FilesystemPermission"
+          },
+          "type": "array",
+          "description": "Host filesystem permissions"
+        },
+        "env": {
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*="
+          },
+          "type": "array",
+          "minItems": 0,
+          "description": "Additional environment variables"
+        },
+        "network": {
+          "type": "boolean",
+          "description": "Enable network namespace",
+          "default": false
+        },
+        "process": {
+          "type": "boolean",
+          "description": "Share host process namespace",
+          "default": false
+        },
+        "userNamespaces": {
+          "type": "boolean",
+          "description": "Allow nested user namespaces for application sandboxes",
+          "default": false
+        },
+        "memoryMaxMB": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum memory in MiB",
+          "default": 0
+        },
+        "cpuQuota": {
+          "type": "integer",
+          "maximum": 1000,
+          "minimum": 0,
+          "description": "CPU quota as a percentage of one core",
+          "default": 0
+        },
+        "pidsMax": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum process count",
+          "default": 0
+        },
+        "asRoot": {
+          "type": "boolean",
+          "description": "Run as root inside container",
+          "default": false
+        },
+        "allowedHostCommands": {
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "type": "array",
+          "minItems": 0,
+          "description": "Legacy host command compatibility field"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "RuntimeSource": {
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "File name of the artifact"
+        },
+        "url": {
+          "type": "string",
+          "pattern": "^https://",
+          "description": "HTTPS URL of the artifact"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{64}$",
+          "description": "SHA256 checksum of the artifact"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Size of the artifact in bytes"
+        },
+        "installer": {
+          "type": "string",
+          "enum": [
+            "dpkg",
+            "deb-extract",
+            "rpm",
+            "tar",
+            "file"
+          ],
+          "description": "Installer used inside the cpak environment"
+        },
+        "destination": {
+          "type": "string",
+          "pattern": "^/opt/.+",
+          "description": "Destination for a file runtime source"
+        },
+        "architecture": {
+          "type": "string",
+          "enum": [
+            "amd64",
+            "arm64"
+          ],
+          "description": "Target architecture of the artifact"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "url",
+        "sha256",
+        "size",
+        "installer"
+      ]
+    },
+    "Session": {
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 96,
+          "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$",
+          "description": "Globally unique session identifier"
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 80,
+          "minLength": 1,
+          "description": "Session name shown by the display manager"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 160,
+          "description": "Short session description"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "desktop",
+            "kiosk"
+          ],
+          "description": "Login session type"
+        },
+        "entrypoint": {
+          "type": "string",
+          "pattern": "^/",
+          "description": "Exported binary used to start the session"
+        },
+        "override": {
+          "$ref": "#/$defs/Override",
+          "description": "Permissions used by the full login session"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "description",
+        "kind",
+        "entrypoint",
+        "override"
+      ]
+    }
+  },
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri",
+      "description": "JSON Schema used by editors"
+    },
+    "manifest_version": {
+      "type": "string",
+      "const": "3.0",
+      "description": "Manifest schema version"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Application name"
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Short application description"
+    },
+    "version": {
+      "type": "string",
+      "description": "Application version"
+    },
+    "image": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^.+@sha256:[A-Fa-f0-9]{64}$",
+      "description": "Digest-pinned OCI image reference"
+    },
+    "binaries": {
+      "items": {
+        "type": "string",
+        "pattern": "^/[^\\x00-\\x1f\\x7f-\\x9f]+$"
+      },
+      "type": "array",
+      "minItems": 1,
+      "description": "Absolute paths to binaries"
+    },
+    "desktop_entries": {
+      "items": {
+        "type": "string",
+        "pattern": "^.+\\.desktop$"
+      },
+      "type": "array",
+      "description": ".desktop entry files"
+    },
+    "form_factors": {
+      "items": {
+        "type": "string",
+        "enum": [
+          "desktop",
+          "phone",
+          "tablet",
+          "tv",
+          "watch"
+        ]
+      },
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "description": "Device form factors supported by the application"
+    },
+    "sessions": {
+      "items": {
+        "$ref": "#/$defs/Session"
+      },
+      "type": "array",
+      "description": "Desktop and kiosk login sessions"
+    },
+    "dependencies": {
+      "items": {
+        "$ref": "#/$defs/Dependency"
+      },
+      "type": "array",
+      "description": "cpak dependencies"
+    },
+    "addons": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array",
+      "description": "Optional addons"
+    },
+    "addon_provider": {
+      "$ref": "#/$defs/AddonProvider",
+      "description": "Addon capability supplied by this package"
+    },
+    "idle_time": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Idle time in minutes before stop"
+    },
+    "override": {
+      "$ref": "#/$defs/Override",
+      "description": "Permissions override settings"
+    },
+    "runtime_sources": {
+      "items": {
+        "$ref": "#/$defs/RuntimeSource"
+      },
+      "type": "array",
+      "description": "External artifacts fetched at install time"
+    }
+  },
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "manifest_version",
+    "name",
+    "description",
+    "image",
+    "binaries",
+    "idle_time",
+    "override"
+  ]
+}

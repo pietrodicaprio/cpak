@@ -93,11 +93,25 @@ Other common operations:
 ```sh
 cpak list
 cpak update
+cpak remove github.com/bottlesdevs/bottles
 cpak self-update --check
 cpak stop github.com/bottlesdevs/bottles
 cpak audit
 cpak audit --repair
 ```
+
+`cpak remove` uses the source selector of the sole installed copy. When more
+than one branch, release or commit is installed, pass the matching `--branch`,
+`--release` or `--commit`. Package files are removed automatically. The private
+application home and persistent file grants are retained unless `--purge` is
+specified:
+
+```sh
+cpak remove --purge github.com/bottlesdevs/bottles
+```
+
+`cpak gc --apply` clears unused shared storage and download cache. It is not
+required to complete a removal and does not delete a retained application home.
 
 ## Aliases
 
@@ -134,22 +148,22 @@ The selection belongs to that application. Disabling an addon rebuilds its
 runtime view, and an addon cannot be removed while another installed package is
 using it.
 
-## Manifest v2
+## Manifest v3
 
 Each package repository contains a strict `cpak.json` manifest. Unknown fields
 and declared features that cpak cannot apply are rejected.
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/Containerpak/cpak/v2/schema/manifest-v2.json",
-  "manifest_version": "2.0",
+  "$schema": "https://raw.githubusercontent.com/Containerpak/cpak/v2/schema/manifest-v3.json",
+  "manifest_version": "3.0",
   "name": "Example",
   "description": "Example application.",
   "version": "1.0.0",
-  "image": "ghcr.io/example/example:main",
-  "image_ref": "source",
+  "image": "ghcr.io/example/example@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   "binaries": ["/usr/bin/example"],
   "desktop_entries": ["/usr/share/applications/example.desktop"],
+  "form_factors": ["desktop"],
   "dependencies": [],
   "addons": [],
   "idle_time": 0,
@@ -167,9 +181,25 @@ Create, validate and migrate manifests with the CLI:
 ```sh
 cpak init --help
 cpak validate cpak.json
-cpak gen-schema --output schema/manifest-v2.json
+cpak gen-schema --manifest-version 3.0 --output schema/manifest-v3.json
 cpak migrate-manifest cpak.json
 ```
+
+Graphical packages can declare any combination of `desktop`, `phone`, `tablet`,
+`tv` and `watch` in `form_factors`. Package stores may use the list for device
+filters. Leaving it out means that support was not declared.
+
+Set `displayX11` when an application needs X11 compatibility. cpak starts one
+nested display for the container and mounts only its socket and authority file.
+It uses Xwayland on a Wayland session or Xephyr on an X11 session. The host X11
+display is not exposed.
+
+Set `bluetooth` to expose the BlueZ service through a private system bus proxy.
+The permission covers general BlueZ use, including discovery, pairing, GATT,
+agents, profiles and file descriptor passing. Calls to other system services
+and raw HCI access remain blocked. This needs BlueZ and its existing system bus
+on hosts where the permission is used, but cpak does not invoke `dbus-daemon` or
+an external D-Bus proxy.
 
 `runtime_sources` adds checksum-pinned artifacts to a managed runtime layer.
 Use the `dpkg` or `rpm` installer for native packages. Use `deb-extract` when a
@@ -195,9 +225,8 @@ configuration and complete permission policy. Addons remain optional and are
 mounted above the parent image. The structured update result records every
 effective permission change.
 
-Set `image_ref` to `source` when CI publishes OCI tags for each Git branch,
-release and commit. cpak then selects the matching tag for the requested Git
-reference.
+Manifest v3 requires an immutable digest in `image`. Manifest v2 remains
+supported for repositories that select OCI tags through `image_ref: source`.
 
 ## Private registries
 
@@ -240,26 +269,61 @@ store and do not export files to the desktop or change installed applications.
 
 ## Runtime and sandbox
 
-cpak creates user, mount, PID, IPC, UTS, cgroup and optional network namespaces
-directly through the Linux kernel. A per-container PID 1 owns the lifecycle and
+cpak creates user, mount, PID, IPC, UTS, cgroup and network namespaces directly
+through the Linux kernel. Applications without network permission get only a
+private loopback interface. Applications with network permission use
+`slirp4netns` for outbound traffic without sharing the host namespace or its
+loopback services. A per-container PID 1 owns the lifecycle and
 accepts bounded local execution requests over a private Unix socket. OverlayFS
 combines immutable OCI layers with disposable runtime state.
 
-The runtime applies `no_new_privs`, seccomp and Landlock where the host kernel
-supports it. Filesystem paths, devices, sockets, networking, process sharing and
-host actions are controlled by the manifest and user overrides. Nested user
-namespaces remain blocked unless an application declares `userNamespaces`,
-which lets browser sandboxes create their inner boundary.
+The runtime applies `no_new_privs`, seccomp and Landlock. An application does
+not start if either kernel filter cannot be installed. Filesystem paths,
+devices, sockets, networking, process sharing and host actions are controlled
+by the manifest and user overrides. Nested user namespaces remain blocked
+unless an application declares `userNamespaces`, which lets browser sandboxes
+create their inner boundary.
 
-Desktop notifications and external URIs use the system broker instead. It is
-enabled with the `notification` and `openURI` permissions and exposes only the
-matching shim. The application never receives the host D-Bus socket or command.
+### Managed host lockdown
+
+`cpak system set-enforcement refuse` is an integrity control. On its own it is
+not an application allowlist: a local user can install and enrol new software.
+A managed host must also restrict package origins or publishers and require
+publisher signatures.
+
+For example, save this as `cpak-trust.json`:
+
+```json
+{"abi":1,"approved_origins":["github.com/example/app"]}
+```
+
+Apply the controls in this order:
+
+```sh
+cpak system set-trust cpak-trust.json
+cpak system set-signatures required
+cpak system set-enforcement refuse
+cpak doctor
+```
+
+`cpak doctor` reports the active enforcement, signature and trust settings and
+the number of installed applications that are not enrolled.
+
+Filtered session bus access, Bluetooth and the file chooser use native proxies
+exposed on private Unix sockets. The Bluetooth proxy talks only to BlueZ and is
+started only for a package that declares `bluetooth`. cpak does not invoke a
+D-Bus daemon or an external D-Bus proxy. Desktop notifications and external
+URIs use the system broker instead. It is enabled with the `notification` and
+`openURI` permissions and exposes only the matching shim. The application never
+receives a raw host D-Bus socket or command.
 
 ### File selection
 
 Applications keep a private persistent home unless the manifest explicitly
-mounts the host home. Packages can let users select host files without granting
-a directory in advance:
+mounts the host home. A read-write grant for `home`, `host` or `/` lets the
+application change startup files that later run outside cpak as the user.
+Packages can let users select host files without granting a directory in
+advance:
 
 ```json
 "filePicker": {

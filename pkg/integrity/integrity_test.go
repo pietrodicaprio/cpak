@@ -145,6 +145,110 @@ func TestPolicyRootIgnoresGrantOrderButNotContent(t *testing.T) {
 	}
 }
 
+func TestPolicyRootCanonicalizesSessionBusRules(t *testing.T) {
+	first := types.Override{SessionBus: types.DBusPolicy{
+		Talk: []types.DBusCallGrant{
+			{Name: "org.example.Second", Path: "/org/example/Second", Interface: "org.example.Second", Members: []string{"Stop", "Start"}},
+			{Name: "org.example.First", Path: "/org/example/First", Interface: "org.example.First", Members: []string{"Open"}},
+		},
+		Own: []string{"org.example.Second", "org.example.First"},
+	}}
+	second := types.Override{SessionBus: types.DBusPolicy{
+		Talk: []types.DBusCallGrant{
+			{Name: "org.example.First", Path: "/org/example/First", Interface: "org.example.First", Members: []string{"Open"}},
+			{Name: "org.example.Second", Path: "/org/example/Second", Interface: "org.example.Second", Members: []string{"Start", "Stop"}},
+		},
+		Own: []string{"org.example.First", "org.example.Second"},
+	}}
+	firstRoot, err := PolicyRoot(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondRoot, err := PolicyRoot(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstRoot != secondRoot {
+		t.Fatal("reordering session bus rules changed the policy root")
+	}
+	second.SessionBus.Talk[1].Members = append(second.SessionBus.Talk[1].Members, "Pause")
+	widenedRoot, err := PolicyRoot(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstRoot == widenedRoot {
+		t.Fatal("a wider session bus rule produced the same policy root")
+	}
+}
+
+func TestRestrictsSessionBusRules(t *testing.T) {
+	current := types.Override{SessionBus: types.DBusPolicy{Talk: []types.DBusCallGrant{{
+		Name: "org.example.Player", Path: "/org/example/Player", Interface: "org.example.Player", Members: []string{"Play", "Stop"},
+	}}}}
+	narrow := current
+	narrow.SessionBus.Talk = []types.DBusCallGrant{{
+		Name: "org.example.Player", Path: "/org/example/Player", Interface: "org.example.Player", Members: []string{"Play"},
+	}}
+	if !Restricts(current, narrow) {
+		t.Fatal("a narrower session bus rule was refused")
+	}
+	if Restricts(narrow, current) {
+		t.Fatal("a wider session bus rule was accepted")
+	}
+}
+
+func TestRestrictsIsolatedDesktopCapabilities(t *testing.T) {
+	wide := types.Override{DisplayX11: true, Bluetooth: true}
+	if !Restricts(wide, types.Override{DisplayX11: true}) {
+		t.Fatal("dropping Bluetooth was not recognized as a restriction")
+	}
+	if Restricts(types.Override{DisplayX11: true}, wide) {
+		t.Fatal("adding Bluetooth was accepted as a restriction")
+	}
+	if Restricts(types.Override{}, types.Override{DisplayX11: true}) {
+		t.Fatal("adding an isolated X11 display was accepted as a restriction")
+	}
+}
+
+func TestPolicyRootReadsTheSchemaBeforeSerialDevices(t *testing.T) {
+	policy := types.Override{SocketWayland: true, Network: true}
+	legacy, err := PolicyRootForSchema(policy, PolicySchemaWithoutSerial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy != "60f22559e6e387ce9a91f00256d8883ff55c0316a0dc85f4453c2bf16c3d8460" {
+		t.Fatalf("legacy policy root changed to %s", legacy)
+	}
+	withoutSessionBus, err := PolicyRootForSchema(policy, PolicySchemaWithoutSessionBus)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withoutSessionBus != "d52cc55c1926145efb578cd47ca4e30aad5e4ee36769a6ffa82a799a3ca1813a" {
+		t.Fatalf("policy root without session bus changed to %s", withoutSessionBus)
+	}
+	withoutDesktopCapabilities, err := PolicyRootForSchema(policy, PolicySchemaWithoutDesktopCapabilities)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withoutDesktopCapabilities != "384e94f695f06276a4c5b9f2ca519ab456be23e853c932beac05f2847271c60d" {
+		t.Fatalf("policy root without desktop capabilities changed to %s", withoutDesktopCapabilities)
+	}
+	current, err := PolicyRoot(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current != "2d4b6c81b3d9b1dc76acc3ad274833c12917e33815fb26ac0f9aca2b61f3bc35" {
+		t.Fatalf("current policy root changed to %s", current)
+	}
+}
+
+func TestPolicyRootDoesNotDropSerialDeviceAccessFromAnOldSchema(t *testing.T) {
+	policy := types.Override{DeviceSerial: true}
+	if _, err := PolicyRootForSchema(policy, PolicySchemaWithoutSerial); err == nil {
+		t.Fatal("the schema without serial devices accepted serial device access")
+	}
+}
+
 func TestRestrictionsDoNotNeedConsent(t *testing.T) {
 	current := types.Override{
 		Network:    true,

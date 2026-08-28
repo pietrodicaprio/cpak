@@ -113,7 +113,7 @@ func checkEvidenceAt(evidence signature.SignatureEvidence, now time.Time) (signa
 // so the requirement is on the caller and this only catches the obvious half.
 //
 // Generation is left at zero, and a state with a zero generation is one
-// signature.Verify refuses before it opens a bundle. That is deliberate and it
+// signature.VerifyPublisher refuses before it opens a bundle. That is deliberate and it
 // is a gap, not a design: the generation is the publisher's counter, it lives
 // inside the signature, and nothing an installing machine holds can supply it.
 // Guessing one would put a number cpak invented into the payload cpak then

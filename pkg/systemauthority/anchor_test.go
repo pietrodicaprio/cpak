@@ -349,6 +349,127 @@ func TestAuthoritySocketEnrolsAnAnchorWithoutABus(t *testing.T) {
 	}
 }
 
+func TestAuthoritySocketCarriesASignedEnrolmentWithoutABus(t *testing.T) {
+	ledger := testAnchorLedger(t)
+	path := startAuthoritySocket(t, socketService{Anchors: ledger})
+	anchor := testAnchor()
+	signed := testSignedState(2)
+	acceptSignaturesOf(t, anchor.Origin)
+	request := socketRequest{Action: anchorEnrolAction, Anchor: &anchor, Signature: signed}
+	if err := requestOverSocket(path, request); err != nil {
+		t.Fatal(err)
+	}
+	recorded, found, err := ledger.Recorded(anchor.UID, anchor.Origin)
+	if err != nil || !found {
+		t.Fatalf("the socket did not record the signed enrolment: %v, %v", found, err)
+	}
+	if recorded.Signature == nil || !bytes.Equal(recorded.Signature.Bundle, signed.Bundle) {
+		t.Fatalf("the socket downgraded the signed enrolment to %+v", recorded.Signature)
+	}
+}
+
+func TestSignedEnrolmentFallsBackPastAnUnavailableBus(t *testing.T) {
+	savedBus := enrolSignedOverBus
+	savedSocket := authorityRequestOverSocket
+	savedPrivileged := enrolPrivileged
+	t.Cleanup(func() {
+		enrolSignedOverBus = savedBus
+		authorityRequestOverSocket = savedSocket
+		enrolPrivileged = savedPrivileged
+	})
+	enrolSignedOverBus = func(Enrolment) error { return errTransportUnavailable }
+	var carried *SignedState
+	authorityRequestOverSocket = func(_ string, message socketRequest) error {
+		carried = message.Signature
+		return nil
+	}
+	enrolPrivileged = func(socketRequest) error {
+		t.Fatal("a successful socket request escalated to root")
+		return nil
+	}
+	enrolment := Enrolment{Anchor: testAnchor(), Signature: testSignedState(2)}
+	if err := dispatchSignedEnrolmentAsUser(enrolment, ""); err != nil {
+		t.Fatal(err)
+	}
+	if carried == nil || !bytes.Equal(carried.Bundle, enrolment.Signature.Bundle) {
+		t.Fatalf("the socket received %+v, want the signed evidence", carried)
+	}
+}
+
+func TestSignedConfirmationFallsBackWithoutDroppingTheChallenge(t *testing.T) {
+	savedBus := enrolSignedConfirmedOverBus
+	savedSocket := authorityRequestOverSocket
+	savedPrivileged := enrolPrivileged
+	t.Cleanup(func() {
+		enrolSignedConfirmedOverBus = savedBus
+		authorityRequestOverSocket = savedSocket
+		enrolPrivileged = savedPrivileged
+	})
+	enrolSignedConfirmedOverBus = func(Enrolment, string) error { return errTransportUnavailable }
+	var carried string
+	authorityRequestOverSocket = func(_ string, message socketRequest) error {
+		carried = message.Confirmation
+		return nil
+	}
+	enrolPrivileged = func(socketRequest) error {
+		t.Fatal("a successful socket request escalated to root")
+		return nil
+	}
+	enrolment := Enrolment{Anchor: testAnchor(), Signature: testSignedState(2)}
+	if err := dispatchSignedEnrolmentAsUser(enrolment, "exact-challenge"); err != nil {
+		t.Fatal(err)
+	}
+	if carried != "exact-challenge" {
+		t.Fatalf("the socket received confirmation %q", carried)
+	}
+}
+
+func TestSignedEnrolmentEscalatesOnlyAfterBothTransports(t *testing.T) {
+	savedBus := enrolSignedOverBus
+	savedSocket := authorityRequestOverSocket
+	savedPrivileged := enrolPrivileged
+	t.Cleanup(func() {
+		enrolSignedOverBus = savedBus
+		authorityRequestOverSocket = savedSocket
+		enrolPrivileged = savedPrivileged
+	})
+	enrolSignedOverBus = func(Enrolment) error { return errTransportUnavailable }
+	authorityRequestOverSocket = func(string, socketRequest) error { return errRootRequired }
+	var carried *SignedState
+	enrolPrivileged = func(message socketRequest) error {
+		carried = message.Signature
+		return nil
+	}
+	enrolment := Enrolment{Anchor: testAnchor(), Signature: testSignedState(2)}
+	if err := dispatchSignedEnrolmentAsUser(enrolment, ""); err != nil {
+		t.Fatal(err)
+	}
+	if carried == nil || !bytes.Equal(carried.Bundle, enrolment.Signature.Bundle) {
+		t.Fatalf("the privileged step received %+v, want the signed evidence", carried)
+	}
+}
+
+func TestSignedEnrolmentDoesNotPromptBeforeTheAuthorityIsSetUp(t *testing.T) {
+	savedBus := enrolSignedOverBus
+	savedSocket := authorityRequestOverSocket
+	savedPrivileged := enrolPrivileged
+	t.Cleanup(func() {
+		enrolSignedOverBus = savedBus
+		authorityRequestOverSocket = savedSocket
+		enrolPrivileged = savedPrivileged
+	})
+	enrolSignedOverBus = func(Enrolment) error { return errTransportUnavailable }
+	authorityRequestOverSocket = func(string, socketRequest) error { return errTransportUnavailable }
+	enrolPrivileged = func(socketRequest) error {
+		t.Fatal("an absent authority asked for administrator rights")
+		return nil
+	}
+	err := dispatchSignedEnrolmentAsUser(Enrolment{Anchor: testAnchor(), Signature: testSignedState(2)}, "")
+	if !errors.Is(err, ErrNoAuthority) {
+		t.Fatalf("got %v, want the setup advice for an absent authority", err)
+	}
+}
+
 func TestAuthoritySocketRefusesAnAnchorFromAnUnauthorizedPeer(t *testing.T) {
 	ledger := testAnchorLedger(t)
 	path := startAuthoritySocket(t, socketService{
@@ -565,6 +686,114 @@ func TestEnrolmentPolicyMustHashToItsPolicyRoot(t *testing.T) {
 	}
 	if _, found, err := ledger.Recorded(anchor.UID, anchor.Origin); err != nil || found {
 		t.Fatalf("the refused enrolment reached the ledger: %v, %v", found, err)
+	}
+}
+
+func TestEnrolmentReadsAndSupersedesAPolicyFromBeforeSerialDevices(t *testing.T) {
+	ledger := testAnchorLedger(t)
+	policy := types.Override{SocketWayland: true, Network: true}
+	legacyRoot, err := integrity.PolicyRootForSchema(policy, integrity.PolicySchemaWithoutSerial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchor := anchorOver(t, policy, strings.Repeat("a1", 32), 1)
+	anchor.PolicyRoot = legacyRoot
+	anchor.LaunchRoot = integrity.LaunchRoot(anchor.PackageRoot, legacyRoot)
+	legacy := Enrolment{Anchor: anchor, Policy: &policy}
+	encoded, err := json.MarshalIndent(legacy, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded = bytes.Replace(encoded, []byte("    \"deviceSerial\": false,\n"), nil, 1)
+	if bytes.Contains(encoded, []byte("\"deviceSerial\"")) {
+		t.Fatal("legacy enrolment still contains the serial device field")
+	}
+	writeAnchorFile(t, ledger, anchor.UID, anchor.Origin, append(encoded, '\n'))
+
+	recorded, found, err := ledger.Recorded(anchor.UID, anchor.Origin)
+	if err != nil || !found {
+		t.Fatalf("the legacy enrolment was not read: %v, %v", found, err)
+	}
+	if recorded.PolicySchema != integrity.PolicySchemaWithoutSerial {
+		t.Fatalf("legacy policy uses schema %d", recorded.PolicySchema)
+	}
+
+	currentRoot, err := integrity.PolicyRoot(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	update := anchor
+	update.Generation++
+	update.PackageRoot = strings.Repeat("d4", 32)
+	update.PolicyRoot = currentRoot
+	update.LaunchRoot = integrity.LaunchRoot(update.PackageRoot, currentRoot)
+	if err := ledger.Record(Enrolment{Anchor: update, Policy: &policy}); err != nil {
+		t.Fatalf("the legacy enrolment could not be superseded: %v", err)
+	}
+
+	recorded, found, err = ledger.Recorded(anchor.UID, anchor.Origin)
+	if err != nil || !found {
+		t.Fatalf("the current enrolment was not read: %v, %v", found, err)
+	}
+	if recorded.PolicySchema != integrity.CurrentPolicySchema {
+		t.Fatalf("updated policy uses schema %d", recorded.PolicySchema)
+	}
+}
+
+func TestEnrolmentRecognizesAPolicyFromBeforeDesktopCapabilities(t *testing.T) {
+	policy := types.Override{SocketWayland: true, Network: true}
+	root, err := integrity.PolicyRootForSchema(policy, integrity.PolicySchemaWithoutDesktopCapabilities)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema, err := matchingPolicySchema(&policy, root, 0, "enrolment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if schema != integrity.PolicySchemaWithoutDesktopCapabilities {
+		t.Fatalf("legacy policy uses schema %d", schema)
+	}
+}
+
+func TestForgottenAnchorReadsAPolicyFromBeforeSerialDevices(t *testing.T) {
+	ledger := testAnchorLedger(t)
+	policy := types.Override{SocketWayland: true, Network: true}
+	root, err := integrity.PolicyRootForSchema(policy, integrity.PolicySchemaWithoutSerial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buried := Tombstone{
+		UID:        uint32(os.Getuid()),
+		Origin:     testAnchor().Origin,
+		Generation: 3,
+		PolicyRoot: root,
+		Policy:     &policy,
+	}
+	encoded, err := json.MarshalIndent(buried, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded = bytes.Replace(encoded, []byte("    \"deviceSerial\": false,\n"), nil, 1)
+	if bytes.Contains(encoded, []byte("\"deviceSerial\"")) {
+		t.Fatal("legacy tombstone still contains the serial device field")
+	}
+	path, err := ledger.tombstonePath(buried.UID, buried.Origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureDirectory(filepath.Dir(path), ledger.OwnerUID); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(encoded, '\n'), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	read, found, err := ledger.Forgotten(buried.UID, buried.Origin)
+	if err != nil || !found {
+		t.Fatalf("the legacy tombstone was not read: %v, %v", found, err)
+	}
+	if read.PolicySchema != integrity.PolicySchemaWithoutSerial {
+		t.Fatalf("legacy tombstone uses schema %d", read.PolicySchema)
 	}
 }
 
