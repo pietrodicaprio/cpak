@@ -1,11 +1,11 @@
 # Application Trust POC Implementation Plan
 
-- Status: active; Phases 0 through 5 complete on the prior baseline; upstream
-  baseline integration and Phase 5 recertification in progress; Phase 6 blocked
+- Status: active; Phases 0 through 5 complete on upstream baseline `38fa798`
+  (`v2.9.7`); Phase 6 pending
 - Working branch: `poc/application-trust-framework`
 - Pull request policy: no pull request is opened until the complete POC
   satisfies the Definition of Done in this document
-- Last updated: 2026-08-28
+- Last updated: 2026-08-30
 
 ## 1. Purpose
 
@@ -711,17 +711,24 @@ complete.
 
 ### Pre-Phase 6 upstream baseline recertification
 
-Phase 6 must not start from the earlier certified baseline. The dedicated
-`integration/application-trust-e86fa23` branch merges the 17 upstream commits
-between `be29d55` and `e86fa23` into the POC while preserving the earlier POC
-branch as its certification reference. The integration is documented in
+Phase 6 must not start from the earlier certified baseline. The 103 POC commits
+have been rebased onto `38fa798` (`v2.9.7`) in
+`poc/application-trust-framework`; commit `e8737b0` reconciles the four rebase
+conflict points with the previously reviewed semantic integration. The POC
+segment after the upstream baseline contains no merge commits. The integration
+procedure and tree-equivalence evidence are recorded in
 `application-trust-upstream-integration.md`.
 
-This gate is complete only when conflict-specific regressions, the complete
-Linux test and race suites, vet, Manifest v3 Phase 5 fixtures, the X.509/CMS
-lifecycle, and a fresh GitHub OIDC/Fulcio/Rekor lifecycle all pass at the same
-integrated commit. Until then, the earlier Phase 5 result remains valid for the
-isolated design but does not certify the current cpak security baseline.
+The certified linear code commit is `3149042`. Conflict-specific regressions,
+the complete Linux test suite, trust-sensitive race suites, vet, Manifest v3
+Phase 5 fixtures, the
+X.509/CMS lifecycle, and a fresh GitHub OIDC/Fulcio/Rekor lifecycle pass at the
+same integrated commit in
+[Portability run 33284082405](https://github.com/pietrodicaprio/cpak/actions/runs/33284082405).
+The explicitly frozen `v2.9.7` baseline is therefore certified for Phase 6.
+Upstream `v2` advanced to `0ab51d3` (`v2.10.4`) during this history rewrite;
+that later baseline is outside this certification and requires a separate
+semantic review before it can replace `v2.9.7`.
 
 ### Phase 6: Publication package and final certification
 
