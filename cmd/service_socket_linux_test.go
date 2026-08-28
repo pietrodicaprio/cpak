@@ -51,12 +51,39 @@ func runNestedServiceSocketTest(t *testing.T) {
 	if err := syscall.Mount("", "/", "", syscall.MS_REC|syscall.MS_PRIVATE, ""); err != nil {
 		t.Fatalf("make the mount tree private: %v", err)
 	}
+	if os.Getenv("CPAK_SERVICE_SOCKET_REEXEC") != "1" {
+		if err := syscall.Mount(os.Getenv("CPAK_SERVICE_SOCKET_BASE"), "/run", "", syscall.MS_BIND|syscall.MS_REC, ""); err != nil {
+			t.Fatalf("isolate the runtime directory: %v", err)
+		}
+		executable, err := os.Executable()
+		if err != nil {
+			t.Fatalf("resolve the test executable: %v", err)
+		}
+		executable, err = filepath.EvalSymlinks(executable)
+		if err != nil {
+			t.Fatalf("resolve the test executable: %v", err)
+		}
+		visibleExecutable := "/run/cpak-test"
+		target, err := os.OpenFile(visibleExecutable, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0700)
+		if err != nil {
+			t.Fatalf("create the visible test executable: %v", err)
+		}
+		if err := target.Close(); err != nil {
+			t.Fatalf("close the visible test executable: %v", err)
+		}
+		if err := syscall.Mount(executable, visibleExecutable, "", syscall.MS_BIND, ""); err != nil {
+			t.Fatalf("keep the test executable visible: %v", err)
+		}
+		command := exec.Command(visibleExecutable, "-test.run=^TestNestedRunReachesTheServiceThroughTheMountedSocket$")
+		command.Env = append(os.Environ(), "CPAK_SERVICE_SOCKET_REEXEC=1")
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("visible executable subprocess: %v\n%s", err, output)
+		}
+		return
+	}
 	// Everything this test owns lives under /run, so that the container view of
 	// /tmp can take the place of the host one without hiding it. It is also
 	// what keeps the socket path inside the length a unix address allows.
-	if err := syscall.Mount(os.Getenv("CPAK_SERVICE_SOCKET_BASE"), "/run", "", syscall.MS_BIND|syscall.MS_REC, ""); err != nil {
-		t.Fatalf("isolate the runtime directory: %v", err)
-	}
 	defer syscall.Unmount("/run", syscall.MNT_DETACH)
 	for _, directory := range []string{"/run/user", "/run/rootfs"} {
 		if err := os.MkdirAll(directory, 0700); err != nil {
