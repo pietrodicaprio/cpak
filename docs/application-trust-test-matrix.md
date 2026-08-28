@@ -1,9 +1,10 @@
 # Application Trust POC Test Matrix
 
-- Status: Phases 0 through 5 complete on the prior baseline; upstream
-  integration recertification in progress; Phase 6 blocked
-- Baseline: cpak v2.8.7 (`be29d55`)
-- Last updated: 2026-08-21
+- Status: Phases 0 through 5 complete on upstream baseline `38fa798` (`v2.9.7`);
+  Phase 6 planned
+- Baseline: certified code `a17078f`, semantic merge `d7f9034`, upstream
+  `38fa798`
+- Last updated: 2026-08-28
 
 ## 1. How to read this matrix
 
@@ -220,12 +221,15 @@ Sigstore rows marked executed above. The rerun was source-identical: it cleared
 a transient runner seccomp failure after Sigstore had already passed on the
 same commit.
 
-The dedicated `integration/application-trust-e86fa23` branch now carries the
-17 upstream commits after `be29d55`, Manifest v3 Phase 5 fixtures, and semantic
-resolutions for the 14 trust-sensitive conflicts. Local Linux test, race, and
-vet evidence is recorded in `application-trust-upstream-integration.md`.
-Phase 6 remains blocked until both Phase 5 CI jobs pass again at the integrated
-commit.
+The dedicated `integration/application-trust-e86fa23` branch carries the 18
+upstream commits after `be29d55`, including the `v2.9.7` package-authority
+hardening, Manifest v3 Phase 5 fixtures, and semantic resolutions for both the
+original 14 trust-sensitive conflicts and the three content conflicts added by
+the hardening refresh. Local Linux test, race, vet, and lifecycle evidence is
+recorded in `application-trust-upstream-integration.md`. Both Phase 5 jobs and
+every portability job pass at certified code commit `a17078f` in
+[Portability run 33168708481](https://github.com/pietrodicaprio/cpak/actions/runs/33168708481),
+so the upstream recertification gate is complete.
 
 Every trust policy executed by the Phase 5 POC lifecycle uses ABI 2. The frozen
 ABI 1 fixture exists only for legacy regression coverage; together with strict

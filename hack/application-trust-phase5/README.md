@@ -113,8 +113,9 @@ partially applied under ABI 1 semantics. The harness does not build a
 historical cpak binary; that remains optional compatibility hardening and is
 not a Phase 5 completion blocker.
 
-Before Phase 6, the POC is being recertified on upstream baseline `e86fa23` in
-`integration/application-trust-e86fa23`. The process fixtures on that branch
-use Manifest v3 and digest-pinned images. The earlier green run remains evidence
-for the isolated POC design, not for the integrated baseline; a fresh X.509 and
-Sigstore run at the merge commit is required.
+The POC is recertified on upstream baseline `38fa798` (`v2.9.7`) at semantic
+merge `d7f9034` and certified code commit `a17078f` in
+`integration/application-trust-e86fa23`. The historical branch name is retained
+for continuity. The process fixtures use Manifest v3 and digest-pinned images.
+Both the X.509 and fresh keyless Sigstore jobs pass at the certified commit in
+[Portability run 33168708481](https://github.com/pietrodicaprio/cpak/actions/runs/33168708481).

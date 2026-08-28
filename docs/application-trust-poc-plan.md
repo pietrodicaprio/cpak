@@ -1,8 +1,9 @@
 # Application Trust POC Implementation Plan
 
-- Status: active; Phases 0 through 5 complete on the prior baseline; upstream
-  baseline integration and Phase 5 recertification in progress; Phase 6 blocked
-- Working branch: `poc/application-trust-framework`
+- Status: active; Phases 0 through 5 complete on upstream baseline `38fa798`
+  (`v2.9.7`); Phase 6 pending
+- Reference POC branch: `poc/application-trust-framework`
+- Active integration branch: `integration/application-trust-e86fa23`
 - Pull request policy: no pull request is opened until the complete POC
   satisfies the Definition of Done in this document
 - Last updated: 2026-08-28
@@ -712,16 +713,21 @@ complete.
 ### Pre-Phase 6 upstream baseline recertification
 
 Phase 6 must not start from the earlier certified baseline. The dedicated
-`integration/application-trust-e86fa23` branch merges the 17 upstream commits
-between `be29d55` and `e86fa23` into the POC while preserving the earlier POC
-branch as its certification reference. The integration is documented in
+`integration/application-trust-e86fa23` branch integrates the 18 upstream
+commits between `be29d55` and `38fa798` (`v2.9.7`) into the POC while preserving
+the earlier POC branch as its certification reference. The historical branch
+name is retained for continuity; its certified baseline is recorded in
 `application-trust-upstream-integration.md`.
 
-This gate is complete only when conflict-specific regressions, the complete
-Linux test and race suites, vet, Manifest v3 Phase 5 fixtures, the X.509/CMS
-lifecycle, and a fresh GitHub OIDC/Fulcio/Rekor lifecycle all pass at the same
-integrated commit. Until then, the earlier Phase 5 result remains valid for the
-isolated design but does not certify the current cpak security baseline.
+The semantic merge is `d7f9034`; the certified code commit is `a17078f` after a
+portable nested re-exec regression fixture was added for Ubuntu 22.04.
+Conflict-specific regressions, the complete Linux test suite, trust-sensitive
+race suites, vet, Manifest v3 Phase 5 fixtures, the
+X.509/CMS lifecycle, and a fresh GitHub OIDC/Fulcio/Rekor lifecycle pass at the
+same integrated commit in
+[Portability run 33168708481](https://github.com/pietrodicaprio/cpak/actions/runs/33168708481).
+The current cpak security baseline is therefore the certified starting point
+for Phase 6.
 
 ### Phase 6: Publication package and final certification
 
