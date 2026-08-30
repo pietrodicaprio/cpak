@@ -805,6 +805,17 @@ run_stale_evidence_lifecycle() {
   local status
 
   write_x509_generation 15 "$origin" "$image_digest" publisher-rotated
+  python3 - "$phase5_dir/cpak.json" "$updated_image_digest" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+manifest = json.loads(path.read_text(encoding="utf-8"))
+repository = manifest["image"].split("@", 1)[0]
+manifest["image"] = repository + "@" + sys.argv[2]
+path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+PY
   : >"$marker"
   chmod 0600 "$marker"
 
@@ -986,16 +997,17 @@ run_process_lifecycle() {
   export NO_PROXY="phase5.invalid,127.0.0.1,localhost"
   export no_proxy="$NO_PROXY"
 
-  python3 - "$phase5_dir/cpak.json" "$image" <<'PY'
+  python3 - "$phase5_dir/cpak.json" "$image" "$image_digest" <<'PY'
 import json
 import pathlib
 import sys
 
+repository = sys.argv[2].rsplit(":", 1)[0]
 manifest = {
-    "manifest_version": "2.0",
+    "manifest_version": "3.0",
     "name": "Phase 5 binary fixture",
     "description": "Headless application-trust lifecycle fixture",
-    "image": sys.argv[2],
+    "image": repository + "@" + sys.argv[3],
     "binaries": ["/usr/bin/phase5-fixture"],
     "idle_time": 0,
     "override": {},
@@ -1216,16 +1228,17 @@ run_sigstore_lifecycle() {
   export NO_PROXY="${origin%%/*},phase5.invalid,127.0.0.1,localhost"
   export no_proxy="$NO_PROXY"
 
-  python3 - "$phase5_dir/cpak.json" "$image" <<'PY'
+  python3 - "$phase5_dir/cpak.json" "$image" "$image_digest" <<'PY'
 import json
 import pathlib
 import sys
 
+repository = sys.argv[2].rsplit(":", 1)[0]
 manifest = {
-    "manifest_version": "2.0",
+    "manifest_version": "3.0",
     "name": "Phase 5 Sigstore fixture",
     "description": "Real keyless Sigstore install and update fixture",
-    "image": sys.argv[2],
+    "image": repository + "@" + sys.argv[3],
     "binaries": ["/usr/bin/phase5-fixture"],
     "idle_time": 0,
     "override": {},
@@ -1666,10 +1679,10 @@ import json
 import pathlib
 import sys
 manifest = {
-    "manifest_version": "2.0",
+    "manifest_version": "3.0",
     "name": "Phase 5 binary fixture",
     "description": "Headless application-trust lifecycle fixture",
-    "image": "example.invalid/cpak/phase5:fixture",
+    "image": "example.invalid/cpak/phase5@sha256:" + "1" * 64,
     "binaries": ["/usr/bin/phase5-fixture"],
     "idle_time": 0,
     "override": {},

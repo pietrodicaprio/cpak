@@ -12,11 +12,94 @@ import (
 	"testing"
 
 	"github.com/mirkobrombin/cpak/pkg/applicationtrust"
+	"github.com/mirkobrombin/cpak/pkg/bootstrap"
 	"github.com/mirkobrombin/cpak/pkg/cpak"
 	"github.com/mirkobrombin/cpak/pkg/types"
 	"github.com/mirkobrombin/go-cli-builder/v3/pkg/cli"
 	clilog "github.com/mirkobrombin/go-cli-builder/v3/pkg/log"
 )
+
+func TestVerifySignedInstallerMetadataRejectsPermissionChanges(t *testing.T) {
+	manifest := &types.CpakManifest{
+		ManifestVersion: "2.0",
+		Name:            "Demo",
+		Description:     "Demo application",
+		Image:           "ghcr.io/containerpak/demo@sha256:" + strings.Repeat("a", 64),
+		Binaries:        []string{"/usr/bin/demo"},
+		Override:        types.Override{Network: true},
+	}
+	digest, err := cpak.ManifestIdentityDigest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := bootstrap.Metadata{
+		Origin:         "github.com/containerpak/demo",
+		RefType:        "commit",
+		Ref:            strings.Repeat("b", 40),
+		ManifestDigest: digest,
+		Permissions:    bootstrap.SummarizePermissions(manifest.Override),
+	}
+	if err = verifySignedInstallerMetadata(metadata, metadata.Origin, metadata.Ref, manifest); err != nil {
+		t.Fatal(err)
+	}
+	metadata.Permissions = []bootstrap.Permission{{Name: "Network", Detail: "cosmetic only"}}
+	if err = verifySignedInstallerMetadata(metadata, metadata.Origin, metadata.Ref, manifest); err == nil {
+		t.Fatal("a cosmetic permission list was accepted")
+	}
+	metadata.Permissions = bootstrap.SummarizePermissions(manifest.Override)
+	manifest.Override.Filesystem = []types.FilesystemPermission{{Path: "host", Access: "read-write"}}
+	if err = verifySignedInstallerMetadata(metadata, metadata.Origin, metadata.Ref, manifest); err == nil {
+		t.Fatal("a broader fetched manifest matched the signed installer")
+	}
+}
+
+func TestVerifySignedInstallerMetadataRequiresPinnedStandalonePackage(t *testing.T) {
+	manifest := &types.CpakManifest{
+		ManifestVersion: "2.0",
+		Name:            "Demo",
+		Description:     "Demo application",
+		Image:           "ghcr.io/containerpak/demo:latest",
+		Binaries:        []string{"/usr/bin/demo"},
+	}
+	metadata := bootstrap.Metadata{
+		Origin:      "github.com/containerpak/demo",
+		RefType:     "commit",
+		Ref:         strings.Repeat("b", 40),
+		Permissions: bootstrap.SummarizePermissions(manifest.Override),
+	}
+	digest, err := cpak.ManifestIdentityDigest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata.ManifestDigest = digest
+	if err = verifySignedInstallerMetadata(metadata, metadata.Origin, metadata.Ref, manifest); err == nil {
+		t.Fatal("a mutable image tag was accepted")
+	}
+
+	manifest.Image = "ghcr.io/containerpak/demo@sha256:" + strings.Repeat("a", 64)
+	manifest.Dependencies = []types.Dependency{{Origin: "github.com/containerpak/runtime"}}
+	digest, err = cpak.ManifestIdentityDigest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata.ManifestDigest = digest
+	if err = verifySignedInstallerMetadata(metadata, metadata.Origin, metadata.Ref, manifest); err == nil {
+		t.Fatal("an unbound dependency graph was accepted")
+	}
+}
+
+func TestSignedInstallerConsentRejectsAnOrdinaryParentProcess(t *testing.T) {
+	manifest := &types.CpakManifest{
+		ManifestVersion: "2.0",
+		Name:            "Demo",
+		Description:     "Demo application",
+		Image:           "ghcr.io/containerpak/demo@sha256:" + strings.Repeat("a", 64),
+		Binaries:        []string{"/usr/bin/demo"},
+	}
+	if err := verifySignedInstaller("github.com/containerpak/demo", strings.Repeat("b", 40), manifest); err == nil {
+		t.Fatal("an ordinary parent process supplied signed installer consent")
+	}
+}
 
 // carriesTerminalControl spells the rule out here rather than asking the code
 // under test what a control character is. A test that borrows the definition it
@@ -79,6 +162,20 @@ func TestExplicitGraphicalContextCannotBeInferredOrOverriddenByYes(t *testing.T)
 	}
 	if got := (&UpdateCmd{Graphical: true, JSON: true}).invocationContext(); got != applicationtrust.ContextNonInteractive {
 		t.Fatalf("machine update context = %s", got)
+	}
+}
+
+func TestSignedInstallerConsentDoesNotAcceptPublisherReputation(t *testing.T) {
+	command := &InstallCmd{SignedInstaller: true, NonInteractive: true}
+	context := command.invocationContext()
+	if context != applicationtrust.ContextNonInteractive {
+		t.Fatalf("signed installer context = %s", context)
+	}
+	if options := command.enrolmentOptions(context); options.ConfirmReputation != nil {
+		t.Fatal("signed installer consent installed a publisher-reputation confirmation callback")
+	}
+	if options := command.enrolmentOptions(applicationtrust.ContextGraphical); options.ConfirmReputation == nil {
+		t.Fatal("a graphical signed installer cannot ask the separate publisher-reputation question")
 	}
 }
 

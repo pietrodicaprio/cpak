@@ -9,9 +9,9 @@ import (
 	"fmt"
 	"os"
 	"runtime"
-	"strings"
 
 	"github.com/mirkobrombin/cpak/pkg/applicationtrust"
+	"github.com/mirkobrombin/cpak/pkg/bootstrap"
 	"github.com/mirkobrombin/cpak/pkg/cpak"
 	"github.com/mirkobrombin/cpak/pkg/desktopui"
 	"github.com/mirkobrombin/cpak/pkg/logger"
@@ -22,14 +22,15 @@ import (
 )
 
 type InstallCmd struct {
-	Remote         string `arg:"remote" help:"Remote Git repository"`
-	Branch         string `cli:"branch,b" help:"Specify a branch"`
-	Release        string `cli:"release,r" help:"Install a specific release"`
-	Commit         string `cli:"commit,c" help:"Specify a commit"`
-	Yes            bool   `cli:"yes,y" help:"Acknowledge the installation without the operation prompt; never accepts trust warnings"`
-	NonInteractive bool   `cli:"non-interactive,n" help:"Never wait for an operation or trust confirmation"`
-	Graphical      bool   `cli:"graphical" help:"Use the configured desktop frontend for publisher-reputation confirmation"`
-	JSON           bool   `cli:"json,j" help:"Print versioned application-trust decisions as JSON"`
+	Remote          string `arg:"remote" help:"Remote Git repository"`
+	Branch          string `cli:"branch,b" help:"Specify a branch"`
+	Release         string `cli:"release,r" help:"Install a specific release"`
+	Commit          string `cli:"commit,c" help:"Specify a commit"`
+	Yes             bool   `cli:"yes,y" help:"Acknowledge the installation without the operation prompt; never accepts trust warnings"`
+	NonInteractive  bool   `cli:"non-interactive,n" help:"Never wait for an operation or trust confirmation"`
+	Graphical       bool   `cli:"graphical" help:"Use the configured desktop frontend for publisher-reputation confirmation"`
+	JSON            bool   `cli:"json,j" help:"Print versioned application-trust decisions as JSON"`
+	SignedInstaller bool   `cli:"signed-installer" help:"Verify consent from the parent application installer"`
 
 	cli.Base
 }
@@ -38,7 +39,10 @@ func (c *InstallCmd) Run() error {
 	if c.JSON {
 		logger.MachineMode()
 	}
-	remote := strings.ToLower(c.Remote)
+	remote, err := cpak.NormalizeRepositoryOrigin(c.Remote)
+	if err != nil {
+		return err
+	}
 
 	cp, err := cpak.NewCpak()
 	if err != nil {
@@ -54,6 +58,9 @@ func (c *InstallCmd) Run() error {
 	}
 	if versionParamsCount > 1 {
 		return fmt.Errorf("more than one version parameter specified")
+	}
+	if c.SignedInstaller && c.Commit == "" {
+		return fmt.Errorf("a signed installer requires an immutable commit")
 	}
 
 	branch := c.Branch
@@ -72,6 +79,14 @@ func (c *InstallCmd) Run() error {
 	manifest, err := cp.FetchManifest(remote, branch, c.Release, c.Commit)
 	if err != nil {
 		return err
+	}
+	if err = cp.ValidateManifest(manifest); err != nil {
+		return err
+	}
+	if c.SignedInstaller {
+		if err = verifySignedInstaller(remote, c.Commit, manifest); err != nil {
+			return err
+		}
 	}
 
 	if !c.JSON {
@@ -96,9 +111,9 @@ func (c *InstallCmd) Run() error {
 	}
 
 	context := c.invocationContext()
-	if !c.Yes {
+	if !c.Yes && !c.SignedInstaller {
 		if context == applicationtrust.ContextNonInteractive || context == applicationtrust.ContextGraphical {
-			return fmt.Errorf("an install without a terminal operation prompt requires --yes to acknowledge the operation")
+			return fmt.Errorf("an install without a terminal operation prompt requires --yes or a verified signed installer to acknowledge the operation")
 		}
 		if !tools.ConfirmOperation("Do you want to continue?") {
 			return nil
@@ -110,14 +125,10 @@ func (c *InstallCmd) Run() error {
 		CreateExports:        true,
 		ResolveImageRef:      true,
 		ResolvedDependencies: dependencies,
+		Enrolment:            c.enrolmentOptions(context),
 		OnEnrolment: func(result cpak.ApplicationEnrolment) {
 			enrolments = append(enrolments, result)
 		},
-	}
-	if context == applicationtrust.ContextInteractiveTerminal {
-		options.Enrolment.ConfirmReputation = c.confirmReputation
-	} else if context == applicationtrust.ContextGraphical {
-		options.Enrolment.ConfirmReputation = c.confirmGraphicalReputation
 	}
 	if err := cp.InstallCpakWithOptions(remote, manifest, branch, c.Commit, c.Release, options); err != nil {
 		return err
@@ -134,6 +145,16 @@ func (c *InstallCmd) Run() error {
 		reportApplicationTrustResults(c.Logger, trustResults)
 	}
 	return applicationTrustResultExit(trustResults)
+}
+
+func (c *InstallCmd) enrolmentOptions(context applicationtrust.InvocationContext) cpak.EnrolmentOptions {
+	options := cpak.EnrolmentOptions{}
+	if context == applicationtrust.ContextInteractiveTerminal {
+		options.ConfirmReputation = c.confirmReputation
+	} else if context == applicationtrust.ContextGraphical {
+		options.ConfirmReputation = c.confirmGraphicalReputation
+	}
+	return options
 }
 
 func (c *InstallCmd) invocationContext() applicationtrust.InvocationContext {
@@ -196,7 +217,7 @@ func (c *InstallCmd) describeRootPackage(manifest *types.CpakManifest) {
 	}
 	for _, session := range manifest.Sessions {
 		c.Logger.Info("  - (%s session) %s", tools.SanitizeForDisplay(session.Kind), tools.SanitizeForDisplay(session.Name))
-		tools.PrintStructKeyVal(session.Override)
+		c.describePermissions(session.Override)
 	}
 	if provider := manifest.AddonProvider; provider != nil {
 		c.Logger.Info("  - (addon provider) %s for %s (%s)", tools.SanitizeForDisplay(provider.ID), tools.SanitizeForDisplay(provider.Slot), tools.SanitizeForDisplay(provider.Mode))
@@ -212,7 +233,7 @@ func (c *InstallCmd) describeDependencies(dependencies []cpak.ResolvedDependency
 		// the permissions below them.
 		c.Logger.Info("  - %s: %s", tools.SanitizeForDisplay(dependency.Origin), tools.SanitizeForDisplay(dependency.Manifest.Description))
 		c.Logger.Info("    with the following permissions:")
-		tools.PrintStructKeyVal(dependency.Manifest.Override)
+		c.describePermissions(dependency.Manifest.Override)
 	}
 	c.Logger.Info("")
 }
@@ -228,6 +249,17 @@ func (c *InstallCmd) describeRuntimeSourcesAndPermissions(manifest *types.CpakMa
 	}
 
 	c.Logger.Info("The following permissions will be granted:")
-	tools.PrintStructKeyVal(manifest.Override)
+	c.describePermissions(manifest.Override)
 	c.Logger.Info("")
+}
+
+func (c *InstallCmd) describePermissions(override types.Override) {
+	permissions := bootstrap.SummarizePermissions(override)
+	if len(permissions) == 0 {
+		c.Logger.Info("  - None")
+		return
+	}
+	for _, permission := range permissions {
+		c.Logger.Info("  - %s: %s", tools.SanitizeForDisplay(permission.Name), tools.SanitizeForDisplay(permission.Detail))
+	}
 }

@@ -351,7 +351,7 @@ func (c *Cpak) updateApplication(app types.Application, deps updateDeps, approve
 	if err = c.bindBuiltLayers(pulled, layers); err != nil {
 		return failedUpdate(result, err)
 	}
-	manifestDigest, err := manifestIdentityDigest(manifest)
+	manifestDigest, err := ManifestIdentityDigest(manifest)
 	if err != nil {
 		return failedUpdate(result, err)
 	}

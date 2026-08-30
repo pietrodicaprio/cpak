@@ -93,6 +93,8 @@ var anchorRootPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 var enrolSignedOverBus = signedEnrolmentOverBus
 var enrolSignedConfirmedOverBus = signedConfirmedEnrolmentOverBus
+var authorityRequestOverSocket = requestOverSocket
+var enrolPrivileged = runPrivilegedEnrolment
 
 // ErrAnchorDowngrade reports an enrolment that would put an application back to
 // a generation it already left. The caller has to tell it from a failure,
@@ -134,7 +136,8 @@ var verifyEvidence = separatedVerifyEvidence
 // has to be put to the owner every time.
 type Enrolment struct {
 	integrity.Anchor
-	Policy *types.Override `json:"policy,omitempty"`
+	Policy       *types.Override `json:"policy,omitempty"`
+	PolicySchema int             `json:"policy_schema,omitempty"`
 
 	// Signature is the publisher signature the installation was verified
 	// against, and it is the bundle and not a verdict. A verdict would be the
@@ -214,8 +217,9 @@ type Tombstone struct {
 	// hashes cannot be ordered against each other, so without the policy a
 	// narrowing that went missing along with the record would be a change
 	// nobody can order and would be put to the owner every time.
-	PolicyRoot string          `json:"policy_root"`
-	Policy     *types.Override `json:"policy,omitempty"`
+	PolicyRoot   string          `json:"policy_root"`
+	Policy       *types.Override `json:"policy,omitempty"`
+	PolicySchema int             `json:"policy_schema,omitempty"`
 
 	// Signed says a publisher had answered for this application, which is the
 	// fact the record was the only place of. SignatureGeneration says which
@@ -234,6 +238,7 @@ func (t Tombstone) raisedBy(other Tombstone) Tombstone {
 		t.Generation = other.Generation
 		t.PolicyRoot = other.PolicyRoot
 		t.Policy = other.Policy
+		t.PolicySchema = other.PolicySchema
 	}
 	if other.Signed {
 		t.Signed = true
@@ -338,7 +343,7 @@ func (l AnchorLedger) Recorded(uid uint32, origin string) (Enrolment, bool, erro
 	if enrolment.UID != uid || enrolment.Origin != origin {
 		return Enrolment{}, false, errors.New("enrolled anchor does not match its file")
 	}
-	if err := validateEnrolment(enrolment); err != nil {
+	if err := completeEnrolmentPolicySchema(&enrolment); err != nil {
 		return Enrolment{}, false, err
 	}
 	return enrolment, true, nil
@@ -370,7 +375,7 @@ func (l AnchorLedger) record(enrolment Enrolment, reputationConfirmation string)
 	enrolment.Verification = nil
 	enrolment.SignatureMode = ""
 	enrolment.ReputationMode = ""
-	if err := validateEnrolment(enrolment); err != nil {
+	if err := completeEnrolmentPolicySchema(&enrolment); err != nil {
 		return err
 	}
 	if err := l.admitSignature(&enrolment); err != nil {
@@ -418,6 +423,7 @@ func (l AnchorLedger) record(enrolment Enrolment, reputationConfirmation string)
 	// make the next narrowing look like a change nobody can order.
 	if enrolment.Policy == nil && found && existing.PolicyRoot == enrolment.PolicyRoot {
 		enrolment.Policy = existing.Policy
+		enrolment.PolicySchema = existing.PolicySchema
 	}
 	data, err := json.MarshalIndent(enrolment, "", "  ")
 	if err != nil {
@@ -523,11 +529,12 @@ func (l AnchorLedger) Forget(uid uint32, origin string) error {
 // an application twice must not walk the floor back down either.
 func (l AnchorLedger) entomb(recorded Enrolment) error {
 	buried := Tombstone{
-		UID:        recorded.UID,
-		Origin:     recorded.Origin,
-		Generation: recorded.Generation,
-		PolicyRoot: recorded.PolicyRoot,
-		Policy:     recorded.Policy,
+		UID:          recorded.UID,
+		Origin:       recorded.Origin,
+		Generation:   recorded.Generation,
+		PolicyRoot:   recorded.PolicyRoot,
+		Policy:       recorded.Policy,
+		PolicySchema: recorded.PolicySchema,
 	}
 	if recorded.Signature != nil {
 		buried.Signed = true
@@ -585,7 +592,7 @@ func (l AnchorLedger) Forgotten(uid uint32, origin string) (Tombstone, bool, err
 	if buried.UID != uid || buried.Origin != origin {
 		return Tombstone{}, false, errors.New("forgotten anchor does not match its file")
 	}
-	if err := validateTombstone(buried); err != nil {
+	if err := completeTombstonePolicySchema(&buried); err != nil {
 		return Tombstone{}, false, err
 	}
 	return buried, true, nil
@@ -820,13 +827,17 @@ func validateAnchor(anchor integrity.Anchor) error {
 // enrolled: a caller that sent a narrow policy with a wide root would be asking
 // to be authorized for something other than what it is recording.
 func validateEnrolment(enrolment Enrolment) error {
+	return completeEnrolmentPolicySchema(&enrolment)
+}
+
+func completeEnrolmentPolicySchema(enrolment *Enrolment) error {
 	if err := validateAnchor(enrolment.Anchor); err != nil {
 		return err
 	}
-	if err := validateSignedState(enrolment); err != nil {
+	if err := validateSignedState(*enrolment); err != nil {
 		return err
 	}
-	if err := validateRecordedVerification(enrolment); err != nil {
+	if err := validateRecordedVerification(*enrolment); err != nil {
 		return err
 	}
 	if (enrolment.Reputation == nil) != (enrolment.ReputationDecision == nil) {
@@ -853,16 +864,11 @@ func validateEnrolment(enrolment Enrolment) error {
 			return errors.New("an unsigned enrolment cannot name publisher reputation")
 		}
 	}
-	if enrolment.Policy == nil {
-		return nil
-	}
-	root, err := integrity.PolicyRoot(*enrolment.Policy)
+	schema, err := matchingPolicySchema(enrolment.Policy, enrolment.PolicyRoot, enrolment.PolicySchema, "enrolment")
 	if err != nil {
-		return fmt.Errorf("derive the policy root of the enrolment: %w", err)
+		return err
 	}
-	if root != enrolment.PolicyRoot {
-		return errors.New("enrolment policy does not hash to its policy root")
-	}
+	enrolment.PolicySchema = schema
 	return nil
 }
 
@@ -910,23 +916,53 @@ func validateRecordedVerification(enrolment Enrolment) error {
 // a narrow policy under a wide root would answer the widening question with
 // something nobody ever enrolled.
 func validateTombstone(buried Tombstone) error {
+	return completeTombstonePolicySchema(&buried)
+}
+
+func completeTombstonePolicySchema(buried *Tombstone) error {
 	if err := validateOrigin(buried.Origin); err != nil {
 		return err
 	}
 	if !anchorRootPattern.MatchString(buried.PolicyRoot) {
 		return errors.New("invalid forgotten anchor policy root")
 	}
-	if buried.Policy == nil {
-		return nil
-	}
-	root, err := integrity.PolicyRoot(*buried.Policy)
+	schema, err := matchingPolicySchema(buried.Policy, buried.PolicyRoot, buried.PolicySchema, "forgotten anchor")
 	if err != nil {
-		return fmt.Errorf("derive the policy root of the forgotten anchor: %w", err)
+		return err
 	}
-	if root != buried.PolicyRoot {
-		return errors.New("forgotten anchor policy does not hash to its policy root")
-	}
+	buried.PolicySchema = schema
 	return nil
+}
+
+func matchingPolicySchema(policy *types.Override, root string, declared int, subject string) (int, error) {
+	if policy == nil {
+		if declared != 0 {
+			return 0, fmt.Errorf("%s has a policy schema without a policy", subject)
+		}
+		return 0, nil
+	}
+	schemas := []int{declared}
+	if declared == 0 {
+		schemas = []int{
+			integrity.CurrentPolicySchema,
+			integrity.PolicySchemaWithoutDesktopCapabilities,
+			integrity.PolicySchemaWithoutSessionBus,
+			integrity.PolicySchemaWithoutSerial,
+		}
+	}
+	for _, schema := range schemas {
+		candidate, err := integrity.PolicyRootForSchema(*policy, schema)
+		if err != nil {
+			if declared != 0 {
+				return 0, fmt.Errorf("derive the policy root of the %s: %w", subject, err)
+			}
+			continue
+		}
+		if candidate == root {
+			return schema, nil
+		}
+	}
+	return 0, fmt.Errorf("%s policy does not hash to its policy root", subject)
 }
 
 // validateSignedState is the shape of a signature, not its worth. It runs on
@@ -1036,15 +1072,12 @@ func EnrolAnchorWithSignatureConfirmed(anchor integrity.Anchor, policy *types.Ov
 	return dispatchSignedEnrolment(enrolment, confirmation)
 }
 
-// dispatchSignedEnrolment walks the transports a signature can travel. There
-// are two: root writes the ledger it owns, and everybody else goes through the
-// bus, which is what carries an interactive authorization.
-//
-// It does not fall back to the socket. That request carries no signature, and
-// sending the enrolment over it without one would record a signed installation
-// as unsigned, which is the one downgrade this whole design exists to make
-// impossible. A host with no system bus is a host where this is recorded by
-// root, and the caller is told so.
+// dispatchSignedEnrolment walks the transports without changing the evidence.
+// The bus is tried first because it can carry an interactive authorization.
+// The socket carries the same signed request when no bus exists and asks for a
+// root re-entry only when the ledger says the change widens existing access.
+// A reputation confirmation travels with the same exact request and is never
+// dropped when the transport changes.
 func dispatchSignedEnrolment(enrolment Enrolment, confirmation string) error {
 	if os.Geteuid() == 0 {
 		ledger := DefaultAnchorLedger()
@@ -1053,15 +1086,30 @@ func dispatchSignedEnrolment(enrolment Enrolment, confirmation string) error {
 		}
 		return asRefusal(ledger.Record(enrolment))
 	}
+	return dispatchSignedEnrolmentAsUser(enrolment, confirmation)
+}
+
+func dispatchSignedEnrolmentAsUser(enrolment Enrolment, confirmation string) error {
 	request := enrolSignedOverBus
 	if confirmation != "" {
 		request = func(enrolment Enrolment) error { return enrolSignedConfirmedOverBus(enrolment, confirmation) }
 	}
 	err := retryPastStale(func() error { return request(enrolment) })
+	if !errors.Is(err, errTransportUnavailable) {
+		return asRefusal(err)
+	}
+	message := socketRequest{
+		Action: anchorEnrolAction, Anchor: &enrolment.Anchor, Policy: enrolment.Policy,
+		Signature: enrolment.Signature, Confirmation: confirmation,
+	}
+	err = authorityRequestOverSocket(DefaultSocketPath, message)
+	if err == nil || !errors.Is(err, errTransportUnavailable) && !errors.Is(err, errRootRequired) {
+		return asRefusal(err)
+	}
 	if errors.Is(err, errTransportUnavailable) {
 		return ErrNoAuthority
 	}
-	return asRefusal(err)
+	return asRefusal(enrolPrivileged(message))
 }
 
 func signedEnrolmentOverBus(enrolment Enrolment) error {
@@ -1121,7 +1169,14 @@ func decodeReputationConfirmationError(err error) error {
 	}
 	token, tokenOK := busErr.Body[0].(string)
 	document, documentOK := busErr.Body[1].(string)
-	if !tokenOK || !documentOK || token == "" || len(token) > 64 || len(document) > 4096 {
+	if !tokenOK || !documentOK {
+		return errors.New("system authority returned an invalid reputation confirmation")
+	}
+	return decodeReputationConfirmationDocument(token, document)
+}
+
+func decodeReputationConfirmationDocument(token, document string) error {
+	if token == "" || len(token) > 64 || len(document) > 4096 {
 		return errors.New("system authority returned an invalid reputation confirmation")
 	}
 	if err := signature.RejectDuplicateJSONKeys([]byte(document)); err != nil {
@@ -1162,7 +1217,14 @@ func decodeReputationRefusalError(err error) error {
 		return nil
 	}
 	document, ok := busErr.Body[0].(string)
-	if !ok || len(document) > 4096 {
+	if !ok {
+		return errors.New("system authority returned an invalid reputation refusal")
+	}
+	return decodeReputationRefusalDocument(document)
+}
+
+func decodeReputationRefusalDocument(document string) error {
+	if len(document) > 4096 {
 		return errors.New("system authority returned an invalid reputation refusal")
 	}
 	if err := signature.RejectDuplicateJSONKeys([]byte(document)); err != nil {
@@ -1468,8 +1530,18 @@ func dispatchIntegrity(message socketRequest) error {
 	if err := retryPastStale(func() error { return integrityOverBus(message) }); !errors.Is(err, errTransportUnavailable) {
 		return asRefusal(err)
 	}
-	if err := requestOverSocket(DefaultSocketPath, message); !errors.Is(err, errTransportUnavailable) {
+	err := authorityRequestOverSocket(DefaultSocketPath, message)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, errTransportUnavailable) && !errors.Is(err, errRootRequired) {
 		return asRefusal(err)
+	}
+	if message.Action == anchorEnrolAction {
+		if errors.Is(err, errTransportUnavailable) {
+			return ErrNoAuthority
+		}
+		return asRefusal(enrolPrivileged(message))
 	}
 	return ErrNoAuthority
 }
@@ -1567,20 +1639,29 @@ func decodePolicy(encoded string) (*types.Override, error) {
 func applyAnchor(ledger AnchorLedger, message socketRequest) error {
 	switch message.Action {
 	case anchorEnrolAction:
-		if message.Anchor == nil {
-			return errors.New("invalid integrity anchor")
-		}
-		enrolment := Enrolment{Anchor: *message.Anchor, Policy: message.Policy}
-		if err := validateEnrolment(enrolment); err != nil {
+		enrolment, err := enrolmentFromSocket(message)
+		if err != nil {
 			return err
+		}
+		if message.Confirmation != "" {
+			if enrolment.Signature == nil || len(message.Confirmation) > 64 {
+				return errors.New("invalid reputation confirmation")
+			}
+			return ledger.RecordConfirmed(enrolment, message.Confirmation)
 		}
 		return ledger.Record(enrolment)
 	case anchorForgetAction:
+		if message.Confirmation != "" {
+			return errors.New("reputation confirmation is not valid for this action")
+		}
 		if err := validateOrigin(message.Origin); err != nil {
 			return err
 		}
 		return ledger.Forget(message.UID, message.Origin)
 	case anchorClearAction:
+		if message.Confirmation != "" {
+			return errors.New("reputation confirmation is not valid for this action")
+		}
 		if err := validateOrigin(message.Origin); err != nil {
 			return err
 		}
@@ -1588,6 +1669,17 @@ func applyAnchor(ledger AnchorLedger, message socketRequest) error {
 	default:
 		return errors.New("unsupported system authority action")
 	}
+}
+
+func enrolmentFromSocket(message socketRequest) (Enrolment, error) {
+	if message.Anchor == nil {
+		return Enrolment{}, errors.New("invalid integrity anchor")
+	}
+	enrolment := Enrolment{Anchor: *message.Anchor, Policy: message.Policy, Signature: message.Signature}
+	if err := validateEnrolment(enrolment); err != nil {
+		return Enrolment{}, err
+	}
+	return enrolment, nil
 }
 
 // asRefusal recognises the refusals a caller has to act on differently after

@@ -40,25 +40,32 @@ const (
 var errTransportUnavailable = errors.New("system authority transport is unavailable")
 var errRootRequired = errors.New("system authority request requires root")
 
-const socketCodeRootRequired = "root-required"
+const (
+	socketCodeRootRequired                   = "root-required"
+	socketCodeReputationConfirmationRequired = "reputation-confirmation-required"
+	socketCodeReputationRefused              = "reputation-refused"
+)
 
 type socketRequest struct {
-	Action      string            `json:"action"`
-	ID          string            `json:"id"`
-	Origin      string            `json:"origin"`
-	Name        string            `json:"name,omitempty"`
-	Description string            `json:"description,omitempty"`
-	Kind        string            `json:"kind,omitempty"`
-	UID         uint32            `json:"uid,omitempty"`
-	Anchor      *integrity.Anchor `json:"anchor,omitempty"`
-	Policy      *types.Override   `json:"policy,omitempty"`
-	Signature   *SignedState      `json:"signature,omitempty"`
-	Level       string            `json:"level,omitempty"`
+	Action       string            `json:"action"`
+	ID           string            `json:"id"`
+	Origin       string            `json:"origin"`
+	Name         string            `json:"name,omitempty"`
+	Description  string            `json:"description,omitempty"`
+	Kind         string            `json:"kind,omitempty"`
+	UID          uint32            `json:"uid,omitempty"`
+	Anchor       *integrity.Anchor `json:"anchor,omitempty"`
+	Policy       *types.Override   `json:"policy,omitempty"`
+	Signature    *SignedState      `json:"signature,omitempty"`
+	Confirmation string            `json:"confirmation,omitempty"`
+	Level        string            `json:"level,omitempty"`
 }
 
 type socketResponse struct {
 	Error string `json:"error,omitempty"`
 	Code  string `json:"code,omitempty"`
+	Token string `json:"token,omitempty"`
+	Data  string `json:"data,omitempty"`
 }
 
 type socketService struct {
@@ -253,11 +260,35 @@ func writeResponse(connection *net.UnixConn, err error) {
 	reply := socketResponse{}
 	if err != nil {
 		reply.Error = err.Error()
-		if errors.Is(err, errRootRequired) {
+		var confirmation *ReputationConfirmationRequiredError
+		var refusal *ReputationRefusedError
+		switch {
+		case errors.Is(err, errRootRequired):
 			reply.Code = socketCodeRootRequired
+		case errors.As(err, &confirmation):
+			reply.Code = socketCodeReputationConfirmationRequired
+			reply.Token = confirmation.Token
+			reply.Data = encodeSocketReputationWire(reputationConfirmationWire{
+				Result: confirmation.Result, Decision: confirmation.Decision,
+				SignatureMode: confirmation.SignatureMode, ReputationMode: confirmation.ReputationMode,
+			})
+		case errors.As(err, &refusal):
+			reply.Code = socketCodeReputationRefused
+			reply.Data = encodeSocketReputationWire(reputationConfirmationWire{
+				Result: refusal.Result, Decision: refusal.Decision,
+				SignatureMode: refusal.SignatureMode, ReputationMode: refusal.ReputationMode,
+			})
 		}
 	}
 	_ = json.NewEncoder(connection).Encode(reply)
+}
+
+func encodeSocketReputationWire(wire reputationConfirmationWire) string {
+	document, err := json.Marshal(wire)
+	if err != nil {
+		return ""
+	}
+	return string(document)
 }
 
 func decodeSocketRequest(input io.Reader) (socketRequest, error) {
@@ -296,8 +327,16 @@ func requestOverSocket(path string, message socketRequest) error {
 	if err := decoder.Decode(&reply); err != nil {
 		return fmt.Errorf("read system authority reply: %w", err)
 	}
-	if reply.Code == socketCodeRootRequired {
+	switch reply.Code {
+	case "":
+	case socketCodeRootRequired:
 		return errRootRequired
+	case socketCodeReputationConfirmationRequired:
+		return decodeReputationConfirmationDocument(reply.Token, reply.Data)
+	case socketCodeReputationRefused:
+		return decodeReputationRefusalDocument(reply.Data)
+	default:
+		return errors.New("system authority returned an invalid response code")
 	}
 	if reply.Error != "" {
 		return errors.New(reply.Error)

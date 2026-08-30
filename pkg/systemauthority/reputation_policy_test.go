@@ -211,6 +211,59 @@ func TestAuthorityRecordsAWarningOnlyAfterTheExactSingleUseConfirmation(t *testi
 	}
 }
 
+func TestAuthoritySocketPreservesAReputationWarningAndConfirmation(t *testing.T) {
+	ledger := testAnchorLedger(t)
+	ledger.ReputationConfirmations = &reputationConfirmationStore{}
+	publisher := testNormalizedPublisher(t)
+	testReputationTrustPolicy(t, ledger, trustpolicy.ReputationWarn, publisher.ID)
+	acceptSignaturesOf(t, testAnchor().Origin)
+	ledger.Now = func() time.Time { return reputationNow }
+	ledger.ReputationLookup = func(publisherID string, _ time.Time) (reputation.Result, error) {
+		return authorityReputationResult(publisherID, reputation.Unknown), nil
+	}
+	path := startAuthoritySocket(t, socketService{Anchors: ledger})
+	enrolment := Enrolment{Anchor: testAnchor(), Signature: testSignedState(1)}
+	request := socketRequest{
+		Action: anchorEnrolAction, Anchor: &enrolment.Anchor, Signature: enrolment.Signature,
+	}
+	err := requestOverSocket(path, request)
+	var confirmation *ReputationConfirmationRequiredError
+	if !errors.As(err, &confirmation) || confirmation.Token == "" || confirmation.Decision.Action != trustpolicy.ActionWarn {
+		t.Fatalf("socket warning = %v", err)
+	}
+	request.Confirmation = confirmation.Token
+	if err := requestOverSocket(path, request); err != nil {
+		t.Fatalf("socket confirmation was refused: %v", err)
+	}
+	recorded, found, err := ledger.Recorded(enrolment.UID, enrolment.Origin)
+	if err != nil || !found || recorded.ReputationDecision == nil || recorded.ReputationDecision.Action != trustpolicy.ActionWarn {
+		t.Fatalf("socket-confirmed warning = %+v found=%v err=%v", recorded, found, err)
+	}
+}
+
+func TestAuthoritySocketPreservesAReputationRefusal(t *testing.T) {
+	ledger := testAnchorLedger(t)
+	publisher := testNormalizedPublisher(t)
+	testReputationTrustPolicy(t, ledger, trustpolicy.ReputationWarn, publisher.ID)
+	acceptSignaturesOf(t, testAnchor().Origin)
+	ledger.Now = func() time.Time { return reputationNow }
+	ledger.ReputationLookup = func(publisherID string, _ time.Time) (reputation.Result, error) {
+		return authorityReputationResult(publisherID, reputation.Blocked), nil
+	}
+	path := startAuthoritySocket(t, socketService{Anchors: ledger})
+	enrolment := Enrolment{Anchor: testAnchor(), Signature: testSignedState(1)}
+	err := requestOverSocket(path, socketRequest{
+		Action: anchorEnrolAction, Anchor: &enrolment.Anchor, Signature: enrolment.Signature,
+	})
+	var refusal *ReputationRefusedError
+	if !errors.As(err, &refusal) || refusal.Result.Status != reputation.Blocked || refusal.Decision.Action != trustpolicy.ActionDeny {
+		t.Fatalf("socket refusal = %v", err)
+	}
+	if _, found, readErr := ledger.Recorded(enrolment.UID, enrolment.Origin); readErr != nil || found {
+		t.Fatalf("socket refusal was recorded: found=%v err=%v", found, readErr)
+	}
+}
+
 func TestPublisherChangeCannotBorrowThePreviousIdentityOrReputation(t *testing.T) {
 	origin := testAnchor().Origin
 	firstPublisher := &signature.PublisherIdentity{

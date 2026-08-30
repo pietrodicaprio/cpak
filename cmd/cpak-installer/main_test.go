@@ -76,7 +76,12 @@ func TestInstallMigratesStorageBeforeInstallingTheApplication(t *testing.T) {
 	t.Setenv("HOME", home)
 	payload := []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/calls\"\n")
 	capsule := bootstrap.Capsule{
-		Metadata:  bootstrap.Metadata{Name: "Demo", Origin: "github.com/containerpak/demo"},
+		Metadata: bootstrap.Metadata{
+			Name:           "Demo",
+			Origin:         "github.com/containerpak/demo",
+			Ref:            strings.Repeat("a", 40),
+			ManifestDigest: "sha256:" + strings.Repeat("b", 64),
+		},
 		Payload:   payload,
 		Companion: []byte("storage service"),
 	}
@@ -88,7 +93,8 @@ func TestInstallMigratesStorageBeforeInstallingTheApplication(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) != 2 || lines[0] != "storage migrate" || lines[1] != "install --yes github.com/containerpak/demo" {
+	wantInstall := "install --commit " + strings.Repeat("a", 40) + " --signed-installer github.com/containerpak/demo"
+	if len(lines) != 2 || lines[0] != "storage migrate" || lines[1] != wantInstall {
 		t.Fatalf("commands = %q", lines)
 	}
 }
@@ -97,7 +103,9 @@ func TestGraphicalInstallSelectsOnlyTheDedicatedTrustFrontend(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	payload := []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/calls\"\n")
-	capsule := bootstrap.Capsule{Metadata: bootstrap.Metadata{Name: "Demo", Origin: "github.com/containerpak/demo"}, Payload: payload}
+	capsule := bootstrap.Capsule{Metadata: bootstrap.Metadata{
+		Name: "Demo", Origin: "github.com/containerpak/demo", RefType: "commit", Ref: "deadbeef",
+	}, Payload: payload}
 	if err := install(capsule, func(string) {}, true); err != nil {
 		t.Fatal(err)
 	}
@@ -105,8 +113,18 @@ func TestGraphicalInstallSelectsOnlyTheDedicatedTrustFrontend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.TrimSpace(string(data)); got != "storage migrate\ninstall --yes --graphical github.com/containerpak/demo" {
+	if got := strings.TrimSpace(string(data)); got != "storage migrate\ninstall --commit deadbeef --signed-installer --graphical github.com/containerpak/demo" {
 		t.Fatalf("command = %q", got)
+	}
+}
+
+func TestPermissionLinesShowTheSignedDetails(t *testing.T) {
+	lines := permissionLines([]bootstrap.Permission{
+		{Name: "Network", Detail: "internet and local network"},
+		{Name: "Files", Detail: "home, read and write"},
+	})
+	if strings.Join(lines, "\n") != "Network: internet and local network\nFiles: home, read and write" {
+		t.Fatalf("permission lines = %q", lines)
 	}
 }
 
